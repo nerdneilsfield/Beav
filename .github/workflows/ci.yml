@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version-file: go.mod
       - run: go test -race -coverprofile=cover.out ./...
       - run: |
           go tool cover -func=cover.out | tee coverage.txt
@@ -21,31 +21,49 @@ jobs:
         with:
           version: latest
 
-  cross-distro:
+  build-smoke-binary:
     needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build static Linux smoke binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          mkdir -p dist-smoke
+          go build -trimpath -o dist-smoke/beav ./cmd/beav
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beav-linux-amd64-smoke
+          path: dist-smoke/beav
+          if-no-files-found: error
+
+  cross-distro:
+    needs: build-smoke-binary
     strategy:
+      fail-fast: false
       matrix:
         image:
           - ubuntu:24.04
-          - fedora:40
+          - debian:12-slim
+          - fedora:latest
           - archlinux:latest
+          - opensuse/tumbleweed
     runs-on: ubuntu-latest
-    container:
-      image: ${{ matrix.image }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Go
+      - uses: actions/download-artifact@v4
+        with:
+          name: beav-linux-amd64-smoke
+          path: dist-smoke
+      - name: Smoke test on ${{ matrix.image }}
         run: |
-          set -e
-          if command -v apt-get >/dev/null; then
-            apt-get update
-            apt-get install -y golang-1.24 git
-            ln -sf /usr/lib/go-1.24/bin/go /usr/local/bin/go
-          elif command -v dnf >/dev/null; then
-            dnf install -y golang git
-          elif command -v pacman >/dev/null; then
-            pacman -Sy --noconfirm go git
-          fi
-      - run: go test ./...
-      - run: go build ./cmd/beav
-      - run: ./beav clean --dry-run --output json
+          chmod +x dist-smoke/beav
+          docker run --rm \
+            -v "$PWD/dist-smoke/beav:/beav:ro" \
+            "${{ matrix.image }}" \
+            sh -euxc '/beav version && /beav clean --system --dry-run --output json'
