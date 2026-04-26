@@ -22,6 +22,8 @@ func TestSpinnerProducesFinishLine(t *testing.T) {
 	}
 }
 
+// TestSpinnerDoesNotPrintOKLineAfterCleanerSkipped verifies that skipped cleaners don't produce an [ok] line.
+// TestSpinnerDoesNotPrintOKLineAfterCleanerSkipped 验证跳过的清理器不产生 [ok] 行。
 func TestSpinnerDoesNotPrintOKLineAfterCleanerSkipped(t *testing.T) {
 	var buf bytes.Buffer
 	r := NewSpinner(&buf)

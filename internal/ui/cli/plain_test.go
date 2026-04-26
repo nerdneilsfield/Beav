@@ -26,6 +26,8 @@ func TestPlainOneLinePerCleaner(t *testing.T) {
 	}
 }
 
+// TestPlainDoesNotPrintFinishLineAfterCleanerSkipped verifies that skipped cleaners don't produce a finish line.
+// TestPlainDoesNotPrintFinishLineAfterCleanerSkipped 验证跳过的清理器不产生完成行。
 func TestPlainDoesNotPrintFinishLineAfterCleanerSkipped(t *testing.T) {
 	var buf bytes.Buffer
 	r := NewPlain(&buf)

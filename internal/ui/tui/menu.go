@@ -44,6 +44,8 @@ func (m menuModel) View() string {
 	return lipgloss.NewStyle().Margin(1, 2).Render(m.list.View())
 }
 
+// RunMenu displays the interactive menu and returns the selected action.
+// RunMenu 显示交互菜单并返回所选操作。
 func RunMenu() (string, error) {
 	items := []list.Item{
 		item{title: "Clean", desc: "Run age-aware cache cleanup", action: "clean"},

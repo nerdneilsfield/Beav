@@ -29,6 +29,8 @@ func (r *Renderer) Render(e model.Event) {
 	_, _ = r.w.Write([]byte("\n"))
 }
 
+// Close releases any resources held by the JSON renderer.
+// Close 释放 JSON 渲染器持有的任何资源。
 func (r *Renderer) Close() error {
 	return nil
 }

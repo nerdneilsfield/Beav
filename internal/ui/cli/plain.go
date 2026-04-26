@@ -19,6 +19,8 @@ func NewPlain(w io.Writer) *Plain {
 	return &Plain{w: w, current: map[string]model.Event{}}
 }
 
+// Render processes a cleaner event and writes the appropriate output.
+// Render 处理清理器事件并写入相应的输出。
 func (p *Plain) Render(e model.Event) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

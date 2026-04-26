@@ -10,6 +10,8 @@ import (
 	"github.com/rivo/tview"
 )
 
+// RunAnalyze launches the interactive disk analyzer (gdu) for the given path.
+// RunAnalyze 为给定路径启动交互式磁盘分析器 (gdu)。
 func RunAnalyze(path string) error {
 	istty := isatty.IsTerminal(os.Stdout.Fd())
 	flags := &gduapp.Flags{

@@ -31,6 +31,8 @@ func TestJSONLOnePerLine(t *testing.T) {
 	}
 }
 
+// TestJSONLIncludesZeroValuedStableCounters verifies that summary entries include zero-valued counter fields.
+// TestJSONLIncludesZeroValuedStableCounters 验证摘要条目包含零值计数字段。
 func TestJSONLIncludesZeroValuedStableCounters(t *testing.T) {
 	var buf bytes.Buffer
 	r := New(&buf)
