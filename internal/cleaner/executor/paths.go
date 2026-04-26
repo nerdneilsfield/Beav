@@ -14,17 +14,29 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// errNoMatches is returned when glob patterns match no paths.
+// errNoMatches 在 glob 模式未匹配到任何路径时返回。
 var errNoMatches = errors.New("no matching paths")
 
+// PathsExecutor implements the Executor interface for cleaning file paths.
+// PathsExecutor 实现了用于清理文件路径的 Executor 接口。
 type PathsExecutor struct {
-	Home      string
+	// Home is the user's home directory for expanding ~ prefixes.
+	// Home 是用于展开 ~ 前缀的用户主目录。
+	Home string
+	// Whitelist contains paths that must never be deleted.
+	// Whitelist 包含绝不能被删除的路径。
 	Whitelist *safety.Whitelist
 }
 
+// NewPathsExecutor creates a new PathsExecutor with the given home directory and whitelist.
+// NewPathsExecutor 使用给定的主目录和白名单创建一个新的 PathsExecutor。
 func NewPathsExecutor(home string, wl *safety.Whitelist) *PathsExecutor {
 	return &PathsExecutor{Home: home, Whitelist: wl}
 }
 
+// Run executes the path cleaning operation, emitting events for each action taken.
+// Run 执行路径清理操作，为每个操作发出事件。
 func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, emit func(model.Event)) error {
 	start := time.Now()
 	emit(model.Event{Event: model.EvStart, CleanerID: c.ID, Name: c.Name, Scope: c.Scope, Type: c.Type, DryRun: dryRun, TS: start})
@@ -212,6 +224,8 @@ func emitOpenSkip(cleanerID, path string, err error, emit func(model.Event)) {
 	emit(model.Event{Event: model.EvSkipped, CleanerID: cleanerID, Path: path, Reason: reason, Detail: err.Error(), TS: time.Now()})
 }
 
+// expandRoots expands path patterns and resolvers into a validated list of root paths.
+// expandRoots 将路径模式和解析器展开为经过验证的根路径列表。
 func (p *PathsExecutor) expandRoots(c model.Cleaner) ([]string, error) {
 	var raws []string
 	for _, pat := range c.Paths {
@@ -274,6 +288,8 @@ func expandHome(p, home string) string {
 	return p
 }
 
+// globSet holds compiled glob patterns for exclusion matching.
+// globSet 保存用于排除匹配的编译后的 glob 模式。
 type globSet []string
 
 func compileGlobs(patterns []string) globSet { return globSet(patterns) }
@@ -293,6 +309,8 @@ func matchAny(set globSet, absPath, relPath string) bool {
 	return false
 }
 
+// determineSafeRoot returns the safe root directory for a given path, or empty string if blacklisted.
+// determineSafeRoot 返回给定路径的安全根目录，如果被列入黑名单则返回空字符串。
 func determineSafeRoot(path, home string) string {
 	clean := filepath.Clean(path)
 	if home != "" {

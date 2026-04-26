@@ -13,6 +13,8 @@ import (
 	"github.com/dengqi/beav/internal/cleaner/safety"
 )
 
+// TestPathsExecutorDeletesAgedFiles verifies that files older than the age threshold are deleted.
+// TestPathsExecutorDeletesAgedFiles 验证超过年龄阈值的文件会被删除。
 func TestPathsExecutorDeletesAgedFiles(t *testing.T) {
 	home := t.TempDir()
 	cache := filepath.Join(home, ".cache", "demo")
@@ -61,6 +63,8 @@ func TestPathsExecutorDeletesAgedFiles(t *testing.T) {
 	}
 }
 
+// TestRunRootHandlesSafeRootItself verifies that runRoot correctly handles when root equals safeRoot.
+// TestRunRootHandlesSafeRootItself 验证 runRoot 在 root 等于 safeRoot 时正确处理。
 func TestRunRootHandlesSafeRootItself(t *testing.T) {
 	root := t.TempDir()
 	old := filepath.Join(root, "old.bin")
@@ -90,6 +94,8 @@ func TestRunRootHandlesSafeRootItself(t *testing.T) {
 	}
 }
 
+// TestPathsExecutorMarksExcludeAsExcluded verifies that excluded files are skipped with the correct reason.
+// TestPathsExecutorMarksExcludeAsExcluded 验证被排除的文件以正确的原因被跳过。
 func TestPathsExecutorMarksExcludeAsExcluded(t *testing.T) {
 	home := t.TempDir()
 	cache := filepath.Join(home, ".cache", "demo")
@@ -122,6 +128,8 @@ func TestPathsExecutorMarksExcludeAsExcluded(t *testing.T) {
 	}
 }
 
+// TestPathsExecutorSkipsCleanerWhenGlobHasNoMatches verifies that cleaners are skipped when glob patterns match nothing.
+// TestPathsExecutorSkipsCleanerWhenGlobHasNoMatches 验证当 glob 模式未匹配任何内容时清理器被跳过。
 func TestPathsExecutorSkipsCleanerWhenGlobHasNoMatches(t *testing.T) {
 	home := t.TempDir()
 	c := model.Cleaner{
@@ -141,6 +149,8 @@ func TestPathsExecutorSkipsCleanerWhenGlobHasNoMatches(t *testing.T) {
 	}
 }
 
+// TestExpandRootsReturnsInvalidGlobError verifies that invalid glob patterns return an error.
+// TestExpandRootsReturnsInvalidGlobError 验证无效的 glob 模式会返回错误。
 func TestExpandRootsReturnsInvalidGlobError(t *testing.T) {
 	home := t.TempDir()
 	_, err := NewPathsExecutor(home, nil).expandRoots(model.Cleaner{

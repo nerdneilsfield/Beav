@@ -10,10 +10,16 @@ import (
 	"github.com/dengqi/beav/internal/cleaner/model"
 )
 
+// JournalExecutor implements the Executor interface for journal log vacuuming.
+// JournalExecutor 实现了用于日志清理的 Executor 接口。
 type JournalExecutor struct{}
 
+// NewJournalExecutor creates a new JournalExecutor.
+// NewJournalExecutor 创建一个新的 JournalExecutor。
 func NewJournalExecutor() *JournalExecutor { return &JournalExecutor{} }
 
+// Run executes the journal vacuum operation, emitting events for each action taken.
+// Run 执行日志清理操作，为每个操作发出事件。
 func (j *JournalExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, emit func(model.Event)) error {
 	start := time.Now()
 	emit(model.Event{Event: model.EvStart, CleanerID: c.ID, Name: c.Name, Scope: c.Scope, Type: c.Type, DryRun: dryRun, TS: start})

@@ -14,15 +14,25 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// ContainerTarget specifies the user context for container operations.
+// ContainerTarget 指定容器操作的用户上下文。
 type ContainerTarget struct {
-	UID  int
+	// UID is the user ID that owns the container daemon.
+	// UID 是拥有容器守护进程的用户 ID。
+	UID int
+	// Home is the user's home directory.
+	// Home 是用户的主目录。
 	Home string
 }
 
+// ContainerExecutor implements the Executor interface for container pruning.
+// ContainerExecutor 实现了用于容器清理的 Executor 接口。
 type ContainerExecutor struct {
 	target ContainerTarget
 }
 
+// NewContainerExecutor creates a new ContainerExecutor, optionally with a custom target.
+// NewContainerExecutor 创建一个新的 ContainerExecutor，可选择自定义目标。
 func NewContainerExecutor(target ...ContainerTarget) *ContainerExecutor {
 	t := ContainerTarget{UID: os.Getuid(), Home: os.Getenv("HOME")}
 	if len(target) > 0 {
@@ -59,6 +69,8 @@ func containerArgv(runtime, target string, ageDays int) ([]string, error) {
 	return nil, fmt.Errorf("unknown runtime/target %q/%q", runtime, target)
 }
 
+// Run executes the container pruning operation, emitting events for each action taken.
+// Run 执行容器清理操作，为每个操作发出事件。
 func (ce *ContainerExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, emit func(model.Event)) error {
 	start := time.Now()
 	emit(model.Event{Event: model.EvStart, CleanerID: c.ID, Name: c.Name, Scope: c.Scope, Type: c.Type, DryRun: dryRun, TS: start})
@@ -132,12 +144,16 @@ func (ce *ContainerExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bo
 	return nil
 }
 
+// daemonReachable checks if the container runtime daemon is responding.
+// daemonReachable 检查容器运行时守护进程是否响应。
 func daemonReachable(ctx context.Context, runtime string) bool {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	return exec.CommandContext(ctx, runtime, "info", "--format", "{{.ServerVersion}}").Run() == nil
 }
 
+// runtimeBusy checks if the container runtime has running containers.
+// runtimeBusy 检查容器运行时是否有正在运行的容器。
 func runtimeBusy(ctx context.Context, runtime string) bool {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -148,6 +164,8 @@ func runtimeBusy(ctx context.Context, runtime string) bool {
 	return strings.TrimSpace(string(out)) != ""
 }
 
+// daemonRootless checks if the container runtime is running in rootless mode.
+// daemonRootless 检查容器运行时是否以无根模式运行。
 func daemonRootless(ctx context.Context, runtime string) bool {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -171,6 +189,8 @@ func daemonRootless(ctx context.Context, runtime string) bool {
 	return true
 }
 
+// verifyRootlessSocket verifies that the rootless socket is owned by the target user.
+// verifyRootlessSocket 验证无根套接字是否由目标用户拥有。
 func verifyRootlessSocket(ctx context.Context, runtime string, uid int, home string) bool {
 	sock := socketPath(ctx, runtime, uid)
 	if sock == "" {
@@ -192,6 +212,8 @@ func verifyRootlessSocket(ctx context.Context, runtime string, uid int, home str
 	return false
 }
 
+// socketPath discovers the container runtime socket path for the given user.
+// socketPath 发现给定用户的容器运行时套接字路径。
 func socketPath(ctx context.Context, runtime string, uid int) string {
 	if v := os.Getenv("DOCKER_HOST"); runtime == "docker" && strings.HasPrefix(v, "unix://") {
 		return strings.TrimPrefix(v, "unix://")

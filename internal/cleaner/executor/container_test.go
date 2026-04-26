@@ -9,6 +9,8 @@ import (
 	"github.com/dengqi/beav/internal/cleaner/model"
 )
 
+// TestArgvForTarget verifies that containerArgv returns correct arguments for various runtime/target combinations.
+// TestArgvForTarget 验证 containerArgv 为各种运行时/目标组合返回正确的参数。
 func TestArgvForTarget(t *testing.T) {
 	cases := []struct {
 		runtime string
@@ -32,12 +34,16 @@ func TestArgvForTarget(t *testing.T) {
 	}
 }
 
+// TestVolumeTargetRejected verifies that volume target is rejected with an error.
+// TestVolumeTargetRejected 验证 volume 目标会被拒绝并返回错误。
 func TestVolumeTargetRejected(t *testing.T) {
 	if _, err := containerArgv("docker", "volume", 14); err == nil {
 		t.Fatal("volume target must be rejected")
 	}
 }
 
+// TestSkipWhenRuntimeMissing verifies that the cleaner skips when the container runtime is not installed.
+// TestSkipWhenRuntimeMissing 验证当容器运行时未安装时清理器会跳过。
 func TestSkipWhenRuntimeMissing(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err == nil {
 		t.Skip("docker present; skipping negative test")
@@ -58,6 +64,8 @@ func TestSkipWhenRuntimeMissing(t *testing.T) {
 	}
 }
 
+// TestSystemScopeSkipsRootlessDaemonEvenWithoutVerifiedSocket verifies system scope skips rootless daemons.
+// TestSystemScopeSkipsRootlessDaemonEvenWithoutVerifiedSocket 验证系统范围会跳过无根守护进程。
 func TestSystemScopeSkipsRootlessDaemonEvenWithoutVerifiedSocket(t *testing.T) {
 	dir := t.TempDir()
 	docker := filepath.Join(dir, "docker")
@@ -86,6 +94,8 @@ func TestSystemScopeSkipsRootlessDaemonEvenWithoutVerifiedSocket(t *testing.T) {
 	}
 }
 
+// TestRootlessSocketVerificationUsesTargetUserAndHome verifies socket verification uses the correct user and home.
+// TestRootlessSocketVerificationUsesTargetUserAndHome 验证套接字验证使用正确的用户和主目录。
 func TestRootlessSocketVerificationUsesTargetUserAndHome(t *testing.T) {
 	home := t.TempDir()
 	sock := filepath.Join(home, "docker.sock")
@@ -98,6 +108,8 @@ func TestRootlessSocketVerificationUsesTargetUserAndHome(t *testing.T) {
 	}
 }
 
+// TestDockerContextSocketDiscovery verifies that socketPath discovers the socket from docker context.
+// TestDockerContextSocketDiscovery 验证 socketPath 从 docker context 中发现套接字。
 func TestDockerContextSocketDiscovery(t *testing.T) {
 	dir := t.TempDir()
 	home := t.TempDir()
@@ -121,6 +133,8 @@ func TestDockerContextSocketDiscovery(t *testing.T) {
 	}
 }
 
+// equalStrings compares two string slices for equality.
+// equalStrings 比较两个字符串切片是否相等。
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

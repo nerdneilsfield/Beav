@@ -8,6 +8,8 @@ import (
 	"github.com/dengqi/beav/internal/cleaner/model"
 )
 
+// TestPkgCacheSkipsWhenManagerMissing verifies that the cleaner skips when the package manager is not installed.
+// TestPkgCacheSkipsWhenManagerMissing 验证当包管理器未安装时清理器会跳过。
 func TestPkgCacheSkipsWhenManagerMissing(t *testing.T) {
 	mgr := "imaginarypkg"
 	if _, err := exec.LookPath(mgr); err == nil {

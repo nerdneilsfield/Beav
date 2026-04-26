@@ -10,10 +10,16 @@ import (
 	"github.com/dengqi/beav/internal/cleaner/model"
 )
 
+// PkgCacheExecutor implements the Executor interface for package cache cleaning.
+// PkgCacheExecutor 实现了用于包缓存清理的 Executor 接口。
 type PkgCacheExecutor struct{}
 
+// NewPkgCacheExecutor creates a new PkgCacheExecutor.
+// NewPkgCacheExecutor 创建一个新的 PkgCacheExecutor。
 func NewPkgCacheExecutor() *PkgCacheExecutor { return &PkgCacheExecutor{} }
 
+// pkgArgv maps package manager names to their clean commands.
+// pkgArgv 将包管理器名称映射到其清理命令。
 var pkgArgv = map[string][][]string{
 	"apt":    {{"apt-get", "clean"}, {"apt-get", "autoclean"}},
 	"dnf":    {{"dnf", "clean", "all"}},
@@ -21,6 +27,8 @@ var pkgArgv = map[string][][]string{
 	"zypper": {{"zypper", "clean", "-a"}},
 }
 
+// Run executes the package cache cleaning operation, emitting events for each action taken.
+// Run 执行包缓存清理操作，为每个操作发出事件。
 func (p *PkgCacheExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, emit func(model.Event)) error {
 	start := time.Now()
 	emit(model.Event{Event: model.EvStart, CleanerID: c.ID, Name: c.Name, Scope: c.Scope, Type: c.Type, DryRun: dryRun, TS: start})
