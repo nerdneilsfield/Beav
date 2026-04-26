@@ -1,0 +1,7 @@
+- id: k8s-helm-cache
+  name: Helm cache
+  scope: user
+  type: paths
+  min_age_days: 30
+  paths: [~/.cache/helm/**]
+  tags: [k8s]

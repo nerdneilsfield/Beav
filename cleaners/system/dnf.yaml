@@ -1,0 +1,7 @@
+- id: pkg-dnf
+  name: dnf clean all
+  scope: system
+  type: pkg_cache
+  pkg_cache: { manager: dnf }
+  needs_root: true
+  tags: [pkg]

@@ -1,0 +1,7 @@
+- id: lang-pip
+  name: pip wheel cache
+  scope: user
+  type: paths
+  min_age_days: 14
+  path_resolvers: [{ resolver: pip_cache }]
+  tags: [langs, python]

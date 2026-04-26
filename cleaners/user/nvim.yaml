@@ -1,0 +1,10 @@
+- id: editor-nvim
+  name: Neovim state
+  scope: user
+  type: paths
+  min_age_days: 30
+  paths:
+    - ~/.local/state/nvim/log/*
+    - ~/.local/state/nvim/swap/*
+    - ~/.local/state/nvim/undo/*
+  tags: [editor]

@@ -1,0 +1,7 @@
+- id: pkg-pacman
+  name: pacman package cache
+  scope: system
+  type: pkg_cache
+  pkg_cache: { manager: pacman }
+  needs_root: true
+  tags: [pkg]

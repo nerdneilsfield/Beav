@@ -1,0 +1,7 @@
+- id: lang-go
+  name: Go build cache
+  scope: user
+  type: paths
+  min_age_days: 30
+  path_resolvers: [{ resolver: gocache }]
+  tags: [langs, go]

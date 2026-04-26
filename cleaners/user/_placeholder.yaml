@@ -1,0 +1,3 @@
+# Intentionally empty; ensures //go:embed always matches at least one file.
+# Real cleaners are added in later phases. The loader treats empty/`[]` files as no-ops.
+[]

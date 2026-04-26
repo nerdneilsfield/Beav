@@ -1,0 +1,9 @@
+- id: lang-maven
+  name: Maven download cache (~/.m2/.../.cache)
+  scope: user
+  type: paths
+  min_age_days: 30
+  path_resolvers:
+    - resolver: maven_local_repo
+      subpaths: [".cache"]
+  tags: [langs, jvm]

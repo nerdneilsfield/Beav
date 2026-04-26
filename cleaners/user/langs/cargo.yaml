@@ -1,0 +1,9 @@
+- id: lang-cargo
+  name: cargo registry + git
+  scope: user
+  type: paths
+  min_age_days: 30
+  path_resolvers:
+    - resolver: cargo_home
+      subpaths: [registry/cache, git]
+  tags: [langs, rust]

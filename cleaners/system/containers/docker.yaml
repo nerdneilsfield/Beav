@@ -1,0 +1,32 @@
+- id: container-docker-builder
+  name: Docker builder cache
+  scope: system
+  type: container_prune
+  min_age_days: 14
+  needs_root: true
+  container_prune: { runtime: docker, target: builder }
+  tags: [container, docker]
+- id: container-docker-images
+  name: Docker unused images
+  scope: system
+  type: container_prune
+  min_age_days: 30
+  needs_root: true
+  container_prune: { runtime: docker, target: image }
+  tags: [container, docker]
+- id: container-docker-containers
+  name: Docker stopped containers
+  scope: system
+  type: container_prune
+  min_age_days: 7
+  needs_root: true
+  container_prune: { runtime: docker, target: container }
+  tags: [container, docker]
+- id: container-docker-networks
+  name: Docker unused networks
+  scope: system
+  type: container_prune
+  min_age_days: 30
+  needs_root: true
+  container_prune: { runtime: docker, target: network }
+  tags: [container, docker]

@@ -1,0 +1,7 @@
+- id: lang-bun
+  name: bun install cache
+  scope: user
+  type: paths
+  min_age_days: 14
+  path_resolvers: [{ resolver: bun_cache }]
+  tags: [langs, js]

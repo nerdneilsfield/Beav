@@ -1,0 +1,7 @@
+- id: pkg-apt-archives
+  name: apt downloaded packages
+  scope: system
+  type: pkg_cache
+  pkg_cache: { manager: apt }
+  needs_root: true
+  tags: [pkg]

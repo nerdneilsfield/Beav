@@ -1,0 +1,8 @@
+- id: sys-varcache
+  name: /var/cache stragglers
+  scope: system
+  type: paths
+  min_age_days: 30
+  needs_root: true
+  paths: [/var/cache/man/*, /var/cache/fontconfig/*]
+  tags: [system]

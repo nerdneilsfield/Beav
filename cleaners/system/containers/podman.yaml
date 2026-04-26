@@ -1,0 +1,8 @@
+- id: container-podman-system
+  name: Podman system prune (no volumes)
+  scope: system
+  type: container_prune
+  min_age_days: 14
+  needs_root: true
+  container_prune: { runtime: podman, target: system }
+  tags: [container, podman]

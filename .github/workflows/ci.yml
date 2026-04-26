@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - run: go test -race -coverprofile=cover.out ./...
+      - run: go tool cover -func=cover.out
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  cross-distro:
+    needs: test
+    strategy:
+      matrix:
+        image:
+          - ubuntu:24.04
+          - fedora:40
+          - archlinux:latest
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Go
+        run: |
+          set -e
+          if command -v apt-get >/dev/null; then
+            apt-get update
+            apt-get install -y golang-1.24 git
+            ln -sf /usr/lib/go-1.24/bin/go /usr/local/bin/go
+          elif command -v dnf >/dev/null; then
+            dnf install -y golang git
+          elif command -v pacman >/dev/null; then
+            pacman -Sy --noconfirm go git
+          fi
+      - run: go test ./...
+      - run: go build ./cmd/beav
+      - run: ./beav clean --dry-run --output json

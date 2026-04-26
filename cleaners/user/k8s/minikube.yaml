@@ -1,0 +1,7 @@
+- id: k8s-minikube-cache
+  name: minikube image cache
+  scope: user
+  type: paths
+  min_age_days: 30
+  paths: [~/.minikube/cache/**]
+  tags: [k8s]

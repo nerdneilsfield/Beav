@@ -1,0 +1,15 @@
+- id: desktop-trash
+  name: Desktop Trash
+  description: User's freedesktop trash bin
+  scope: user
+  type: paths
+  min_age_days: 30
+  paths: ["~/.local/share/Trash/files/**", "~/.local/share/Trash/info/**"]
+  tags: [desktop]
+- id: desktop-thumbnails
+  name: Thumbnail cache
+  scope: user
+  type: paths
+  min_age_days: 30
+  paths: ["~/.cache/thumbnails/**"]
+  tags: [desktop]

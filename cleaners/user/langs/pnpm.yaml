@@ -1,0 +1,7 @@
+- id: lang-pnpm
+  name: pnpm store
+  scope: user
+  type: paths
+  min_age_days: 14
+  path_resolvers: [{ resolver: pnpm_store }]
+  tags: [langs, js]

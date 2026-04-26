@@ -1,0 +1,24 @@
+- id: browser-firefox
+  name: Firefox cache
+  scope: user
+  type: paths
+  min_age_days: 7
+  paths:
+    - ~/.cache/mozilla/firefox/*/cache2/**
+    - ~/.cache/mozilla/firefox/*/startupCache/**
+    - ~/.cache/mozilla/firefox/*/OfflineCache/**
+  running_processes: [firefox, firefox-bin]
+  tags: [browser]
+- id: browser-chromium
+  name: Chromium-family cache
+  scope: user
+  type: paths
+  min_age_days: 7
+  paths:
+    - ~/.cache/google-chrome/*/Cache/**
+    - '~/.cache/google-chrome/*/Code Cache/**'
+    - ~/.cache/google-chrome/*/GPUCache/**
+    - ~/.cache/chromium/*/Cache/**
+    - ~/.cache/microsoft-edge/*/Cache/**
+  running_processes: [chrome, chromium, msedge]
+  tags: [browser]

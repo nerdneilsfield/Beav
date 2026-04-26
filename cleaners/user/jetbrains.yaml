@@ -1,0 +1,8 @@
+- id: editor-jetbrains
+  name: JetBrains IDE caches
+  scope: user
+  type: paths
+  min_age_days: 30
+  paths: ["~/.cache/JetBrains/**"]
+  running_processes: [idea, goland, pycharm, webstorm, rustrover, clion]
+  tags: [editor, ide]

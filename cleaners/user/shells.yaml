@@ -1,0 +1,7 @@
+- id: shell-zsh
+  name: zsh compdump and cache
+  scope: user
+  type: paths
+  min_age_days: 30
+  paths: ["~/.cache/zsh/*", "~/.zcompdump-*"]
+  tags: [shell]

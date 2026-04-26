@@ -1,0 +1,7 @@
+- id: container-rootless-podman-system
+  name: Rootless Podman system prune
+  scope: user
+  type: container_prune
+  min_age_days: 14
+  container_prune: { runtime: podman, target: system }
+  tags: [container, podman, rootless]

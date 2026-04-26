@@ -1,0 +1,9 @@
+- id: lang-gradle
+  name: Gradle caches
+  scope: user
+  type: paths
+  min_age_days: 30
+  path_resolvers:
+    - resolver: gradle_home
+      subpaths: [caches]
+  tags: [langs, jvm]

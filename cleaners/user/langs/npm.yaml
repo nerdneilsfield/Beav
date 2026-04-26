@@ -1,0 +1,9 @@
+- id: lang-npm
+  name: npm cache
+  scope: user
+  type: paths
+  min_age_days: 14
+  path_resolvers:
+    - resolver: npm_cache
+      subpaths: [_cacache, _npx, _logs, _prebuilds]
+  tags: [langs, js]

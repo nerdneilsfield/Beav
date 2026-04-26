@@ -1,0 +1,14 @@
+- id: editor-vscode
+  name: VS Code Cache
+  description: Editor cache; rebuilt on launch
+  scope: user
+  type: paths
+  min_age_days: 7
+  paths:
+    - ~/.config/Code/Cache/*
+    - ~/.config/Code/CachedData/*
+    - ~/.config/Code/logs/*
+    - ~/.cache/vscode-cpptools/**
+    - ~/.vscode-server/data/CachedExtensionVSIXs/*
+  running_processes: [code, code-insiders]
+  tags: [editor, ide]

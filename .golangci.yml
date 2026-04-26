@@ -1,0 +1,11 @@
+run:
+  go: "1.24"
+  timeout: 5m
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - revive
+    - gocritic
+    - gosec

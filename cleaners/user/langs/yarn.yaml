@@ -1,0 +1,7 @@
+- id: lang-yarn
+  name: yarn cache
+  scope: user
+  type: paths
+  min_age_days: 14
+  path_resolvers: [{ resolver: yarn_cache }]
+  tags: [langs, js]

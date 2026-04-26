@@ -1,0 +1,14 @@
+- id: container-rootless-docker-builder
+  name: Rootless Docker builder cache
+  scope: user
+  type: container_prune
+  min_age_days: 14
+  container_prune: { runtime: docker, target: builder }
+  tags: [container, docker, rootless]
+- id: container-rootless-docker-images
+  name: Rootless Docker unused images
+  scope: user
+  type: container_prune
+  min_age_days: 30
+  container_prune: { runtime: docker, target: image }
+  tags: [container, docker, rootless]

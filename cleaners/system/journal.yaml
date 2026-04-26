@@ -1,0 +1,7 @@
+- id: sys-journal
+  name: systemd journal
+  scope: system
+  type: journal_vacuum
+  min_age_days: 14
+  needs_root: true
+  tags: [logs]

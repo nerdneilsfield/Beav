@@ -1,0 +1,7 @@
+- id: pkg-zypper
+  name: zypper cache
+  scope: system
+  type: pkg_cache
+  pkg_cache: { manager: zypper }
+  needs_root: true
+  tags: [pkg]

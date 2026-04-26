@@ -1,0 +1,8 @@
+- id: sys-tmp
+  name: /tmp stragglers
+  scope: system
+  type: paths
+  min_age_days: 10
+  needs_root: true
+  paths: [/tmp/*, /var/tmp/*]
+  tags: [system]

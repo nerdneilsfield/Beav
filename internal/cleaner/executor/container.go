@@ -1,0 +1,200 @@
+package executor
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/dengqi/beav/internal/cleaner/model"
+	"golang.org/x/sys/unix"
+)
+
+type ContainerExecutor struct{}
+
+func NewContainerExecutor() *ContainerExecutor { return &ContainerExecutor{} }
+
+func containerArgv(runtime, target string, ageDays int) ([]string, error) {
+	if target == "volume" {
+		return nil, fmt.Errorf("volume target not in v1")
+	}
+	until := "until=" + strconv.Itoa(ageDays*24) + "h"
+	switch runtime {
+	case "docker":
+		switch target {
+		case "builder", "container", "network":
+			return []string{"docker", target, "prune", "-f", "--filter", until}, nil
+		case "image":
+			return []string{"docker", "image", "prune", "-af", "--filter", until}, nil
+		case "system":
+			return nil, fmt.Errorf("docker system target not in v1; use individual targets")
+		}
+	case "podman":
+		switch target {
+		case "builder", "container", "network":
+			return []string{"podman", target, "prune", "-f", "--filter", until}, nil
+		case "image":
+			return []string{"podman", "image", "prune", "-af", "--filter", until}, nil
+		case "system":
+			return []string{"podman", "system", "prune", "-f", "--filter", until}, nil
+		}
+	}
+	return nil, fmt.Errorf("unknown runtime/target %q/%q", runtime, target)
+}
+
+func (ce *ContainerExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, emit func(model.Event)) error {
+	start := time.Now()
+	emit(model.Event{Event: model.EvStart, CleanerID: c.ID, Name: c.Name, Scope: c.Scope, Type: c.Type, DryRun: dryRun, TS: start})
+	if c.ContainerPrune == nil || c.MinAgeDays == nil {
+		emit(model.Event{Event: model.EvError, CleanerID: c.ID, Reason: "internal", Detail: "container_prune config missing", TS: time.Now()})
+		emitFinish(emit, c.ID, "error", 1, start)
+		return nil
+	}
+
+	runtime := c.ContainerPrune.Runtime
+	target := c.ContainerPrune.Target
+	if _, err := exec.LookPath(runtime); err != nil {
+		emit(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: "runtime_unavailable", TS: time.Now()})
+		emitFinish(emit, c.ID, "skipped", 0, start)
+		return nil
+	}
+	if !daemonReachable(ctx, runtime) {
+		emit(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: "runtime_unavailable", TS: time.Now()})
+		emitFinish(emit, c.ID, "skipped", 0, start)
+		return nil
+	}
+	rootlessDaemon := daemonRootless(ctx, runtime)
+	if c.Scope == model.ScopeUser && (!rootlessDaemon || !verifyRootlessSocket(ctx, runtime)) {
+		emit(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: "runtime_not_rootless", TS: time.Now()})
+		emitFinish(emit, c.ID, "skipped", 0, start)
+		return nil
+	}
+	if c.Scope == model.ScopeSystem && rootlessDaemon {
+		emit(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: "runtime_not_rootless", Detail: "system-scope cleaner detected rootless daemon", TS: time.Now()})
+		emitFinish(emit, c.ID, "skipped", 0, start)
+		return nil
+	}
+	if (target == "builder" || target == "image") && runtimeBusy(ctx, runtime) {
+		emit(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: "runtime_busy", TS: time.Now()})
+		emitFinish(emit, c.ID, "skipped", 0, start)
+		return nil
+	}
+
+	argv, err := containerArgv(runtime, target, *c.MinAgeDays)
+	if err != nil {
+		emit(model.Event{Event: model.EvError, CleanerID: c.ID, Reason: "internal", Detail: err.Error(), TS: time.Now()})
+		emitFinish(emit, c.ID, "error", 1, start)
+		return nil
+	}
+	if dryRun {
+		emit(model.Event{Event: model.EvCommandOutput, CleanerID: c.ID, Stream: "stdout", Line: "[dry-run] " + strings.Join(argv, " "), TS: time.Now()})
+		emitFinish(emit, c.ID, "ok", 0, start)
+		return nil
+	}
+
+	errs := 0
+	err = RunCommand(ctx, CommandRun{
+		Argv:    argv,
+		Timeout: 5 * time.Minute,
+		OnStdout: func(line string) {
+			emit(model.Event{Event: model.EvCommandOutput, CleanerID: c.ID, Stream: "stdout", Line: line, TS: time.Now()})
+		},
+		OnStderr: func(line string) {
+			emit(model.Event{Event: model.EvCommandOutput, CleanerID: c.ID, Stream: "stderr", Line: line, TS: time.Now()})
+		},
+	})
+	if err != nil {
+		emit(model.Event{Event: model.EvError, CleanerID: c.ID, Reason: "command_failed", Detail: err.Error(), TS: time.Now()})
+		errs++
+	}
+	status := "ok"
+	if errs > 0 {
+		status = "error"
+	}
+	emitFinish(emit, c.ID, status, errs, start)
+	return nil
+}
+
+func daemonReachable(ctx context.Context, runtime string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, runtime, "info", "--format", "{{.ServerVersion}}").Run() == nil
+}
+
+func runtimeBusy(ctx context.Context, runtime string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, runtime, "ps", "-q", "--filter", "status=running").Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) != ""
+}
+
+func daemonRootless(ctx context.Context, runtime string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var format string
+	switch runtime {
+	case "docker":
+		format = "{{.SecurityOptions}}"
+	case "podman":
+		format = "{{.Host.Security.Rootless}}"
+	default:
+		return false
+	}
+	out, err := exec.CommandContext(ctx, runtime, "info", "--format", format).Output()
+	if err != nil {
+		return false
+	}
+	s := strings.ToLower(strings.TrimSpace(string(out)))
+	if !strings.Contains(s, "rootless") && s != "true" {
+		return false
+	}
+	return true
+}
+
+func verifyRootlessSocket(ctx context.Context, runtime string) bool {
+	sock := socketPath(ctx, runtime)
+	if sock == "" {
+		return false
+	}
+	var st unix.Stat_t
+	if err := unix.Lstat(sock, &st); err != nil {
+		return false
+	}
+	if int(st.Uid) != os.Getuid() {
+		return false
+	}
+	uid := strconv.Itoa(os.Getuid())
+	for _, prefix := range []string{"/run/user/" + uid + "/", os.Getenv("XDG_RUNTIME_DIR") + "/", os.Getenv("HOME") + "/"} {
+		if prefix != "/" && strings.HasPrefix(sock, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func socketPath(ctx context.Context, runtime string) string {
+	if v := os.Getenv("DOCKER_HOST"); runtime == "docker" && strings.HasPrefix(v, "unix://") {
+		return strings.TrimPrefix(v, "unix://")
+	}
+	switch runtime {
+	case "docker":
+		uid := strconv.Itoa(os.Getuid())
+		p := filepath.Join("/run/user", uid, "docker.sock")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	case "podman":
+		out, err := exec.CommandContext(ctx, "podman", "info", "--format", "{{.Host.RemoteSocket.Path}}").Output()
+		if err == nil {
+			return strings.TrimSpace(string(out))
+		}
+	}
+	return ""
+}
