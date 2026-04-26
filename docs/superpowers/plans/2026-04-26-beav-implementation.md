@@ -361,6 +361,10 @@ type Cleaner struct {
 	Type             ExecutorType       `yaml:"type"`
 	Enabled          *bool              `yaml:"enabled"` // pointer so missing means default-true
 	MinAgeDays       *int               `yaml:"min_age_days"`
+	// NoAgeFilter declares "this cleaner has no age filter" explicitly.
+	// Distinct from "min_age_days field omitted" (which means: use the default).
+	// Only such cleaners require --force-no-age to run.
+	NoAgeFilter      bool               `yaml:"no_age_filter"`
 	TimeField        TimeField          `yaml:"time_field"`
 	Paths            []string           `yaml:"paths"`
 	PathResolvers    []PathResolverRef  `yaml:"path_resolvers"`
@@ -475,7 +479,7 @@ paths: ["~/.config/Code/Cache/*"]
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cs) != 1 || cs[0].ID != "editor-vscode" {
+	if len(cs) != 1 || cs[0].Cleaner.ID != "editor-vscode" {
 		t.Fatalf("got %+v", cs)
 	}
 }
@@ -602,7 +606,10 @@ package cleaners
 
 import "embed"
 
-//go:embed user/*.yaml user/*/*.yaml system/*.yaml system/*/*.yaml
+// Initial embed pattern only matches the placeholder. Tasks 25–26 extend
+// this declaration to cover user/, user/langs/, user/k8s/, user/containers/,
+// system/, and system/containers/ as those directories gain real YAML files.
+//go:embed user/*.yaml
 var Builtin embed.FS
 ```
 
@@ -754,15 +761,13 @@ package registry
 
 import (
 	"fmt"
-	"path/filepath"
-	"strings"
 
 	"github.com/dengqi/beav/internal/cleaner/model"
-	"github.com/dengqi/beav/internal/cleaner/resolver"
-	"github.com/dengqi/beav/internal/cleaner/safety"
 )
 
 // Validate performs schema-level checks (enum, required fields).
+// Path-safety validation lives in registry.ValidatePaths and is added once
+// the safety + resolver packages exist (see Task 11.5).
 func Validate(c model.Cleaner) error {
 	if c.ID == "" {
 		return fmt.Errorf("cleaner missing id")
@@ -793,101 +798,9 @@ func Validate(c model.Cleaner) error {
 	return nil
 }
 
-// ValidatePaths is the §6.1 load-time gate: every static path and every
-// resolver fallback must be inside the allow-list and not on the blacklist.
-// Failing any path here REFUSES the entire cleaner — there is no "partial"
-// mode. Globs are checked at their literal prefix (the part before the first
-// wildcard); that prefix alone must already pass safety.
-//
-// Pass home="" for system-scope cleaners.
-func ValidatePaths(c model.Cleaner, home string) error {
-	if c.Type != model.TypePaths {
-		return nil
-	}
-	check := func(p string) error {
-		expanded := expandHome(p, home)
-		base := globPrefix(expanded)
-		if !safety.InsideAllowList(base, home) {
-			return fmt.Errorf("cleaner %q: path %q outside allow-list", c.ID, p)
-		}
-		if safety.Blacklisted(base, home) {
-			return fmt.Errorf("cleaner %q: path %q in blacklist", c.ID, p)
-		}
-		return nil
-	}
-	for _, p := range c.Paths {
-		if err := check(p); err != nil { return err }
-	}
-	for _, ref := range c.PathResolvers {
-		base, err := resolver.Resolve(ref.Resolver, home)
-		if err != nil {
-			return fmt.Errorf("cleaner %q: %w", c.ID, err)
-		}
-		if err := check(base); err != nil { return err }
-		for _, sp := range ref.Subpaths {
-			if err := check(filepath.Join(base, sp)); err != nil { return err }
-		}
-	}
-	return nil
-}
-
-func expandHome(p, home string) string {
-	if home != "" && strings.HasPrefix(p, "~/") {
-		return filepath.Join(home, p[2:])
-	}
-	return p
-}
-
-func globPrefix(p string) string {
-	for i, r := range p {
-		if r == '*' || r == '?' || r == '[' {
-			return filepath.Clean(p[:i])
-		}
-	}
-	return filepath.Clean(p)
-}
 ```
 
-Add a test in `validate_test.go`:
-```go
-package registry
-
-import (
-	"testing"
-
-	"github.com/dengqi/beav/internal/cleaner/model"
-)
-
-func TestValidatePathsRejectsBlacklist(t *testing.T) {
-	bad := model.Cleaner{
-		ID: "bad", Scope: model.ScopeUser, Type: model.TypePaths,
-		Paths: []string{"/etc/passwd"},
-	}
-	if err := ValidatePaths(bad, "/home/u"); err == nil {
-		t.Fatal("expected blacklist error")
-	}
-}
-
-func TestValidatePathsRejectsOutsideAllowList(t *testing.T) {
-	bad := model.Cleaner{
-		ID: "bad", Scope: model.ScopeUser, Type: model.TypePaths,
-		Paths: []string{"/opt/cache/*"},
-	}
-	if err := ValidatePaths(bad, "/home/u"); err == nil {
-		t.Fatal("expected allow-list error")
-	}
-}
-
-func TestValidatePathsAcceptsGlobUnderHome(t *testing.T) {
-	ok := model.Cleaner{
-		ID: "ok", Scope: model.ScopeUser, Type: model.TypePaths,
-		Paths: []string{"~/.cache/foo/*"},
-	}
-	if err := ValidatePaths(ok, "/home/u"); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-}
-```
+`ValidatePaths` is added in Task 11.5 once the safety + resolver packages exist.
 
 - [ ] **Step 4: Tests pass, commit**
 
@@ -1357,22 +1270,24 @@ func (w *Walker) Root() string { return w.rootAbs }
 type WalkFunc func(Entry)
 
 // Walk descends through w.rootFD without ever following symlinks and without
-// crossing filesystems. Subdirectories matching `.git` are skipped wholesale.
+// crossing filesystems. Subdirectories matching `.git` are skipped wholesale,
+// and the directory containing the `.git` child is itself never emitted to fn.
 func (w *Walker) Walk(fn WalkFunc) error {
-	return w.walkDir(w.rootFD, "", fn)
+	_, err := w.walkDir(w.rootFD, "", fn)
+	return err
 }
 
-func (w *Walker) walkDir(parentFD int, rel string, fn WalkFunc) error {
+// walkDir returns (skippedAsGitTree, error). When skippedAsGitTree is true,
+// the caller MUST NOT pass this directory's Entry to fn — its contents have
+// not been visited and removing it would discard the git tree.
+func (w *Walker) walkDir(parentFD int, rel string, fn WalkFunc) (bool, error) {
 	names, err := readdirnames(parentFD)
-	if err != nil { return err }
+	if err != nil { return false, err }
 	sort.Strings(names)
 
-	// .git guard: any directory containing a .git child is treated as a git
-	// work tree and skipped entirely.
+	// .git guard: any directory containing a .git child is a git work tree.
 	for _, n := range names {
-		if n == ".git" {
-			return nil
-		}
+		if n == ".git" { return true, nil }
 	}
 
 	for _, name := range names {
@@ -1380,9 +1295,7 @@ func (w *Walker) walkDir(parentFD int, rel string, fn WalkFunc) error {
 		if err := unix.Fstatat(parentFD, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 			continue
 		}
-		if st.Dev != w.rootDev {
-			continue
-		}
+		if st.Dev != w.rootDev { continue }
 		entryRel := filepath.Join(rel, name)
 		mode := st.Mode & unix.S_IFMT
 		switch mode {
@@ -1396,12 +1309,16 @@ func (w *Walker) walkDir(parentFD int, rel string, fn WalkFunc) error {
 		if e.IsDir() {
 			fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 			if err != nil { continue }
-			_ = w.walkDir(fd, entryRel, fn)
+			gitTree, _ := w.walkDir(fd, entryRel, fn)
 			unix.Close(fd)
+			if gitTree {
+				// Don't emit this directory — leaving it intact protects the git tree.
+				continue
+			}
 		}
 		fn(e)
 	}
-	return nil
+	return false, nil
 }
 
 // reopenLeaf walks RelPath component by component starting from rootFD,
@@ -1423,10 +1340,17 @@ func (w *Walker) reopenLeaf(rel string) (int, string, error) {
 	return cur, parts[len(parts)-1], nil
 }
 
-// UnlinkIfUnchanged re-opens the entry's parent from rootFD, re-stats with
-// AT_SYMLINK_NOFOLLOW, and unlinks only if (ino,dev,size,mtim) match the
-// snapshot. Cross-fs is also re-checked.
+// UnlinkIfUnchanged removes a regular-file entry. It re-opens the entry's
+// parent from rootFD, re-stats with AT_SYMLINK_NOFOLLOW, and unlinks only if
+// (ino,dev,size,mtim) match the snapshot.
+//
+// Caller MUST use RemoveEmptyDirIfMatch for directories — comparing a dir's
+// pre-deletion mtime against its post-child-deletion mtime always fails,
+// because removing a child mutates the parent's mtime.
 func (w *Walker) UnlinkIfUnchanged(e Entry) error {
+	if e.IsDir() {
+		return errors.New("use RemoveEmptyDirIfMatch for directories")
+	}
 	parentFD, leaf, err := w.reopenLeaf(e.RelPath)
 	if err != nil { return err }
 	defer unix.Close(parentFD)
@@ -1440,9 +1364,38 @@ func (w *Walker) UnlinkIfUnchanged(e Entry) error {
 		cur.Mtim.Sec != e.stat.Mtim.Sec || cur.Mtim.Nsec != e.stat.Mtim.Nsec {
 		return ErrChanged
 	}
-	flags := 0
-	if e.IsDir() { flags = unix.AT_REMOVEDIR }
-	return unix.Unlinkat(parentFD, leaf, flags)
+	return unix.Unlinkat(parentFD, leaf, 0)
+}
+
+// RemoveEmptyDirIfMatch removes a directory only if (a) its inode/dev still
+// match the planned entry, (b) it is still on the same filesystem, (c) it is
+// still a directory (not a symlink that replaced it), and (d) it is empty.
+// mtime is intentionally NOT compared, since deleting children would have
+// changed it.
+func (w *Walker) RemoveEmptyDirIfMatch(e Entry) error {
+	if !e.IsDir() {
+		return errors.New("use UnlinkIfUnchanged for non-directories")
+	}
+	parentFD, leaf, err := w.reopenLeaf(e.RelPath)
+	if err != nil { return err }
+	defer unix.Close(parentFD)
+
+	var cur unix.Stat_t
+	if err := unix.Fstatat(parentFD, leaf, &cur, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return err
+	}
+	if cur.Dev != w.rootDev { return ErrCrossFS }
+	if (cur.Mode & unix.S_IFMT) != unix.S_IFDIR { return ErrChanged }
+	if cur.Ino != e.stat.Ino || cur.Dev != e.stat.Dev { return ErrChanged }
+
+	// Empty check: open it and read at most one entry.
+	dfd, err := unix.Openat(parentFD, leaf, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil { return err }
+	names, _ := readdirnames(dfd)
+	unix.Close(dfd)
+	if len(names) > 0 { return ErrChanged }
+
+	return unix.Unlinkat(parentFD, leaf, unix.AT_REMOVEDIR)
 }
 
 // OpenFileEntry stats a single file path via lstat, returning a Walker
@@ -1898,14 +1851,16 @@ var resolvers = map[string]Resolver{
 }
 
 // Resolve returns an absolute path for the named resolver. It only errors when
-// `name` is not in the closed enum. If a resolver's primary source (env var or
-// command) yields an empty/non-absolute value, the documented fallback is used.
-// The fallback is constructed from $HOME and standard XDG paths and is always
-// absolute, so Resolve never fails for a known name.
+// `name` is not in the closed enum. If a resolver's primary source yields an
+// empty/non-absolute value, the documented fallback is used; if the fallback
+// itself ends up relative (e.g. an env var was set to a relative path), it is
+// rooted under `home` so the caller always receives an absolute path.
 func Resolve(name, home string) (string, error) {
 	r, ok := resolvers[name]
 	if !ok { return "", fmt.Errorf("unknown resolver %q", name) }
-	return filepath.Clean(r(home)), nil
+	out := filepath.Clean(r(home))
+	if !filepath.IsAbs(out) { out = filepath.Clean(filepath.Join(home, out)) }
+	return out, nil
 }
 
 func MustResolve(name, home string) string {
@@ -2119,12 +2074,18 @@ func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, e
 				filesDel++
 				continue
 			}
-			if err := w.UnlinkIfUnchanged(e); err != nil {
-				if errors.Is(err, safety.ErrChanged) {
+			var unlinkErr error
+			if e.IsDir() {
+				unlinkErr = w.RemoveEmptyDirIfMatch(e)
+			} else {
+				unlinkErr = w.UnlinkIfUnchanged(e)
+			}
+			if unlinkErr != nil {
+				if errors.Is(unlinkErr, safety.ErrChanged) {
 					emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "toctou_changed", TS: time.Now()})
 					continue
 				}
-				emit(model.Event{Event: model.EvError, CleanerID: c.ID, Path: abs, Reason: "unlink_failed", Detail: err.Error(), TS: time.Now()})
+				emit(model.Event{Event: model.EvError, CleanerID: c.ID, Path: abs, Reason: "unlink_failed", Detail: unlinkErr.Error(), TS: time.Now()})
 				errors_++
 				continue
 			}
@@ -2227,6 +2188,112 @@ func matchAny(set globSet, path string) bool {
 ```bash
 git add internal/cleaner/executor
 git commit -m "feat(executor): paths executor with age plan and TOCTOU-safe deletion"
+```
+
+---
+
+### Task 11.5: Path safety validation (registry.ValidatePaths)
+
+**Files:**
+- Create: `internal/cleaner/registry/validate_paths.go`, `internal/cleaner/registry/validate_paths_test.go`
+
+This task adds the §6.1 load-time path-safety gate. It is split out from Task 3 because it imports `safety` (Task 5) and `resolver` (Task 10).
+
+- [ ] **Step 1: Failing tests**
+
+```go
+package registry
+
+import (
+	"testing"
+
+	"github.com/dengqi/beav/internal/cleaner/model"
+)
+
+func TestValidatePathsRejectsBlacklist(t *testing.T) {
+	bad := model.Cleaner{ID: "bad", Scope: model.ScopeUser, Type: model.TypePaths, Paths: []string{"/etc/passwd"}}
+	if err := ValidatePaths(bad, "/home/u"); err == nil { t.Fatal("expected blacklist error") }
+}
+
+func TestValidatePathsRejectsOutsideAllowList(t *testing.T) {
+	bad := model.Cleaner{ID: "bad", Scope: model.ScopeUser, Type: model.TypePaths, Paths: []string{"/opt/cache/*"}}
+	if err := ValidatePaths(bad, "/home/u"); err == nil { t.Fatal("expected allow-list error") }
+}
+
+func TestValidatePathsAcceptsGlobUnderHome(t *testing.T) {
+	ok := model.Cleaner{ID: "ok", Scope: model.ScopeUser, Type: model.TypePaths, Paths: []string{"~/.cache/foo/*"}}
+	if err := ValidatePaths(ok, "/home/u"); err != nil { t.Fatalf("unexpected: %v", err) }
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL**
+
+Run: `go test ./internal/cleaner/registry/...`
+Expected: FAIL — `ValidatePaths` undefined.
+
+- [ ] **Step 3: Implement**
+
+```go
+package registry
+
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+
+	"github.com/dengqi/beav/internal/cleaner/model"
+	"github.com/dengqi/beav/internal/cleaner/resolver"
+	"github.com/dengqi/beav/internal/cleaner/safety"
+)
+
+// ValidatePaths is the §6.1 load-time gate: every static path and every
+// resolver fallback must be inside the allow-list and not on the blacklist.
+// Failing any path here REFUSES the entire cleaner — there is no "partial" mode.
+// Pass home="" for system-scope cleaners.
+func ValidatePaths(c model.Cleaner, home string) error {
+	if c.Type != model.TypePaths { return nil }
+	check := func(p string) error {
+		expanded := expandHome(p, home)
+		base := globPrefix(expanded)
+		if !safety.InsideAllowList(base, home) {
+			return fmt.Errorf("cleaner %q: path %q outside allow-list", c.ID, p)
+		}
+		if safety.Blacklisted(base, home) {
+			return fmt.Errorf("cleaner %q: path %q in blacklist", c.ID, p)
+		}
+		return nil
+	}
+	for _, p := range c.Paths {
+		if err := check(p); err != nil { return err }
+	}
+	for _, ref := range c.PathResolvers {
+		base, err := resolver.Resolve(ref.Resolver, home)
+		if err != nil { return fmt.Errorf("cleaner %q: %w", c.ID, err) }
+		if err := check(base); err != nil { return err }
+		for _, sp := range ref.Subpaths {
+			if err := check(filepath.Join(base, sp)); err != nil { return err }
+		}
+	}
+	return nil
+}
+
+func expandHome(p, home string) string {
+	if home != "" && strings.HasPrefix(p, "~/") { return filepath.Join(home, p[2:]) }
+	return p
+}
+
+func globPrefix(p string) string {
+	for i, r := range p {
+		if r == '*' || r == '?' || r == '[' { return filepath.Clean(p[:i]) }
+	}
+	return filepath.Clean(p)
+}
+```
+
+- [ ] **Step 4: PASS, commit**
+```bash
+git add internal/cleaner/registry
+git commit -m "feat(registry): ValidatePaths load-time §6.1 gate"
 ```
 
 ---
@@ -3602,21 +3669,39 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 	return nil
 }
 
-// applyEffectiveConfig merges Config defaults/overrides and CLI flags into
-// the cleaner list. Precedence (highest first): CLI flag > config override >
-// config default > cleaner's own min_age_days > built-in fallback (14d).
+// applyEffectiveConfig merges config defaults/overrides and CLI flags.
+//
+// Age precedence (highest first):
+//   1. CLI per-tag override (--min-age=tag=Nd)
+//   2. CLI global (--min-age=Nd)
+//   3. config Overrides[id].MinAgeDays
+//   4. cleaner's built-in min_age_days
+//   5. config Defaults.MinAgeDays
+//
+// Cleaners with NoAgeFilter=true bypass age entirely and are only enabled
+// when --force-no-age is passed.
 func applyEffectiveConfig(cs []model.Cleaner, cfg *config.Config, f CleanFlags, home string) ([]model.Cleaner, error) {
 	globalAge, perTagAge, err := parseMinAge(f.MinAge)
 	if err != nil { return nil, err }
 
 	out := make([]model.Cleaner, 0, len(cs))
 	for _, c := range cs {
-		// enabled: config override wins over built-in.
+		// enabled: config override wins over built-in default.
 		if ovr, ok := cfg.Overrides[c.ID]; ok && ovr.Enabled != nil {
 			b := *ovr.Enabled
 			c.Enabled = &b
 		}
-		// min_age_days: CLI per-tag > CLI global > config override > built-in.
+
+		if c.NoAgeFilter {
+			// Explicit no-age cleaner: only runs with --force-no-age.
+			if !f.ForceNoAge {
+				b := false; c.Enabled = &b
+			}
+			out = append(out, c)
+			continue
+		}
+
+		// Walk the precedence ladder for age.
 		age := -1
 		for _, tag := range append([]string{c.ID}, c.Tags...) {
 			if v, ok := perTagAge[tag]; ok { age = v; break }
@@ -3625,14 +3710,10 @@ func applyEffectiveConfig(cs []model.Cleaner, cfg *config.Config, f CleanFlags, 
 		if age == -1 {
 			if ovr, ok := cfg.Overrides[c.ID]; ok && ovr.MinAgeDays != nil { age = *ovr.MinAgeDays }
 		}
-		if age == -1 && c.MinAgeDays == nil { age = cfg.Defaults.MinAgeDays }
-		if age >= 0 {
-			a := age; c.MinAgeDays = &a
-		}
-		// --force-no-age: cleaners without min_age_days are otherwise skipped.
-		if c.MinAgeDays == nil && !f.ForceNoAge {
-			b := false; c.Enabled = &b
-		}
+		if age == -1 && c.MinAgeDays != nil { age = *c.MinAgeDays }
+		if age == -1 { age = cfg.Defaults.MinAgeDays }
+		a := age
+		c.MinAgeDays = &a
 		out = append(out, c)
 	}
 	return out, nil
@@ -4114,7 +4195,13 @@ func TestEmbeddedRegistryValidates(t *testing.T) {
 
 - [ ] **Step 2: FAIL** (no embedded YAML yet)
 
-- [ ] **Step 3: Author the YAML files**
+- [ ] **Step 3: Extend embed pattern and author the YAML files**
+
+Update `cleaners/builtin.go` so the embed declaration covers the new files this task is about to create:
+```go
+//go:embed user/*.yaml user/langs/*.yaml
+var Builtin embed.FS
+```
 
 `cleaners/user/desktop.yaml`:
 ```yaml
@@ -4346,7 +4433,14 @@ git commit -m "feat(cleaners): user-scope YAML for desktop, IDE, browser, langua
 
 - [ ] **Step 1: Reuse registry validate test from Task 25 — it'll fail when new YAML has a typo**
 
-- [ ] **Step 2: Author YAML**
+- [ ] **Step 2: Extend embed pattern and author YAML**
+
+Update `cleaners/builtin.go` to cover all directories that hold real YAML at the end of this task:
+```go
+//go:embed user/*.yaml user/langs/*.yaml user/k8s/*.yaml user/containers/*.yaml
+//go:embed system/*.yaml system/containers/*.yaml
+var Builtin embed.FS
+```
 
 `cleaners/system/apt.yaml`:
 ```yaml
@@ -4721,7 +4815,7 @@ git commit -m "ci: cross-distro test matrix on Ubuntu/Fedora/Arch"
 
 **Placeholder scan:** none of "TBD", "implement later", "fill in" remain. The two notes that reference behavior the implementer must verify on the spot are tagged with explicit guidance:
 - Task 23 mentions verifying gdu's library API at vendor time; the goal is well-defined ("wrap gdu so analyze launches").
-- Task 26 patches the loader to accept list-shape YAML; both the diff and the test are inline.
+- Task 25 and Task 26 each extend `cleaners/builtin.go`'s `//go:embed` declaration to cover the directories whose YAML they author; the placeholder from Task 3 keeps the embed declaration valid in between.
 
 **Type consistency:** `Cleaner`, `Event`, `Renderer`, `Executor` interface, `Walker`, `Whitelist`, `ResolvedUser`, `CLIError` — names and signatures used in later tasks match earlier definitions.
 
@@ -4732,6 +4826,15 @@ git commit -m "ci: cross-distro test matrix on Ubuntu/Fedora/Arch"
 - Task 10 resolver no longer errors when its primary source fails — fallback always wins; only unknown resolver names error.
 - Task 5 `Validate` is split: schema check (`Validate`) is registry-load; `ValidatePaths(c, home)` is invoked at clean-time after home resolution, refusing the entire cleaner on any allow-list / blacklist violation.
 - Task 21 wires config defaults/overrides + CLI `--min-age` (global and per-tag), `--force-no-age`, `--output`, and instantiates `oplog` (honoring `BEAV_NO_OPLOG=1`).
+
+**Round-3 fixes (2026-04-26):**
+- `//go:embed` pattern in Task 3 starts narrow (`user/*.yaml`); Tasks 25 and 26 each widen it as new directories appear, avoiding "no matching files" build errors.
+- `ValidatePaths` was still in Task 3 with imports that hadn't been created yet — moved to its own **Task 11.5** that runs after `safety` (Task 5) and `resolver` (Task 10) are in place. Task 3's `validate.go` is back to schema checks only.
+- Task 3 loader test now correctly references `cs[0].Cleaner.ID` (not `cs[0].ID`).
+- Walker's `.git` guard now bubbles a `(skipped, error)` pair so the parent loop knows not to emit the git-tree directory itself.
+- Walker grew a separate `RemoveEmptyDirIfMatch` for directory removal — comparing pre-deletion mtime against post-child-deletion mtime always failed, masking valid deletions as TOCTOU. The new method matches inode/dev, re-checks fs/mode/empty, then `unlinkat(AT_REMOVEDIR)`. The paths executor dispatches between `UnlinkIfUnchanged` (files) and `RemoveEmptyDirIfMatch` (dirs).
+- Resolver `Resolve` now post-processes every result with `filepath.IsAbs` + `filepath.Join(home, …)` fallback, so xdg/env/cmd resolvers all guarantee an absolute return.
+- New `Cleaner.NoAgeFilter bool` (YAML `no_age_filter: true`) declares "no age filter" explicitly, cleanly distinct from a missing field. `applyEffectiveConfig` walks a documented 5-step age precedence ladder; cleaners with `NoAgeFilter` are gated by `--force-no-age`.
 
 ---
 
