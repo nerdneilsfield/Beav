@@ -28,6 +28,8 @@ func LoadUserDir(dir string) ([]Loaded, error) {
 	return loadFS(os.DirFS(dir), ".")
 }
 
+// loadFS walks the filesystem and parses YAML files into Loaded cleaner definitions.
+// loadFS 遍历文件系统并将 YAML 文件解析为 Loaded 清理器定义。
 func loadFS(root fs.FS, base string) ([]Loaded, error) {
 	var out []Loaded
 	err := fs.WalkDir(root, base, func(p string, d fs.DirEntry, err error) error {

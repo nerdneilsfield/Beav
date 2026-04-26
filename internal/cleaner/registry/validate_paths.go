@@ -54,6 +54,8 @@ func expandHome(p, home string) string {
 	return p
 }
 
+// globPrefix returns the non-glob prefix of a path, stopping at the first wildcard character.
+// globPrefix 返回路径的非通配符前缀，在第一个通配符字符处停止。
 func globPrefix(p string) string {
 	for i, r := range p {
 		if r == '*' || r == '?' || r == '[' {

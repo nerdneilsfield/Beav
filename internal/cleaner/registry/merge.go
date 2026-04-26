@@ -6,6 +6,8 @@ import (
 	"github.com/dengqi/beav/internal/cleaner/model"
 )
 
+// MergeByID merges builtin and user cleaner definitions by ID, applying user overrides.
+// MergeByID 按 ID 合并内置和用户清理器定义，应用用户覆盖。
 func MergeByID(builtin, user []Loaded) ([]model.Cleaner, error) {
 	byID := map[string]model.Cleaner{}
 	order := []string{}

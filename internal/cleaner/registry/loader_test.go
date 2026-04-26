@@ -6,6 +6,8 @@ import (
 	"testing/fstest"
 )
 
+// TestLoadBuiltin verifies that loadFS correctly parses a single YAML cleaner definition.
+// TestLoadBuiltin 验证 loadFS 正确解析单个 YAML 清理器定义。
 func TestLoadBuiltinValid(t *testing.T) {
 	fs := fstest.MapFS{
 		"a.yaml": &fstest.MapFile{Data: []byte(`

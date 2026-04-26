@@ -39,6 +39,8 @@ func Validate(c model.Cleaner) error {
 	return nil
 }
 
+// validContainerTarget checks if a container prune runtime/target combination is supported.
+// validContainerTarget 检查容器修剪运行时/目标组合是否受支持。
 func validContainerTarget(runtime, target string) bool {
 	switch runtime {
 	case "docker":

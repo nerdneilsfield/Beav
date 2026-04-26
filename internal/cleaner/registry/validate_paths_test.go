@@ -13,6 +13,8 @@ func TestValidatePathsRejectsBlacklist(t *testing.T) {
 	}
 }
 
+// TestValidatePathsRejectsOutsideAllowList verifies that paths outside the home allow-list are rejected.
+// TestValidatePathsRejectsOutsideAllowList 验证主目录允许列表之外的路径被拒绝。
 func TestValidatePathsRejectsOutsideAllowList(t *testing.T) {
 	bad := model.Cleaner{ID: "bad", Scope: model.ScopeUser, Type: model.TypePaths, Paths: []string{"/opt/cache/*"}}
 	if err := ValidatePaths(bad, "/home/u"); err == nil {
