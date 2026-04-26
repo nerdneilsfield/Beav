@@ -1145,6 +1145,7 @@ git commit -m "feat(safety): allow-list bounds and hard blacklist"
 package safety
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
