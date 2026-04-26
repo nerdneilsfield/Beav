@@ -807,7 +807,7 @@ func Validate(c model.Cleaner) error {
 Run: `go test ./internal/cleaner/registry/...`
 Expected: PASS.
 ```bash
-git add internal/cleaner/registry cleaners/builtin.go go.sum
+git add internal/cleaner/registry cleaners go.sum
 git commit -m "feat(registry): YAML loader, merge-by-id, schema validation"
 ```
 
@@ -1227,6 +1227,8 @@ const (
 var ErrChanged = errors.New("entry changed since stat")
 var ErrCrossFS = errors.New("entry on different filesystem")
 var ErrNotFound = errors.New("entry not found")
+var ErrSymlink = errors.New("path component is a symlink")
+var ErrNotInsideRoot = errors.New("target is not under the safe root")
 
 // Entry is a stat snapshot identified by path-relative-to-walker-root.
 // It holds no live fds.
@@ -1424,6 +1426,96 @@ func readdirnames(fd int) ([]string, error) {
 	defer d.Close()
 	return d.Readdirnames(-1)
 }
+
+// OpenAnchoredDirFD walks from `safeRoot` to `target` opening each component
+// with O_NOFOLLOW. Any intermediate symlink → ErrSymlink. The target itself
+// must also be a directory (not a symlink). The returned fd is owned by the
+// caller and must be Closed.
+//
+// `target` must be a clean absolute path strictly under `safeRoot` (or equal
+// to it). Cross-fs is rejected.
+func OpenAnchoredDirFD(safeRoot, target string) (int, error) {
+	safeRoot = filepath.Clean(safeRoot)
+	target = filepath.Clean(target)
+	if target != safeRoot && !strings.HasPrefix(target, safeRoot+string(filepath.Separator)) {
+		return -1, ErrNotInsideRoot
+	}
+
+	cur, err := unix.Open(safeRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil { return -1, err }
+	var rootSt unix.Stat_t
+	if err := unix.Fstat(cur, &rootSt); err != nil { unix.Close(cur); return -1, err }
+
+	if target == safeRoot { return cur, nil }
+	rest := strings.TrimPrefix(target, safeRoot+string(filepath.Separator))
+	parts := strings.Split(rest, string(filepath.Separator))
+
+	for _, p := range parts {
+		if p == "" || p == "." || p == ".." { unix.Close(cur); return -1, ErrSymlink }
+		var st unix.Stat_t
+		if err := unix.Fstatat(cur, p, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			unix.Close(cur); return -1, err
+		}
+		if (st.Mode & unix.S_IFMT) == unix.S_IFLNK {
+			unix.Close(cur); return -1, ErrSymlink
+		}
+		if st.Dev != rootSt.Dev {
+			unix.Close(cur); return -1, ErrCrossFS
+		}
+		if (st.Mode & unix.S_IFMT) != unix.S_IFDIR {
+			unix.Close(cur); return -1, ErrSymlink // not a dir mid-path
+		}
+		next, err := unix.Openat(cur, p, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		unix.Close(cur)
+		if err != nil { return -1, err }
+		cur = next
+	}
+	return cur, nil
+}
+
+// OpenWalkerFD wraps a directory fd already opened safely (e.g. via
+// OpenAnchoredDirFD) into a Walker. The fd is owned by the Walker.
+func OpenWalkerFD(fd int, absPath string) (*Walker, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil { unix.Close(fd); return nil, err }
+	if (st.Mode & unix.S_IFMT) != unix.S_IFDIR { unix.Close(fd); return nil, errors.New("fd is not a directory") }
+	return &Walker{rootFD: fd, rootDev: st.Dev, rootAbs: absPath}, nil
+}
+
+// OpenAnchoredFile is the single-file analogue: walks safely from safeRoot to
+// the parent directory of `target`, then statats the leaf with NOFOLLOW. Used
+// when a glob expands directly to a regular file (e.g. ~/.zcompdump-*).
+func OpenAnchoredFile(safeRoot, target string) (*Walker, Entry, error) {
+	parent := filepath.Dir(target)
+	parentFD, err := OpenAnchoredDirFD(safeRoot, parent)
+	if err != nil { return nil, Entry{}, err }
+	leaf := filepath.Base(target)
+	var st unix.Stat_t
+	if err := unix.Fstatat(parentFD, leaf, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		unix.Close(parentFD); return nil, Entry{}, err
+	}
+	mode := st.Mode & unix.S_IFMT
+	if mode == unix.S_IFLNK {
+		unix.Close(parentFD); return nil, Entry{}, ErrSymlink
+	}
+	if mode != unix.S_IFREG {
+		unix.Close(parentFD); return nil, Entry{}, errors.New("not a regular file")
+	}
+	w := &Walker{rootFD: parentFD, rootDev: st.Dev, rootAbs: parent}
+	return w, Entry{RelPath: leaf, stat: st}, nil
+}
+```
+
+Add a test for symlink rejection:
+```go
+func TestOpenAnchoredRejectsIntermediateSymlink(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real"); _ = os.MkdirAll(filepath.Join(real, "sub"), 0o755)
+	link := filepath.Join(root, "link"); _ = os.Symlink(real, link)
+	if _, err := OpenAnchoredDirFD(root, filepath.Join(link, "sub")); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("expected ErrSymlink; got %v", err)
+	}
+}
 ```
 
 - [ ] **Step 4: PASS, commit**
@@ -1464,7 +1556,7 @@ func TestAgePlanKeepsRecentSkipsDirsWithLiveChildren(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	defer w.Close()
 
-	plan := AgePlan(w, 7, TimeFieldMtime, time.Now())
+	plan := AgePlan(w, 7, TimeFieldMtime, time.Now(), false)
 	if !plan.WillDelete(filepath.Join(root, "old")) {
 		t.Error("old dir with old child should be planned for deletion")
 	}
@@ -1533,16 +1625,22 @@ func (p *Plan) WillDelete(absPath string) bool {
 // Ordered returns entries in safe deletion order (children before parents).
 func (p *Plan) Ordered() []Entry { return p.ordered }
 
-func AgePlan(w *Walker, minAgeDays int, field TimeField, now time.Time) *Plan {
+// AgePlan computes a deletion plan for the walker's tree.
+// If noAgeFilter is true, every entry passes the age check (used by cleaners
+// that declare no_age_filter: true and were enabled via --force-no-age).
+func AgePlan(w *Walker, minAgeDays int, field TimeField, now time.Time, noAgeFilter bool) *Plan {
 	threshold := now.Add(-time.Duration(minAgeDays) * 24 * time.Hour).Unix()
 
 	type info struct{ entry Entry; passed bool; absPath string }
 	all := []info{}
 	rootAbs := w.Root()
 	w.Walk(func(e Entry) {
-		ts := e.Mtime()
-		if field == TimeFieldCtime { ts = e.Ctime() }
-		passed := ts <= threshold
+		passed := true
+		if !noAgeFilter {
+			ts := e.Mtime()
+			if field == TimeFieldCtime { ts = e.Ctime() }
+			passed = ts <= threshold
+		}
 		all = append(all, info{e, passed, filepath.Join(rootAbs, e.RelPath)})
 	})
 
@@ -2096,31 +2194,67 @@ func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, e
 	}
 
 	for _, root := range roots {
-		// Distinguish file vs directory roots using lstat. Regular files take
-		// the OpenFileEntry path; directories take the OpenWalker + AgePlan path.
+		safeRoot := determineSafeRoot(root, p.Home)
+		if safeRoot == "" {
+			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: root, Reason: "blacklisted", TS: time.Now()})
+			continue
+		}
+
+		// stat the leaf via openat from safeRoot (no symlink crossings).
+		parentFD, parentErr := safety.OpenAnchoredDirFD(safeRoot, filepath.Dir(root))
+		if parentErr != nil {
+			if errors.Is(parentErr, safety.ErrSymlink) {
+				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: root, Reason: "symlink", TS: time.Now()})
+			}
+			continue
+		}
 		var st unix.Stat_t
-		if err := unix.Lstat(root, &st); err != nil { continue }
+		if err := unix.Fstatat(parentFD, filepath.Base(root), &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			unix.Close(parentFD); continue
+		}
 		mode := st.Mode & unix.S_IFMT
-		if mode == unix.S_IFLNK { continue }
+		if mode == unix.S_IFLNK {
+			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: root, Reason: "symlink", TS: time.Now()})
+			unix.Close(parentFD); continue
+		}
 
 		if mode == unix.S_IFREG {
-			w, e, err := safety.OpenFileEntry(root)
-			if err != nil { continue }
-			ts := e.Mtime(); if field == safety.TimeFieldCtime { ts = e.Ctime() }
-			threshold := time.Now().Add(-time.Duration(age) * 24 * time.Hour).Unix()
-			if ts <= threshold {
+			unix.Close(parentFD)
+			w, e, err := safety.OpenAnchoredFile(safeRoot, root)
+			if err != nil {
+				if errors.Is(err, safety.ErrSymlink) {
+					emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: root, Reason: "symlink", TS: time.Now()})
+				}
+				continue
+			}
+			if c.NoAgeFilter {
 				process(w, []safety.Entry{e})
 			} else {
-				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: root, Reason: "age_too_recent", TS: time.Now()})
+				ts := e.Mtime(); if field == safety.TimeFieldCtime { ts = e.Ctime() }
+				threshold := time.Now().Add(-time.Duration(age) * 24 * time.Hour).Unix()
+				if ts <= threshold {
+					process(w, []safety.Entry{e})
+				} else {
+					emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: root, Reason: "age_too_recent", TS: time.Now()})
+				}
 			}
 			w.Close()
 			continue
 		}
-		if mode != unix.S_IFDIR { continue }
+		if mode != unix.S_IFDIR { unix.Close(parentFD); continue }
 
-		w, err := safety.OpenWalker(root)
+		// Reopen the leaf as a fresh dir fd anchored from safeRoot.
+		unix.Close(parentFD)
+		dirFD, err := safety.OpenAnchoredDirFD(safeRoot, root)
+		if err != nil {
+			if errors.Is(err, safety.ErrSymlink) {
+				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: root, Reason: "symlink", TS: time.Now()})
+			}
+			continue
+		}
+		w, err := safety.OpenWalkerFD(dirFD, root)
 		if err != nil { continue }
-		plan := safety.AgePlan(w, age, field, time.Now())
+		plan := safety.AgePlan(w, age, field, time.Now(), c.NoAgeFilter)
 		process(w, plan.Ordered())
 		w.Close()
 	}
@@ -2181,6 +2315,25 @@ func matchAny(set globSet, path string) bool {
 		if ok, _ := filepath.Match(g, filepath.Base(path)); ok { return true }
 	}
 	return false
+}
+
+// determineSafeRoot returns the §6.1 allow-list root that contains `path`,
+// or "" if `path` is outside every allow-list root. The caller anchors all
+// openat traversal at this root so intermediate symlinks cannot escape it.
+func determineSafeRoot(path, home string) string {
+	clean := filepath.Clean(path)
+	if home != "" {
+		hc := filepath.Clean(home)
+		if clean == hc || strings.HasPrefix(clean, hc+string(filepath.Separator)) {
+			return hc
+		}
+	}
+	for _, r := range []string{"/var/cache", "/var/log", "/tmp", "/var/tmp"} {
+		if clean == r || strings.HasPrefix(clean, r+string(filepath.Separator)) {
+			return r
+		}
+	}
+	return ""
 }
 ```
 
@@ -4835,6 +4988,12 @@ git commit -m "ci: cross-distro test matrix on Ubuntu/Fedora/Arch"
 - Walker grew a separate `RemoveEmptyDirIfMatch` for directory removal — comparing pre-deletion mtime against post-child-deletion mtime always failed, masking valid deletions as TOCTOU. The new method matches inode/dev, re-checks fs/mode/empty, then `unlinkat(AT_REMOVEDIR)`. The paths executor dispatches between `UnlinkIfUnchanged` (files) and `RemoveEmptyDirIfMatch` (dirs).
 - Resolver `Resolve` now post-processes every result with `filepath.IsAbs` + `filepath.Join(home, …)` fallback, so xdg/env/cmd resolvers all guarantee an absolute return.
 - New `Cleaner.NoAgeFilter bool` (YAML `no_age_filter: true`) declares "no age filter" explicitly, cleanly distinct from a missing field. `applyEffectiveConfig` walks a documented 5-step age precedence ladder; cleaners with `NoAgeFilter` are gated by `--force-no-age`.
+
+**Round-4 fixes (2026-04-26):**
+- Task 3 commit now stages the whole `cleaners/` directory so the placeholder lands in-tree alongside the embed declaration; checking out the Task 3 SHA builds clean.
+- `AgePlan` now takes a `noAgeFilter bool` parameter; when true, every entry passes the age check. The paths executor passes `c.NoAgeFilter` through, so `--force-no-age` cleaners no longer silently default to 14d. The single-file branch in the executor honors the same flag.
+- New `safety.OpenAnchoredDirFD(safeRoot, target)`, `OpenAnchoredFile`, and `OpenWalkerFD` walk paths from a safe root via `openat` + `O_NOFOLLOW` at every component, returning `ErrSymlink` if any intermediate component is a symlink. The paths executor now derives a `safeRoot` per matched path (`$HOME` for user-scope, the matching `/var/cache|/var/log|/tmp|/var/tmp` for system-scope) and only opens the path through these helpers — so even if `filepath.Glob` returns a path crossing symlinks, the deletion phase refuses it with `reason: "symlink"`.
+- `errors.New` is back in the resolver imports because the resolver doesn't need it anymore — no change there; mentioned for completeness only.
 
 ---
 
