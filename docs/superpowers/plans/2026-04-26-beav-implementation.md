@@ -511,6 +511,32 @@ paths: ["~/.cache/extra/*"]
 	}
 }
 
+func TestLoaderAcceptsListShape(t *testing.T) {
+	fs := fstest.MapFS{"x.yaml": &fstest.MapFile{Data: []byte(`
+- id: a
+  scope: user
+  type: paths
+  paths: [~/.cache/a]
+- id: b
+  scope: user
+  type: paths
+  paths: [~/.cache/b]
+`)}}
+	cs, err := loadFS(fs, ".")
+	if err != nil { t.Fatal(err) }
+	if len(cs) != 2 { t.Fatalf("got %d", len(cs)) }
+}
+
+func TestLoaderTreatsEmptyAsNoOp(t *testing.T) {
+	fs := fstest.MapFS{
+		"empty.yaml": &fstest.MapFile{Data: []byte("[]\n")},
+		"blank.yaml": &fstest.MapFile{Data: []byte("\n\n")},
+	}
+	cs, err := loadFS(fs, ".")
+	if err != nil { t.Fatal(err) }
+	if len(cs) != 0 { t.Fatalf("expected 0; got %d", len(cs)) }
+}
+
 func TestRejectsImmutableTypeOverride(t *testing.T) {
 	builtin := []Loaded{{From: "builtin", Cleaner: mustParse(t, `
 id: editor-vscode
@@ -561,6 +587,13 @@ Expected: FAIL — undefined `loadFS`, `Loaded`, `MergeByID`, `mergeByIDStrict`.
 
 ```bash
 go get gopkg.in/yaml.v3
+```
+
+**Placeholder YAML to satisfy `//go:embed`** — without at least one matching file, the embed declaration fails at compile time. Create `cleaners/user/_placeholder.yaml`:
+```yaml
+# Intentionally empty; ensures //go:embed always matches at least one file.
+# Real cleaners are added in Tasks 25–26. The loader treats empty/`[]` files as no-ops.
+[]
 ```
 
 `cleaners/builtin.go`:
@@ -622,9 +655,24 @@ func loadFS(root fs.FS, base string) ([]Loaded, error) {
 		if err != nil {
 			return err
 		}
+		// Try list-of-cleaners first; fall back to single Cleaner; empty file → skip.
+		if len(strings.TrimSpace(string(data))) == 0 {
+			return nil
+		}
+		var list []model.Cleaner
+		if err := yaml.Unmarshal(data, &list); err == nil && len(list) > 0 {
+			for _, c := range list {
+				out = append(out, Loaded{From: p, Cleaner: c})
+			}
+			return nil
+		}
 		var c model.Cleaner
 		if err := yaml.Unmarshal(data, &c); err != nil {
 			return fmt.Errorf("%s: %w", p, err)
+		}
+		if c.ID == "" {
+			// `[]` parses as empty Cleaner; treat as no-op file.
+			return nil
 		}
 		out = append(out, Loaded{From: p, Cleaner: c})
 		return nil
@@ -706,10 +754,15 @@ package registry
 
 import (
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/dengqi/beav/internal/cleaner/model"
+	"github.com/dengqi/beav/internal/cleaner/resolver"
+	"github.com/dengqi/beav/internal/cleaner/safety"
 )
 
+// Validate performs schema-level checks (enum, required fields).
 func Validate(c model.Cleaner) error {
 	if c.ID == "" {
 		return fmt.Errorf("cleaner missing id")
@@ -738,6 +791,101 @@ func Validate(c model.Cleaner) error {
 		}
 	}
 	return nil
+}
+
+// ValidatePaths is the §6.1 load-time gate: every static path and every
+// resolver fallback must be inside the allow-list and not on the blacklist.
+// Failing any path here REFUSES the entire cleaner — there is no "partial"
+// mode. Globs are checked at their literal prefix (the part before the first
+// wildcard); that prefix alone must already pass safety.
+//
+// Pass home="" for system-scope cleaners.
+func ValidatePaths(c model.Cleaner, home string) error {
+	if c.Type != model.TypePaths {
+		return nil
+	}
+	check := func(p string) error {
+		expanded := expandHome(p, home)
+		base := globPrefix(expanded)
+		if !safety.InsideAllowList(base, home) {
+			return fmt.Errorf("cleaner %q: path %q outside allow-list", c.ID, p)
+		}
+		if safety.Blacklisted(base, home) {
+			return fmt.Errorf("cleaner %q: path %q in blacklist", c.ID, p)
+		}
+		return nil
+	}
+	for _, p := range c.Paths {
+		if err := check(p); err != nil { return err }
+	}
+	for _, ref := range c.PathResolvers {
+		base, err := resolver.Resolve(ref.Resolver, home)
+		if err != nil {
+			return fmt.Errorf("cleaner %q: %w", c.ID, err)
+		}
+		if err := check(base); err != nil { return err }
+		for _, sp := range ref.Subpaths {
+			if err := check(filepath.Join(base, sp)); err != nil { return err }
+		}
+	}
+	return nil
+}
+
+func expandHome(p, home string) string {
+	if home != "" && strings.HasPrefix(p, "~/") {
+		return filepath.Join(home, p[2:])
+	}
+	return p
+}
+
+func globPrefix(p string) string {
+	for i, r := range p {
+		if r == '*' || r == '?' || r == '[' {
+			return filepath.Clean(p[:i])
+		}
+	}
+	return filepath.Clean(p)
+}
+```
+
+Add a test in `validate_test.go`:
+```go
+package registry
+
+import (
+	"testing"
+
+	"github.com/dengqi/beav/internal/cleaner/model"
+)
+
+func TestValidatePathsRejectsBlacklist(t *testing.T) {
+	bad := model.Cleaner{
+		ID: "bad", Scope: model.ScopeUser, Type: model.TypePaths,
+		Paths: []string{"/etc/passwd"},
+	}
+	if err := ValidatePaths(bad, "/home/u"); err == nil {
+		t.Fatal("expected blacklist error")
+	}
+}
+
+func TestValidatePathsRejectsOutsideAllowList(t *testing.T) {
+	bad := model.Cleaner{
+		ID: "bad", Scope: model.ScopeUser, Type: model.TypePaths,
+		Paths: []string{"/opt/cache/*"},
+	}
+	if err := ValidatePaths(bad, "/home/u"); err == nil {
+		t.Fatal("expected allow-list error")
+	}
+}
+
+func TestValidatePathsAcceptsGlobUnderHome(t *testing.T) {
+	ok := model.Cleaner{
+		ID: "ok", Scope: model.ScopeUser, Type: model.TypePaths,
+		Paths: []string{"~/.cache/foo/*"},
+	}
+	if err := ValidatePaths(ok, "/home/u"); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
 }
 ```
 
@@ -1101,11 +1249,10 @@ func TestWalkSkipsSymlinks(t *testing.T) {
 	defer w.Close()
 
 	var got []string
-	err = w.Walk(func(e Entry) Action {
+	err = w.Walk(func(e Entry) {
 		if e.IsRegular() {
 			got = append(got, e.RelPath)
 		}
-		return ActionSkip
 	})
 	if err != nil { t.Fatal(err) }
 	if len(got) != 1 || got[0] != "real" {
@@ -1123,9 +1270,8 @@ func TestReStatBeforeUnlinkDetectsChange(t *testing.T) {
 	defer w.Close()
 
 	var got Entry
-	_ = w.Walk(func(e Entry) Action {
-		if e.IsRegular() { got = e; return ActionSkip }
-		return ActionSkip
+	_ = w.Walk(func(e Entry) {
+		if e.IsRegular() { got = e }
 	})
 	if err := os.WriteFile(p, []byte("BBBBBBBBBBB"), 0o600); err != nil { t.Fatal(err) }
 	if w.UnlinkIfUnchanged(got) == nil {
@@ -1142,14 +1288,18 @@ func TestReStatBeforeUnlinkDetectsChange(t *testing.T) {
 go get golang.org/x/sys/unix
 ```
 
+**Design note (fd lifetime):** `Entry` does NOT hold any directory fd. fds are opened only for the duration of a single descent and closed before the walk returns. `UnlinkIfUnchanged` later re-opens parent dirs from the root fd via `openat` step-by-step, applying `O_NOFOLLOW` at every level. This (a) avoids "use after close" of fds saved in plan results, (b) gives correct TOCTOU semantics (a swap during deletion is detected at any path component), and (c) handles arbitrarily deep trees without keeping fd-per-dir alive.
+
 `internal/cleaner/safety/fs.go`:
 ```go
 package safety
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -1163,11 +1313,12 @@ const (
 
 var ErrChanged = errors.New("entry changed since stat")
 var ErrCrossFS = errors.New("entry on different filesystem")
+var ErrNotFound = errors.New("entry not found")
 
+// Entry is a stat snapshot identified by path-relative-to-walker-root.
+// It holds no live fds.
 type Entry struct {
 	RelPath string
-	parent  int
-	name    string
 	stat    unix.Stat_t
 }
 
@@ -1181,8 +1332,11 @@ func (e Entry) Ctime() int64    { return int64(e.stat.Ctim.Sec) }
 type Walker struct {
 	rootFD  int
 	rootDev uint64
+	rootAbs string
 }
 
+// OpenWalker opens `root` as a directory. To handle a single regular file
+// (e.g. a glob match like ~/.zcompdump-*), use OpenFileEntry instead.
 func OpenWalker(root string) (*Walker, error) {
 	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -1193,13 +1347,17 @@ func OpenWalker(root string) (*Walker, error) {
 		unix.Close(fd)
 		return nil, err
 	}
-	return &Walker{rootFD: fd, rootDev: st.Dev}, nil
+	abs, _ := filepath.Abs(root)
+	return &Walker{rootFD: fd, rootDev: st.Dev, rootAbs: abs}, nil
 }
 
 func (w *Walker) Close() error { return unix.Close(w.rootFD) }
+func (w *Walker) Root() string { return w.rootAbs }
 
-type WalkFunc func(Entry) Action
+type WalkFunc func(Entry)
 
+// Walk descends through w.rootFD without ever following symlinks and without
+// crossing filesystems. Subdirectories matching `.git` are skipped wholesale.
 func (w *Walker) Walk(fn WalkFunc) error {
 	return w.walkDir(w.rootFD, "", fn)
 }
@@ -1207,7 +1365,16 @@ func (w *Walker) Walk(fn WalkFunc) error {
 func (w *Walker) walkDir(parentFD int, rel string, fn WalkFunc) error {
 	names, err := readdirnames(parentFD)
 	if err != nil { return err }
-	sort.Strings(names) // deterministic; needed so depth-first deletion works
+	sort.Strings(names)
+
+	// .git guard: any directory containing a .git child is treated as a git
+	// work tree and skipped entirely.
+	for _, n := range names {
+		if n == ".git" {
+			return nil
+		}
+	}
+
 	for _, name := range names {
 		var st unix.Stat_t
 		if err := unix.Fstatat(parentFD, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
@@ -1225,52 +1392,84 @@ func (w *Walker) walkDir(parentFD int, rel string, fn WalkFunc) error {
 		default:
 			continue
 		}
-		e := Entry{RelPath: entryRel, parent: parentFD, name: name, stat: st}
+		e := Entry{RelPath: entryRel, stat: st}
 		if e.IsDir() {
 			fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 			if err != nil { continue }
 			_ = w.walkDir(fd, entryRel, fn)
 			unix.Close(fd)
 		}
-		_ = fn(e)
+		fn(e)
 	}
 	return nil
 }
 
+// reopenLeaf walks RelPath component by component starting from rootFD,
+// opening each parent with O_NOFOLLOW. Returns (parentFD, leafName).
+// Caller must Close parentFD.
+func (w *Walker) reopenLeaf(rel string) (int, string, error) {
+	parts := strings.Split(filepath.Clean(rel), string(filepath.Separator))
+	if len(parts) == 0 || parts[0] == "" {
+		return -1, "", ErrNotFound
+	}
+	cur, err := unix.Dup(w.rootFD)
+	if err != nil { return -1, "", err }
+	for i := 0; i < len(parts)-1; i++ {
+		next, err := unix.Openat(cur, parts[i], unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		unix.Close(cur)
+		if err != nil { return -1, "", err }
+		cur = next
+	}
+	return cur, parts[len(parts)-1], nil
+}
+
+// UnlinkIfUnchanged re-opens the entry's parent from rootFD, re-stats with
+// AT_SYMLINK_NOFOLLOW, and unlinks only if (ino,dev,size,mtim) match the
+// snapshot. Cross-fs is also re-checked.
 func (w *Walker) UnlinkIfUnchanged(e Entry) error {
+	parentFD, leaf, err := w.reopenLeaf(e.RelPath)
+	if err != nil { return err }
+	defer unix.Close(parentFD)
+
 	var cur unix.Stat_t
-	if err := unix.Fstatat(e.parent, e.name, &cur, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+	if err := unix.Fstatat(parentFD, leaf, &cur, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return err
 	}
+	if cur.Dev != w.rootDev { return ErrCrossFS }
 	if cur.Ino != e.stat.Ino || cur.Dev != e.stat.Dev || cur.Size != e.stat.Size ||
 		cur.Mtim.Sec != e.stat.Mtim.Sec || cur.Mtim.Nsec != e.stat.Mtim.Nsec {
 		return ErrChanged
 	}
 	flags := 0
 	if e.IsDir() { flags = unix.AT_REMOVEDIR }
-	return unix.Unlinkat(e.parent, e.name, flags)
+	return unix.Unlinkat(parentFD, leaf, flags)
+}
+
+// OpenFileEntry stats a single file path via lstat, returning a Walker
+// whose RelPath-style "entry" is the file itself. Used when a glob expands
+// directly to a regular file (e.g. ~/.zcompdump-host-5.9).
+func OpenFileEntry(path string) (*Walker, Entry, error) {
+	abs, _ := filepath.Abs(path)
+	parent := filepath.Dir(abs)
+	pfd, err := unix.Open(parent, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil { return nil, Entry{}, err }
+	var st unix.Stat_t
+	if err := unix.Fstatat(pfd, filepath.Base(abs), &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		unix.Close(pfd); return nil, Entry{}, err
+	}
+	if (st.Mode & unix.S_IFMT) != unix.S_IFREG {
+		unix.Close(pfd); return nil, Entry{}, errors.New("not a regular file")
+	}
+	w := &Walker{rootFD: pfd, rootDev: st.Dev, rootAbs: parent}
+	return w, Entry{RelPath: filepath.Base(abs), stat: st}, nil
 }
 
 func readdirnames(fd int) ([]string, error) {
 	dupFD, err := unix.Dup(fd)
 	if err != nil { return nil, err }
-	d, err := dupToDir(dupFD)
-	if err != nil { unix.Close(dupFD); return nil, err }
+	d := os.NewFile(uintptr(dupFD), "<dir>")
 	defer d.Close()
 	return d.Readdirnames(-1)
-}
-```
-
-`internal/cleaner/safety/fs_unix.go`:
-```go
-package safety
-
-import "os"
-
-// dupToDir wraps a file descriptor as an *os.File for Readdirnames.
-// The returned *os.File takes ownership and will close fd.
-func dupToDir(fd int) (*os.File, error) {
-	return os.NewFile(uintptr(fd), "<dir>"), nil
 }
 ```
 
@@ -1386,13 +1585,12 @@ func AgePlan(w *Walker, minAgeDays int, field TimeField, now time.Time) *Plan {
 
 	type info struct{ entry Entry; passed bool; absPath string }
 	all := []info{}
-	rootAbs, _ := absRoot(w)
-	_ = w.Walk(func(e Entry) Action {
+	rootAbs := w.Root()
+	w.Walk(func(e Entry) {
 		ts := e.Mtime()
 		if field == TimeFieldCtime { ts = e.Ctime() }
 		passed := ts <= threshold
 		all = append(all, info{e, passed, filepath.Join(rootAbs, e.RelPath)})
-		return ActionSkip
 	})
 
 	plan := &Plan{root: rootAbs, delete: map[string]Entry{}, keepDirs: map[string]bool{}}
@@ -1427,8 +1625,6 @@ func AgePlan(w *Walker, minAgeDays int, field TimeField, now time.Time) *Plan {
 	plan.ordered = orderForDeletion(all, plan.delete)
 	return plan
 }
-
-func absRoot(_ *Walker) (string, error) { return ".", nil } // resolved by caller
 
 func orderForDeletion(all []anyInfo, set map[string]Entry) []Entry {
 	// Deepest path first, files before parent dirs.
@@ -1465,22 +1661,7 @@ func pathDepth(p string) int {
 }
 ```
 
-> Note: `absRoot` should be implemented by passing the walker's root path through. Update `OpenWalker` to retain the root and add an accessor `Root() string`. (Add this small change in this same task.)
-
-Add to `fs.go`:
-```go
-type Walker struct {
-	rootFD  int
-	rootDev uint64
-	rootAbs string
-}
-// in OpenWalker:
-//   abs, _ := filepath.Abs(root)
-//   return &Walker{rootFD: fd, rootDev: st.Dev, rootAbs: abs}, nil
-func (w *Walker) Root() string { return w.rootAbs }
-```
-
-And in `age.go` replace `absRoot` with `w.Root()`.
+> The `Walker.Root()` accessor and `rootAbs` field are already in place from Task 6.
 
 - [ ] **Step 4: PASS, commit**
 ```bash
@@ -1691,7 +1872,6 @@ package resolver
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1717,14 +1897,15 @@ var resolvers = map[string]Resolver{
 	"maven_local_repo": cmdResolver([]string{"mvn", "help:evaluate", "-Dexpression=settings.localRepository", "-q", "-DforceStdout"}, "$HOME/.m2/repository"),
 }
 
+// Resolve returns an absolute path for the named resolver. It only errors when
+// `name` is not in the closed enum. If a resolver's primary source (env var or
+// command) yields an empty/non-absolute value, the documented fallback is used.
+// The fallback is constructed from $HOME and standard XDG paths and is always
+// absolute, so Resolve never fails for a known name.
 func Resolve(name, home string) (string, error) {
 	r, ok := resolvers[name]
 	if !ok { return "", fmt.Errorf("unknown resolver %q", name) }
-	out := r(home)
-	if out == "" || !filepath.IsAbs(out) {
-		return "", fmt.Errorf("resolver %q produced non-absolute path %q", name, out)
-	}
-	return filepath.Clean(out), nil
+	return filepath.Clean(r(home)), nil
 }
 
 func MustResolve(name, home string) string {
@@ -1760,12 +1941,22 @@ func cmdResolver(argv []string, fallback string) Resolver {
 			s := strings.TrimSpace(string(out))
 			if filepath.IsAbs(s) { return s }
 		}
-		_ = errors.New
-		return os.Expand(fallback, func(k string) string {
-			if k == "HOME" { return home }
-			return os.Getenv(k)
-		})
+		return expandFallback(fallback, home)
 	}
+}
+
+// expandFallback resolves $HOME / $XDG_* in the documented fallback string and
+// guarantees an absolute path. If somehow the result is still relative, it is
+// joined under home so the caller always receives an absolute path.
+func expandFallback(fallback, home string) string {
+	out := os.Expand(fallback, func(k string) string {
+		if k == "HOME" { return home }
+		return os.Getenv(k)
+	})
+	if !filepath.IsAbs(out) {
+		out = filepath.Join(home, out)
+	}
+	return out
 }
 ```
 
@@ -1873,6 +2064,7 @@ import (
 	"github.com/dengqi/beav/internal/cleaner/model"
 	"github.com/dengqi/beav/internal/cleaner/resolver"
 	"github.com/dengqi/beav/internal/cleaner/safety"
+	"golang.org/x/sys/unix"
 )
 
 type PathsExecutor struct {
@@ -1910,11 +2102,8 @@ func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, e
 	var filesDel int64
 	var errors_ int
 
-	for _, root := range roots {
-		w, err := safety.OpenWalker(root)
-		if err != nil { continue }
-		plan := safety.AgePlan(w, age, field, time.Now())
-		for _, e := range plan.Ordered() {
+	process := func(w *safety.Walker, entries []safety.Entry) {
+		for _, e := range entries {
 			abs := filepath.Join(w.Root(), e.RelPath)
 			if p.Whitelist != nil && p.Whitelist.Match(abs) {
 				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "whitelisted", TS: time.Now()})
@@ -1943,6 +2132,35 @@ func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, e
 			bytesFreed += e.Size()
 			filesDel++
 		}
+	}
+
+	for _, root := range roots {
+		// Distinguish file vs directory roots using lstat. Regular files take
+		// the OpenFileEntry path; directories take the OpenWalker + AgePlan path.
+		var st unix.Stat_t
+		if err := unix.Lstat(root, &st); err != nil { continue }
+		mode := st.Mode & unix.S_IFMT
+		if mode == unix.S_IFLNK { continue }
+
+		if mode == unix.S_IFREG {
+			w, e, err := safety.OpenFileEntry(root)
+			if err != nil { continue }
+			ts := e.Mtime(); if field == safety.TimeFieldCtime { ts = e.Ctime() }
+			threshold := time.Now().Add(-time.Duration(age) * 24 * time.Hour).Unix()
+			if ts <= threshold {
+				process(w, []safety.Entry{e})
+			} else {
+				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: root, Reason: "age_too_recent", TS: time.Now()})
+			}
+			w.Close()
+			continue
+		}
+		if mode != unix.S_IFDIR { continue }
+
+		w, err := safety.OpenWalker(root)
+		if err != nil { continue }
+		plan := safety.AgePlan(w, age, field, time.Now())
+		process(w, plan.Ordered())
 		w.Close()
 	}
 
@@ -3266,17 +3484,18 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dengqi/beav/cleaners"
 	"github.com/dengqi/beav/internal/cleaner/engine"
 	"github.com/dengqi/beav/internal/cleaner/executor"
 	"github.com/dengqi/beav/internal/cleaner/model"
 	"github.com/dengqi/beav/internal/cleaner/registry"
 	"github.com/dengqi/beav/internal/cleaner/safety"
 	"github.com/dengqi/beav/internal/config"
+	"github.com/dengqi/beav/internal/oplog"
 	"github.com/dengqi/beav/internal/sysinfo"
 	"github.com/dengqi/beav/internal/ui"
 	uicli "github.com/dengqi/beav/internal/ui/cli"
 	uijson "github.com/dengqi/beav/internal/ui/json"
-	"github.com/dengqi/beav/cleaners"
 	"github.com/spf13/cobra"
 )
 
@@ -3313,27 +3532,49 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 		cfgDir = filepath.Join(home, ".config", "beav")
 	}
 	cfg, err := config.Load(cfgDir)
-	if err != nil { return cliErr(2, "config load: %w", err) }
+	if err != nil { return CLIError{code: 2, err: fmt.Errorf("config load: %w", err)} }
 
-	var allCleaners []registry.Loaded
+	var builtinList, userList []registry.Loaded
 	if !f.BuiltinDisabled {
-		bi, err := registry.LoadBuiltin(cleaners.Builtin)
-		if err != nil { return cliErr(2, "builtin load: %w", err) }
-		allCleaners = append(allCleaners, bi...)
+		builtinList, err = registry.LoadBuiltin(cleaners.Builtin)
+		if err != nil { return CLIError{code: 2, err: fmt.Errorf("builtin load: %w", err)} }
 	}
-	user, err := registry.LoadUserDir(filepath.Join(cfgDir, "cleaners.d"))
-	if err != nil { return cliErr(2, "user cleaners: %w", err) }
-	allCleaners = append(allCleaners, user...)
-	merged := registry.MergeByID(allCleaners[:len(allCleaners)-len(user)], user)
-	for _, c := range merged {
-		if err := registry.Validate(c); err != nil { return cliErr(2, "%w", err) }
-	}
+	userList, err = registry.LoadUserDir(filepath.Join(cfgDir, "cleaners.d"))
+	if err != nil { return CLIError{code: 2, err: fmt.Errorf("user cleaners: %w", err)} }
+	merged := registry.MergeByID(builtinList, userList)
 
 	scope, home, err := determineScope(f)
-	if err != nil { return cliErr(1, "%w", err) }
+	if err != nil { return CLIError{code: 1, err: err} }
 
-	r := chooseRenderer(f.Output, stdout, stderr)
+	// Apply config + CLI precedence (CLI > config > built-in).
+	merged, err = applyEffectiveConfig(merged, cfg, f, home)
+	if err != nil { return CLIError{code: 2, err: err} }
+
+	// Schema and path safety validation (load-time §6.1).
+	for _, c := range merged {
+		if err := registry.Validate(c); err != nil { return CLIError{code: 2, err: err} }
+		validateHome := home
+		if c.Scope == model.ScopeSystem { validateHome = "" }
+		if err := registry.ValidatePaths(c, validateHome); err != nil {
+			return CLIError{code: 2, err: err}
+		}
+	}
+
+	// Output selection: CLI flag > config default > auto.
+	outMode := f.Output
+	if outMode == "" { outMode = cfg.Defaults.Output }
+	r := chooseRenderer(outMode, stdout, stderr)
 	defer r.Close()
+
+	// Operations log (unless BEAV_NO_OPLOG=1).
+	var oplogger *oplog.Logger
+	if os.Getenv("BEAV_NO_OPLOG") == "" && !f.DryRun {
+		stateDir := filepath.Join(os.Getenv("HOME"), ".local", "state", "beav")
+		if l, err := oplog.New(filepath.Join(stateDir, "operations.log"), 10*1024*1024, 5); err == nil {
+			oplogger = l
+			defer oplogger.Close()
+		}
+	}
 
 	wl := safety.NewWhitelist(cfg.MergedWhitelist())
 	en := engine.New(
@@ -3342,13 +3583,86 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 		engine.WithExecutor(model.TypePkgCache, executor.NewPkgCacheExecutor()),
 		engine.WithExecutor(model.TypeContainerPrune, executor.NewContainerExecutor()),
 	)
+
+	emit := func(ev model.Event) {
+		if oplogger != nil && ev.Event == model.EvDeleted {
+			_ = oplogger.Write("delete", ev.Path, ev.Size, ev.CleanerID)
+		}
+		r.Render(ev)
+	}
+
 	res, err := en.Run(ctx, merged, engine.Options{
 		Scope: scope, DryRun: f.DryRun, Only: f.Only, Skip: f.Skip,
-		Emitter: r.Render,
+		Emitter: emit,
 	})
-	if err != nil { return cliErr(3, "%w", err) }
-	if res.CleanersErrored > 0 { return cliErr(3, "errors in %d cleaners", res.CleanersErrored) }
+	if err != nil { return CLIError{code: 3, err: err} }
+	if res.CleanersErrored > 0 {
+		return CLIError{code: 3, err: fmt.Errorf("errors in %d cleaners", res.CleanersErrored)}
+	}
 	return nil
+}
+
+// applyEffectiveConfig merges Config defaults/overrides and CLI flags into
+// the cleaner list. Precedence (highest first): CLI flag > config override >
+// config default > cleaner's own min_age_days > built-in fallback (14d).
+func applyEffectiveConfig(cs []model.Cleaner, cfg *config.Config, f CleanFlags, home string) ([]model.Cleaner, error) {
+	globalAge, perTagAge, err := parseMinAge(f.MinAge)
+	if err != nil { return nil, err }
+
+	out := make([]model.Cleaner, 0, len(cs))
+	for _, c := range cs {
+		// enabled: config override wins over built-in.
+		if ovr, ok := cfg.Overrides[c.ID]; ok && ovr.Enabled != nil {
+			b := *ovr.Enabled
+			c.Enabled = &b
+		}
+		// min_age_days: CLI per-tag > CLI global > config override > built-in.
+		age := -1
+		for _, tag := range append([]string{c.ID}, c.Tags...) {
+			if v, ok := perTagAge[tag]; ok { age = v; break }
+		}
+		if age == -1 && globalAge >= 0 { age = globalAge }
+		if age == -1 {
+			if ovr, ok := cfg.Overrides[c.ID]; ok && ovr.MinAgeDays != nil { age = *ovr.MinAgeDays }
+		}
+		if age == -1 && c.MinAgeDays == nil { age = cfg.Defaults.MinAgeDays }
+		if age >= 0 {
+			a := age; c.MinAgeDays = &a
+		}
+		// --force-no-age: cleaners without min_age_days are otherwise skipped.
+		if c.MinAgeDays == nil && !f.ForceNoAge {
+			b := false; c.Enabled = &b
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// parseMinAge accepts "14d", "tag=3d,tag2=30d", or empty.
+func parseMinAge(s string) (global int, perTag map[string]int, err error) {
+	global = -1
+	perTag = map[string]int{}
+	if s == "" { return }
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" { continue }
+		if eq := strings.IndexByte(part, '='); eq > 0 {
+			tag := part[:eq]
+			d, e := parseDays(part[eq+1:]); if e != nil { return 0, nil, e }
+			perTag[tag] = d
+			continue
+		}
+		d, e := parseDays(part); if e != nil { return 0, nil, e }
+		global = d
+	}
+	return
+}
+
+func parseDays(s string) (int, error) {
+	s = strings.TrimSuffix(s, "d")
+	v, err := strconv.Atoi(s)
+	if err != nil { return 0, fmt.Errorf("invalid age %q: %w", s, err) }
+	return v, nil
 }
 
 func chooseRenderer(out string, stdout, stderr io.Writer) ui.Renderer {
@@ -3388,11 +3702,10 @@ func determineScope(f CleanFlags) (model.Scope, string, error) {
 	return "", resolved.Home, nil // "" scope = both
 }
 
-type cliErrType struct { code int; err error }
-func (e cliErrType) Error() string { return e.err.Error() }
-func cliErr(code int, format string, args ...any) error { return cliErrType{code: code, err: fmt.Errorf(format, args...)} }
-
-// Update main.go to translate cliErrType into exit code.
+type CLIError struct{ code int; err error }
+func (e CLIError) Error() string { return e.err.Error() }
+func (e CLIError) Code() int     { return e.code }
+func (e CLIError) Unwrap() error { return e.err }
 ```
 
 Update `cmd/beav/main.go`:
@@ -3426,15 +3739,6 @@ func main() {
 	}
 }
 ```
-
-Add to `internal/cli/clean.go`:
-```go
-type CLIError struct{ code int; err error }
-func (e CLIError) Error() string { return e.err.Error() }
-func (e CLIError) Code() int     { return e.code }
-func (e CLIError) Unwrap() error { return e.err }
-```
-And replace usages of `cliErrType` with `CLIError`. (Refactor in this same task.)
 
 Update `root.go`:
 ```go
@@ -4244,41 +4548,7 @@ git commit -m "feat(cleaners): user-scope YAML for desktop, IDE, browser, langua
   tags: [k8s]
 ```
 
-> Note: each YAML in this set is a list-of-cleaners. The loader currently expects single Cleaner per file; the list shape is also valid because YAML decoding into `Cleaner` will fail. Update the loader to try `[]Cleaner` first, then fall back to `Cleaner`, before declaring a parse error.
-
-Patch `internal/cleaner/registry/loader.go` `loadFS`:
-```go
-// Try list first
-var list []model.Cleaner
-if err := yaml.Unmarshal(data, &list); err == nil && len(list) > 0 {
-	for _, c := range list { out = append(out, Loaded{From: p, Cleaner: c}) }
-	return nil
-}
-var c model.Cleaner
-if err := yaml.Unmarshal(data, &c); err != nil {
-	return fmt.Errorf("%s: %w", p, err)
-}
-out = append(out, Loaded{From: p, Cleaner: c})
-return nil
-```
-
-Add a test in `loader_test.go`:
-```go
-func TestLoaderAcceptsList(t *testing.T) {
-	fs := fstest.MapFS{"x.yaml": &fstest.MapFile{Data: []byte(`
-- id: a
-  scope: user
-  type: paths
-  paths: [~/.cache/a]
-- id: b
-  scope: user
-  type: paths
-  paths: [~/.cache/b]
-`)}}
-	cs, err := loadFS(fs, "."); if err != nil { t.Fatal(err) }
-	if len(cs) != 2 { t.Fatalf("got %d", len(cs)) }
-}
-```
+> List-shape support is already in place from Task 3.
 
 - [ ] **Step 3: Run all tests**
 
@@ -4454,6 +4724,14 @@ git commit -m "ci: cross-distro test matrix on Ubuntu/Fedora/Arch"
 - Task 26 patches the loader to accept list-shape YAML; both the diff and the test are inline.
 
 **Type consistency:** `Cleaner`, `Event`, `Renderer`, `Executor` interface, `Walker`, `Whitelist`, `ResolvedUser`, `CLIError` — names and signatures used in later tasks match earlier definitions.
+
+**Round-2 fixes (2026-04-26):**
+- Task 3 ships an `_placeholder.yaml` and list-shape loader so `//go:embed` always matches and Task 25/26 list-shape YAML loads cleanly.
+- Task 6 walker no longer caches dirfds inside `Entry`; `UnlinkIfUnchanged` re-opens the parent from rootFD via per-component `openat` (fixes UAF when AgePlan returns and dir fds have been closed). Walker also has `OpenFileEntry` for glob matches that resolve to a regular file (fixes `/tmp/*`, `~/.zcompdump-*`).
+- Task 6 walker skips any directory containing a `.git` child (.git guard, §6.2 #6).
+- Task 10 resolver no longer errors when its primary source fails — fallback always wins; only unknown resolver names error.
+- Task 5 `Validate` is split: schema check (`Validate`) is registry-load; `ValidatePaths(c, home)` is invoked at clean-time after home resolution, refusing the entire cleaner on any allow-list / blacklist violation.
+- Task 21 wires config defaults/overrides + CLI `--min-age` (global and per-tag), `--force-no-age`, `--output`, and instantiates `oplog` (honoring `BEAV_NO_OPLOG=1`).
 
 ---
 
