@@ -1,3 +1,5 @@
+// Package cli provides the command-line interface for the beav tool.
+// Package cli 提供 beav 工具的命令行界面。
 package cli
 
 import (
@@ -8,6 +10,8 @@ import (
 	uicli "github.com/dengqi/beav/internal/ui/cli"
 )
 
+// TestCleanDryRunNoCleanersExitsZero verifies that clean with no cleaners exits zero.
+// TestCleanDryRunNoCleanersExitsZero 验证没有清理器时 clean 命令正常退出。
 func TestCleanDryRunNoCleanersExitsZero(t *testing.T) {
 	var out bytes.Buffer
 	cmd := NewRootCmd("test", "test", "test")
@@ -19,6 +23,8 @@ func TestCleanDryRunNoCleanersExitsZero(t *testing.T) {
 	}
 }
 
+// TestChooseRendererAutoUsesPlainForNonTTY verifies renderer selection for non-TTY output.
+// TestChooseRendererAutoUsesPlainForNonTTY 验证非 TTY 输出的渲染器选择。
 func TestChooseRendererAutoUsesPlainForNonTTY(t *testing.T) {
 	var out bytes.Buffer
 	if _, ok := chooseRenderer("", "auto", &out).(*uicli.Plain); !ok {
@@ -29,6 +35,8 @@ func TestChooseRendererAutoUsesPlainForNonTTY(t *testing.T) {
 	}
 }
 
+// TestValidateCleanersForRunSkipsWrongScopeBeforePathValidation verifies scope-based filtering.
+// TestValidateCleanersForRunSkipsWrongScopeBeforePathValidation 验证基于范围的过滤。
 func TestValidateCleanersForRunSkipsWrongScopeBeforePathValidation(t *testing.T) {
 	cleaners := []model.Cleaner{
 		{

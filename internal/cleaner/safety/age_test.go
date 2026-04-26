@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+// TestAgePlanKeepsRecentSkipsDirsWithLiveChildren verifies that AgePlan keeps recent files and directories with active children.
+// TestAgePlanKeepsRecentSkipsDirsWithLiveChildren 验证 AgePlan 保留近期文件和包含活跃子项的目录。
 func TestAgePlanKeepsRecentSkipsDirsWithLiveChildren(t *testing.T) {
 	root := t.TempDir()
 	old := filepath.Join(root, "old")

@@ -1,3 +1,5 @@
+// Package cli provides the command-line interface for the beav tool.
+// Package cli 提供 beav 工具的命令行界面。
 package cli
 
 import (
@@ -9,6 +11,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// NewAnalyzeCmd creates a command that analyzes disk usage in a TUI.
+// NewAnalyzeCmd 创建一个在 TUI 中分析磁盘使用的命令。
 func NewAnalyzeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "analyze [path]",

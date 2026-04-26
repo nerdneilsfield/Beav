@@ -2,6 +2,8 @@ package safety
 
 import "testing"
 
+// TestInsideAllowList verifies that paths are correctly classified as inside or outside the allow list.
+// TestInsideAllowList 验证路径是否正确分类为在允许列表内或外。
 func TestInsideAllowList(t *testing.T) {
 	cases := []struct {
 		p  string
@@ -22,6 +24,8 @@ func TestInsideAllowList(t *testing.T) {
 	}
 }
 
+// TestBlacklisted verifies that blacklisted paths are correctly identified.
+// TestBlacklisted 验证黑名单路径是否正确识别。
 func TestBlacklisted(t *testing.T) {
 	home := "/home/u"
 	for _, p := range []string{
@@ -47,6 +51,8 @@ func TestBlacklisted(t *testing.T) {
 	}
 }
 
+// TestBlacklistRejectsKernelVirtualFilesystems verifies that kernel virtual filesystems are blacklisted.
+// TestBlacklistRejectsKernelVirtualFilesystems 验证内核虚拟文件系统被加入黑名单。
 func TestBlacklistRejectsKernelVirtualFilesystems(t *testing.T) {
 	for _, p := range []string{"/proc", "/proc/self", "/sys", "/sys/kernel", "/dev", "/dev/null", "/run", "/run/user"} {
 		if !Blacklisted(p, "/home/u") {

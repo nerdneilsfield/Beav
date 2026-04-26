@@ -1,3 +1,5 @@
+// Package cli provides the command-line interface for the beav tool.
+// Package cli 提供 beav 工具的命令行界面。
 package cli
 
 import (
@@ -25,6 +27,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// NewCleanCmd creates a command that cleans caches, logs, and other reclaimable disk usage.
+// NewCleanCmd 创建一个清理缓存、日志和其他可回收磁盘使用的命令。
 func NewCleanCmd() *cobra.Command {
 	var f CleanFlags
 	cmd := &cobra.Command{
@@ -51,6 +55,8 @@ func NewCleanCmd() *cobra.Command {
 	return cmd
 }
 
+// runClean executes the clean operation with the given flags.
+// runClean 使用给定的标志执行清理操作。
 func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error {
 	scope, home, targetUID, err := determineScope(f)
 	if err != nil {
@@ -143,6 +149,8 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 	return nil
 }
 
+// validateCleanersForRun validates cleaners for the given scope and flags before execution.
+// validateCleanersForRun 在执行前验证给定范围和标志的清理器。
 func validateCleanersForRun(cleaners []model.Cleaner, scope model.Scope, home string, f CleanFlags) error {
 	for _, c := range cleaners {
 		if !engine.Selected(c, scope, f.Only, f.Skip) {
@@ -162,6 +170,8 @@ func validateCleanersForRun(cleaners []model.Cleaner, scope model.Scope, home st
 	return nil
 }
 
+// applyEffectiveConfig applies configuration overrides and age settings to cleaners.
+// applyEffectiveConfig 将配置覆盖和年龄设置应用到清理器。
 func applyEffectiveConfig(cleaners []model.Cleaner, cfg *config.Config, f CleanFlags) ([]model.Cleaner, error) {
 	globalAge, perTagAge, err := parseMinAge(f.MinAge)
 	if err != nil {
@@ -211,6 +221,8 @@ func applyEffectiveConfig(cleaners []model.Cleaner, cfg *config.Config, f CleanF
 	return out, nil
 }
 
+// parseMinAge parses the --min-age flag into global and per-tag age values.
+// parseMinAge 将 --min-age 标志解析为全局和每标签的年龄值。
 func parseMinAge(raw string) (int, map[string]int, error) {
 	global := -1
 	perTag := map[string]int{}
@@ -239,6 +251,8 @@ func parseMinAge(raw string) (int, map[string]int, error) {
 	return global, perTag, nil
 }
 
+// parseDays parses a day string (e.g., "14d") into an integer.
+// parseDays 将天数字符串（如 "14d"）解析为整数。
 func parseDays(raw string) (int, error) {
 	raw = strings.TrimSuffix(strings.TrimSpace(raw), "d")
 	v, err := strconv.Atoi(raw)
@@ -248,6 +262,8 @@ func parseDays(raw string) (int, error) {
 	return v, nil
 }
 
+// chooseRenderer selects the appropriate output renderer based on flags and config.
+// chooseRenderer 根据标志和配置选择合适的输出渲染器。
 func chooseRenderer(flag, cfgDefault string, stdout io.Writer) ui.Renderer {
 	mode := flag
 	if mode == "" {
@@ -268,6 +284,8 @@ func chooseRenderer(flag, cfgDefault string, stdout io.Writer) ui.Renderer {
 	}
 }
 
+// determineScope determines the cleaning scope, home directory, and target UID from flags.
+// determineScope 从标志确定清理范围、主目录和目标 UID。
 func determineScope(f CleanFlags) (model.Scope, string, int, error) {
 	if f.System && f.All {
 		return "", "", 0, errors.New("--system and --all are mutually exclusive")
@@ -304,6 +322,7 @@ func determineScope(f CleanFlags) (model.Scope, string, int, error) {
 }
 
 // ExitError wraps an error with the process exit code the CLI should return.
+// ExitError 将错误与 CLI 应返回的进程退出代码包装在一起。
 type ExitError struct {
 	code int
 	err  error

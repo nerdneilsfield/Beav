@@ -1,3 +1,5 @@
+// Package cli provides the command-line interface for the beav tool.
+// Package cli 提供 beav 工具的命令行界面。
 package cli
 
 import (
@@ -12,6 +14,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// NewConfigCmd creates a command for inspecting or editing beav config.
+// NewConfigCmd 创建一个用于检查或编辑 beav 配置的命令。
 func NewConfigCmd() *cobra.Command {
 	var dir string
 	var force bool
@@ -66,6 +70,8 @@ func NewConfigCmd() *cobra.Command {
 	return cmd
 }
 
+// runConfigInit creates a default config file in the specified directory.
+// runConfigInit 在指定目录中创建默认配置文件。
 func runConfigInit(cfgDir string, force bool) error {
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		return err
@@ -73,6 +79,8 @@ func runConfigInit(cfgDir string, force bool) error {
 	return writeDefaultConfig(filepath.Join(cfgDir, "config.yaml"), force)
 }
 
+// writeDefaultConfig writes a default config.yaml to the given path.
+// writeDefaultConfig 将默认 config.yaml 写入给定路径。
 func writeDefaultConfig(path string, force bool) error {
 	flag := os.O_WRONLY | os.O_CREATE
 	if force {
@@ -89,6 +97,8 @@ func writeDefaultConfig(path string, force bool) error {
 	return err
 }
 
+// runConfigShow displays the effective config and cleaner list as JSON.
+// runConfigShow 以 JSON 格式显示有效配置和清理器列表。
 func runConfigShow(cmd *cobra.Command, dir string) error {
 	cfgDir := resolveConfigDir(dir)
 	cfg, err := config.Load(cfgDir)
@@ -117,6 +127,8 @@ func runConfigShow(cmd *cobra.Command, dir string) error {
 	return enc.Encode(out)
 }
 
+// resolveConfigDir returns the config directory, using the override if provided.
+// resolveConfigDir 返回配置目录，如果提供了覆盖则使用覆盖值。
 func resolveConfigDir(dir string) string {
 	if dir != "" {
 		return dir

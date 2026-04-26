@@ -1,3 +1,5 @@
+// Package cli provides the command-line interface for the beav tool.
+// Package cli 提供 beav 工具的命令行界面。
 package cli
 
 import (
@@ -8,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// NewRootCmd creates a new root CLI command with the given version info.
+// NewRootCmd 创建一个新的根 CLI 命令，包含给定的版本信息。
 func NewRootCmd(version, commit, date string) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "beav",

@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+// AnyProcessRunning checks if any process with the given names is currently running.
+// AnyProcessRunning 检查具有给定名称的任何进程是否正在运行。
 func AnyProcessRunning(names []string) bool {
 	if len(names) == 0 {
 		return false

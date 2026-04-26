@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+// TestWalkSkipsSymlinks verifies that the walker does not follow symbolic links.
+// TestWalkSkipsSymlinks 验证 walker 不会跟随符号链接。
 func TestWalkSkipsSymlinks(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "real")
@@ -38,6 +40,8 @@ func TestWalkSkipsSymlinks(t *testing.T) {
 	}
 }
 
+// TestReStatBeforeUnlinkDetectsChange verifies that modifications are detected before unlinking.
+// TestReStatBeforeUnlinkDetectsChange 验证在删除之前能够检测到文件修改。
 func TestReStatBeforeUnlinkDetectsChange(t *testing.T) {
 	root := t.TempDir()
 	p := filepath.Join(root, "f")
@@ -65,6 +69,8 @@ func TestReStatBeforeUnlinkDetectsChange(t *testing.T) {
 	}
 }
 
+// TestOpenAnchoredRejectsIntermediateSymlink verifies that intermediate symlinks are rejected.
+// TestOpenAnchoredRejectsIntermediateSymlink 验证中间路径中的符号链接会被拒绝。
 func TestOpenAnchoredRejectsIntermediateSymlink(t *testing.T) {
 	root := t.TempDir()
 	realDir := filepath.Join(root, "real")
@@ -80,6 +86,8 @@ func TestOpenAnchoredRejectsIntermediateSymlink(t *testing.T) {
 	}
 }
 
+// TestOpenAnchoredRejectsIntermediateRegularFileAsNotDir verifies that a regular file in the path is rejected.
+// TestOpenAnchoredRejectsIntermediateRegularFileAsNotDir 验证路径中的普通文件会被拒绝。
 func TestOpenAnchoredRejectsIntermediateRegularFileAsNotDir(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "file")
@@ -91,6 +99,8 @@ func TestOpenAnchoredRejectsIntermediateRegularFileAsNotDir(t *testing.T) {
 	}
 }
 
+// TestWalkSkipsDirectoryContainingGitWithoutSwallowingParentSiblings verifies .git directory skipping behavior.
+// TestWalkSkipsDirectoryContainingGitWithoutSwalkingParentSiblings 验证包含 .git 的目录跳过行为。
 func TestWalkSkipsDirectoryContainingGitWithoutSwallowingParentSiblings(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")

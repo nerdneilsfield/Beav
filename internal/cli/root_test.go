@@ -1,3 +1,5 @@
+// Package cli provides the command-line interface for the beav tool.
+// Package cli 提供 beav 工具的命令行界面。
 package cli
 
 import (
@@ -6,6 +8,8 @@ import (
 	"testing"
 )
 
+// TestNoArgsNonTTYPrintsHelp verifies that running without args in non-TTY prints help.
+// TestNoArgsNonTTYPrintsHelp 验证在非 TTY 环境中无参数运行时打印帮助信息。
 func TestNoArgsNonTTYPrintsHelp(t *testing.T) {
 	var buf bytes.Buffer
 	cmd := NewRootCmd("t", "t", "t")

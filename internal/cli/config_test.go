@@ -1,3 +1,5 @@
+// Package cli provides the command-line interface for the beav tool.
+// Package cli 提供 beav 工具的命令行界面。
 package cli
 
 import (
@@ -8,6 +10,8 @@ import (
 	"testing"
 )
 
+// TestConfigShowPrintsCleaners verifies that config show outputs cleaner list.
+// TestConfigShowPrintsCleaners 验证 config show 输出清理器列表。
 func TestConfigShowPrintsCleaners(t *testing.T) {
 	var buf bytes.Buffer
 	cmd := NewRootCmd("t", "t", "t")
@@ -22,6 +26,8 @@ func TestConfigShowPrintsCleaners(t *testing.T) {
 	}
 }
 
+// TestConfigInitCreatesAutoDefault verifies that config init creates a default config.
+// TestConfigInitCreatesAutoDefault 验证 config init 创建默认配置。
 func TestConfigInitCreatesAutoDefault(t *testing.T) {
 	dir := t.TempDir()
 	var buf bytes.Buffer
@@ -41,6 +47,8 @@ func TestConfigInitCreatesAutoDefault(t *testing.T) {
 	}
 }
 
+// TestConfigInitRefusesExistingWithoutForce verifies that init refuses to overwrite existing config.
+// TestConfigInitRefusesExistingWithoutForce 验证 init 拒绝覆盖现有配置。
 func TestConfigInitRefusesExistingWithoutForce(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

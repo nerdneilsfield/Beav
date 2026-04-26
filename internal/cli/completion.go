@@ -1,7 +1,11 @@
+// Package cli provides the command-line interface for the beav tool.
+// Package cli 提供 beav 工具的命令行界面。
 package cli
 
 import "github.com/spf13/cobra"
 
+// NewCompletionCmd creates a command that generates shell completion scripts.
+// NewCompletionCmd 创建一个生成 shell 补全脚本的命令。
 func NewCompletionCmd(root *cobra.Command) *cobra.Command {
 	return &cobra.Command{
 		Use:       "completion [bash|zsh|fish]",

@@ -5,8 +5,12 @@ import (
 	"strings"
 )
 
+// hardDenyExact contains absolute paths that are strictly forbidden from any cleaning operation.
+// hardDenyExact 包含在任何清理操作中都被严格禁止的绝对路径。
 var hardDenyExact = []string{"/", "/etc", "/boot", "/usr", "/proc", "/sys", "/dev", "/run"}
 
+// hardDenyPrefix contains path prefixes that must never be cleaned, including their subdirectories.
+// hardDenyPrefix 包含绝不能被清理的路径前缀，包括其子目录。
 var hardDenyPrefix = []string{
 	"/etc/",
 	"/boot/",
@@ -20,6 +24,8 @@ var hardDenyPrefix = []string{
 	"/var/lib/kubelet",
 }
 
+// homeBlacklistRel contains relative paths under the home directory that must be protected.
+// homeBlacklistRel 包含必须保护的主目录下的相对路径。
 var homeBlacklistRel = []string{
 	"Documents",
 	"Desktop",
@@ -32,6 +38,8 @@ var homeBlacklistRel = []string{
 	".password-store",
 }
 
+// Blacklisted checks whether a given path is on the blacklist and must not be cleaned.
+// Blacklisted 检查给定路径是否在黑名单中且不得被清理。
 func Blacklisted(path, home string) bool {
 	clean := filepath.Clean(path)
 
