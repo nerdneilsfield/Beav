@@ -1,0 +1,16 @@
+# Build artifacts
+/bin/
+*.test
+
+# Coverage and profiling output
+/cover.out
+/coverage.txt
+*.prof
+
+# Local scratch
+/tmp/
+
+# Editor and OS noise
+.DS_Store
+*.swp
+*~
