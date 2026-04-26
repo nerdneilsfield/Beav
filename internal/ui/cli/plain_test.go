@@ -26,6 +26,23 @@ func TestPlainOneLinePerCleaner(t *testing.T) {
 	}
 }
 
+func TestPlainDoesNotPrintFinishLineAfterCleanerSkipped(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewPlain(&buf)
+
+	r.Render(model.Event{Event: model.EvStart, CleanerID: "docker-builder", Name: "Docker builder cache", TS: time.Now()})
+	r.Render(model.Event{Event: model.EvCleanerSkipped, CleanerID: "docker-builder", Reason: "runtime_busy", TS: time.Now()})
+	r.Render(model.Event{Event: model.EvFinish, CleanerID: "docker-builder", Status: "skipped", BytesFreed: 0, TS: time.Now()})
+
+	got := buf.String()
+	if strings.Count(got, "Docker builder cache") != 1 {
+		t.Fatalf("got duplicate cleaner output: %q", got)
+	}
+	if strings.Contains(got, "0 B freed") {
+		t.Fatalf("skipped cleaner should not print a freed line: %q", got)
+	}
+}
+
 func TestSafeBytesClampsNegativeValues(t *testing.T) {
 	if got := safeBytes(-1); got != 0 {
 		t.Fatalf("safeBytes(-1) = %d, want 0", got)

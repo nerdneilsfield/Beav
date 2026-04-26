@@ -32,6 +32,10 @@ func (p *Plain) Render(e model.Event) {
 		if name == "" {
 			name = e.CleanerID
 		}
+		if e.Status == "skipped" || e.Status == "error" {
+			delete(p.current, e.CleanerID)
+			return
+		}
 		_, _ = fmt.Fprintf(p.w, "%s - %s - %s freed (%d files)\n", name, e.Status, humanize.Bytes(safeBytes(e.BytesFreed)), e.FilesDeleted)
 		delete(p.current, e.CleanerID)
 	case model.EvCleanerSkipped:

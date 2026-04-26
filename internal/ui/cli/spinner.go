@@ -40,6 +40,10 @@ func (s *Spinner) Render(e model.Event) {
 		if name == "" {
 			name = e.CleanerID
 		}
+		if e.Status == "skipped" || e.Status == "error" {
+			delete(s.current, e.CleanerID)
+			return
+		}
 		_, _ = fmt.Fprintf(s.w, "  %s %s - %s freed\n", styleOK.Render("[ok]"), name, humanize.Bytes(safeBytes(e.BytesFreed)))
 		delete(s.current, e.CleanerID)
 	case model.EvCleanerSkipped:
