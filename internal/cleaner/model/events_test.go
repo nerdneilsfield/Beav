@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+// TestEventJSONShapesByEventType tests that Event JSON output has correct shape for each event type.
+// TestEventJSONShapesByEventType 测试 Event 的 JSON 输出对每种事件类型是否具有正确的结构。
 func TestEventJSONShapesByEventType(t *testing.T) {
 	now := time.Now()
 	cases := []struct {

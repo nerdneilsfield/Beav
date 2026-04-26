@@ -2,6 +2,8 @@ package model
 
 import "testing"
 
+// TestExecutorTypeKnown tests that ParseExecutorType correctly parses known executor types.
+// TestExecutorTypeKnown 测试 ParseExecutorType 是否正确解析已知的执行器类型。
 func TestExecutorTypeKnown(t *testing.T) {
 	cases := []struct {
 		s    string
@@ -23,6 +25,8 @@ func TestExecutorTypeKnown(t *testing.T) {
 	}
 }
 
+// TestScopeKnown tests that ParseScope correctly parses known scopes.
+// TestScopeKnown 测试 ParseScope 是否正确解析已知的作用范围。
 func TestScopeKnown(t *testing.T) {
 	if _, ok := ParseScope("user"); !ok {
 		t.Error("user should parse")
