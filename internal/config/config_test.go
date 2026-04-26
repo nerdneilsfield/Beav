@@ -43,6 +43,8 @@ whitelist:
 	}
 }
 
+// TestLoadWithHomeExpandsWhitelistForTargetHome verifies that ~/ paths in whitelist.txt are expanded using the provided home.
+// TestLoadWithHomeExpandsWhitelistForTargetHome 验证 whitelist.txt 中的 ~/ 路径使用提供的主目录展开。
 func TestLoadWithHomeExpandsWhitelistForTargetHome(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "whitelist.txt"), []byte("~/.cache/protected\n"), 0o600); err != nil {

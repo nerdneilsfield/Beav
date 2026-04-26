@@ -78,6 +78,8 @@ func LoadWithHome(dir, home string) (*Config, error) {
 	return cfg, nil
 }
 
+// MergedWhitelist returns the combined whitelist from both YAML config and whitelist.txt file.
+// MergedWhitelist 返回来自 YAML 配置和 whitelist.txt 文件的合并白名单。
 func (c *Config) MergedWhitelist() []string {
 	out := make([]string, 0, len(c.Whitelist)+len(c.whitelistTxt))
 	out = append(out, c.whitelistTxt...)
