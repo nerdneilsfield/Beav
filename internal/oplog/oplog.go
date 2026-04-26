@@ -1,3 +1,5 @@
+// Package oplog provides a rotating log for recording file operations during cache cleanup.
+// Package oplog 提供一个循环日志，用于记录缓存清理期间的文件操作。
 package oplog
 
 import (
@@ -8,6 +10,8 @@ import (
 	"time"
 )
 
+// Logger writes operation logs to a file with automatic rotation when size limits are reached.
+// Logger 将操作日志写入文件，在达到大小限制时自动轮转。
 type Logger struct {
 	mu       sync.Mutex
 	path     string
@@ -17,6 +21,8 @@ type Logger struct {
 	written  int64
 }
 
+// New creates a new Logger that writes to the given path with rotation limits.
+// New 创建一个新的 Logger，写入给定路径并带有轮转限制。
 func New(path string, maxBytes int64, maxFiles int) (*Logger, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -58,6 +64,8 @@ func (l *Logger) Close() error {
 	return err
 }
 
+// rotate renames the current log file and creates a new one, keeping up to maxFiles backups.
+// rotate 重命名当前日志文件并创建新文件，保留最多 maxFiles 个备份。
 func (l *Logger) rotate() error {
 	if l.f != nil {
 		_ = l.f.Close()

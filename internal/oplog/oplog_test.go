@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+// TestRotates verifies that the Logger rotates log files when the size limit is exceeded.
+// TestRotates 验证 Logger 在超过大小限制时轮转日志文件。
 func TestRotates(t *testing.T) {
 	dir := t.TempDir()
 	o, err := New(filepath.Join(dir, "operations.log"), 64, 3)
