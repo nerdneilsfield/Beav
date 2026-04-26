@@ -1,0 +1,53 @@
+version: 2
+
+project_name: beav
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: beav-linux
+    main: ./cmd/beav
+    binary: beav
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}
+    targets:
+      - linux_amd64_v1
+      - linux_386_sse2
+      - linux_arm64
+      - linux_arm_6
+      - linux_arm_7
+      - linux_riscv64_rva20u64
+      - linux_ppc64le_power8
+      - linux_s390x
+      - linux_loong64
+
+archives:
+  - id: beav
+    ids:
+      - beav-linux
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Target }}"
+    files:
+      - LICENSE
+      - README.md
+      - README_ZH.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
