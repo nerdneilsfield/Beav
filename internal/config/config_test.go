@@ -58,6 +58,16 @@ func TestLoadWithHomeExpandsWhitelistForTargetHome(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsHomeRelativeWhitelistWithoutHome(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "whitelist.txt"), []byte("~/.cache/protected\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadWithHome(dir, ""); err == nil {
+		t.Fatal("expected ~/ whitelist to be rejected when no home is available")
+	}
+}
+
 func TestLoadDefaultsToAutoOutput(t *testing.T) {
 	cfg, err := Load(t.TempDir())
 	if err != nil {

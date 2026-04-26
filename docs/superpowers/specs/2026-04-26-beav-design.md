@@ -310,10 +310,10 @@ Stable across v1.x (additive only). Every line is one of:
 ```
 
 **Per-entry skip `reason` enum** (event `skipped`):
-`age_too_recent`, `whitelisted`, `cross_fs`, `symlink`, `wrong_type`, `inside_git`, `blacklisted`, `permission_denied`, `toctou_changed`, `dry_run`.
+`age_too_recent`, `whitelisted`, `excluded`, `cross_fs`, `symlink`, `wrong_type`, `inside_git`, `blacklisted`, `permission_denied`, `toctou_changed`, `dry_run`.
 
 **Whole-cleaner skip `reason` enum** (event `cleaner_skipped`):
-`disabled`, `not_selected`, `wrong_scope`, `running_process`, `runtime_unavailable`, `runtime_busy`, `runtime_not_rootless`, `manager_not_installed`, `boundary_violation`, `resolver_failed`, `user_declined`.
+`disabled`, `not_selected`, `wrong_scope`, `running_process`, `runtime_unavailable`, `runtime_busy`, `runtime_not_rootless`, `manager_not_installed`, `boundary_violation`, `resolver_failed`, `no_matches`, `user_declined`.
 
 **Error event schema** (event `error`): emitted when a cleaner encounters a non-skip failure during execution — distinct from `skipped` (intentional) and `cleaner_skipped` (precondition not met). Fields:
 

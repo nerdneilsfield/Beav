@@ -22,6 +22,7 @@ var ErrCrossFS = errors.New("entry on different filesystem")
 var ErrNotFound = errors.New("entry not found")
 var ErrSymlink = errors.New("path component is a symlink")
 var ErrNotInsideRoot = errors.New("target is not under the safe root")
+var ErrNotDir = errors.New("path component is not a directory")
 
 type Entry struct {
 	RelPath string
@@ -84,6 +85,8 @@ func (w *Walker) walkDir(parentFD int, rel string, fn WalkFunc) (bool, error) {
 		return false, err
 	}
 	sort.Strings(names)
+	// Treat a directory that directly contains .git as a repository root and
+	// skip that whole subtree; the parent still continues with other entries.
 	for _, n := range names {
 		if n == ".git" {
 			return true, nil
@@ -263,7 +266,7 @@ func OpenAnchoredDirFD(safeRoot, target string) (int, error) {
 	for _, part := range strings.Split(rest, string(filepath.Separator)) {
 		if part == "" || part == "." || part == ".." {
 			_ = unix.Close(cur)
-			return -1, ErrSymlink
+			return -1, ErrNotDir
 		}
 		var st unix.Stat_t
 		if err := unix.Fstatat(cur, part, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
@@ -280,7 +283,7 @@ func OpenAnchoredDirFD(safeRoot, target string) (int, error) {
 		}
 		if (st.Mode & unix.S_IFMT) != unix.S_IFDIR {
 			_ = unix.Close(cur)
-			return -1, ErrSymlink
+			return -1, ErrNotDir
 		}
 		next, err := unix.Openat(cur, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		_ = unix.Close(cur)

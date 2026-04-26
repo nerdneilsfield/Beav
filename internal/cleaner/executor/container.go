@@ -14,9 +14,22 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type ContainerExecutor struct{}
+type ContainerTarget struct {
+	UID  int
+	Home string
+}
 
-func NewContainerExecutor() *ContainerExecutor { return &ContainerExecutor{} }
+type ContainerExecutor struct {
+	target ContainerTarget
+}
+
+func NewContainerExecutor(target ...ContainerTarget) *ContainerExecutor {
+	t := ContainerTarget{UID: os.Getuid(), Home: os.Getenv("HOME")}
+	if len(target) > 0 {
+		t = target[0]
+	}
+	return &ContainerExecutor{target: t}
+}
 
 func containerArgv(runtime, target string, ageDays int) ([]string, error) {
 	if target == "volume" {
@@ -68,7 +81,7 @@ func (ce *ContainerExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bo
 		return nil
 	}
 	rootlessDaemon := daemonRootless(ctx, runtime)
-	if c.Scope == model.ScopeUser && (!rootlessDaemon || !verifyRootlessSocket(ctx, runtime)) {
+	if c.Scope == model.ScopeUser && (!rootlessDaemon || !verifyRootlessSocket(ctx, runtime, ce.target.UID, ce.target.Home)) {
 		emit(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: "runtime_not_rootless", TS: time.Now()})
 		emitFinish(emit, c.ID, "skipped", 0, start)
 		return nil
@@ -158,8 +171,8 @@ func daemonRootless(ctx context.Context, runtime string) bool {
 	return true
 }
 
-func verifyRootlessSocket(ctx context.Context, runtime string) bool {
-	sock := socketPath(ctx, runtime)
+func verifyRootlessSocket(ctx context.Context, runtime string, uid int, home string) bool {
+	sock := socketPath(ctx, runtime, uid)
 	if sock == "" {
 		return false
 	}
@@ -167,11 +180,11 @@ func verifyRootlessSocket(ctx context.Context, runtime string) bool {
 	if err := unix.Lstat(sock, &st); err != nil {
 		return false
 	}
-	if int(st.Uid) != os.Getuid() {
+	if int(st.Uid) != uid {
 		return false
 	}
-	uid := strconv.Itoa(os.Getuid())
-	for _, prefix := range []string{"/run/user/" + uid + "/", os.Getenv("XDG_RUNTIME_DIR") + "/", os.Getenv("HOME") + "/"} {
+	uidStr := strconv.Itoa(uid)
+	for _, prefix := range []string{"/run/user/" + uidStr + "/", os.Getenv("XDG_RUNTIME_DIR") + "/", home + "/"} {
 		if prefix != "/" && strings.HasPrefix(sock, prefix) {
 			return true
 		}
@@ -179,16 +192,22 @@ func verifyRootlessSocket(ctx context.Context, runtime string) bool {
 	return false
 }
 
-func socketPath(ctx context.Context, runtime string) string {
+func socketPath(ctx context.Context, runtime string, uid int) string {
 	if v := os.Getenv("DOCKER_HOST"); runtime == "docker" && strings.HasPrefix(v, "unix://") {
 		return strings.TrimPrefix(v, "unix://")
 	}
 	switch runtime {
 	case "docker":
-		uid := strconv.Itoa(os.Getuid())
-		p := filepath.Join("/run/user", uid, "docker.sock")
+		p := filepath.Join("/run/user", strconv.Itoa(uid), "docker.sock")
 		if _, err := os.Stat(p); err == nil {
 			return p
+		}
+		out, err := exec.CommandContext(ctx, "docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}").Output()
+		if err == nil {
+			s := strings.TrimSpace(string(out))
+			if strings.HasPrefix(s, "unix://") {
+				return strings.TrimPrefix(s, "unix://")
+			}
 		}
 	case "podman":
 		out, err := exec.CommandContext(ctx, "podman", "info", "--format", "{{.Host.RemoteSocket.Path}}").Output()

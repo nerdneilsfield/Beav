@@ -69,7 +69,7 @@ func cmdResolver(argv []string, fallback string) Resolver {
 	return func(home string) string {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		c := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		c := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- resolver argv comes from the closed built-in resolver table.
 		out, err := c.Output()
 		if err == nil {
 			s := strings.TrimSpace(string(out))

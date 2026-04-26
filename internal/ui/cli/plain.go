@@ -32,7 +32,7 @@ func (p *Plain) Render(e model.Event) {
 		if name == "" {
 			name = e.CleanerID
 		}
-		_, _ = fmt.Fprintf(p.w, "%s - %s - %s freed (%d files)\n", name, e.Status, humanize.Bytes(uint64(e.BytesFreed)), e.FilesDeleted)
+		_, _ = fmt.Fprintf(p.w, "%s - %s - %s freed (%d files)\n", name, e.Status, humanize.Bytes(safeBytes(e.BytesFreed)), e.FilesDeleted)
 		delete(p.current, e.CleanerID)
 	case model.EvCleanerSkipped:
 		start := p.current[e.CleanerID]
@@ -44,7 +44,7 @@ func (p *Plain) Render(e model.Event) {
 	case model.EvError:
 		_, _ = fmt.Fprintf(p.w, "%s - error - %s: %s\n", e.CleanerID, e.Reason, e.Detail)
 	case model.EvSummary:
-		_, _ = fmt.Fprintf(p.w, "Total: %d cleaners - %s freed\n", e.CleanersRun, humanize.Bytes(uint64(e.BytesFreed)))
+		_, _ = fmt.Fprintf(p.w, "Total: %d cleaners - %s freed\n", e.CleanersRun, humanize.Bytes(safeBytes(e.BytesFreed)))
 	}
 }
 

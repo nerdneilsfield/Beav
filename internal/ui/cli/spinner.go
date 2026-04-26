@@ -40,7 +40,7 @@ func (s *Spinner) Render(e model.Event) {
 		if name == "" {
 			name = e.CleanerID
 		}
-		_, _ = fmt.Fprintf(s.w, "  %s %s - %s freed\n", styleOK.Render("[ok]"), name, humanize.Bytes(uint64(e.BytesFreed)))
+		_, _ = fmt.Fprintf(s.w, "  %s %s - %s freed\n", styleOK.Render("[ok]"), name, humanize.Bytes(safeBytes(e.BytesFreed)))
 		delete(s.current, e.CleanerID)
 	case model.EvCleanerSkipped:
 		start := s.current[e.CleanerID]
@@ -52,7 +52,7 @@ func (s *Spinner) Render(e model.Event) {
 	case model.EvError:
 		_, _ = fmt.Fprintf(s.w, "  %s %s - %s\n", styleErr.Render("[err]"), e.CleanerID, e.Detail)
 	case model.EvSummary:
-		_, _ = fmt.Fprintf(s.w, "\nFreed %s across %d cleaners.\n", humanize.Bytes(uint64(e.BytesFreed)), e.CleanersRun)
+		_, _ = fmt.Fprintf(s.w, "\nFreed %s across %d cleaners.\n", humanize.Bytes(safeBytes(e.BytesFreed)), e.CleanersRun)
 	}
 }
 

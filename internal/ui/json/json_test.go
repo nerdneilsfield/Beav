@@ -3,7 +3,6 @@ package json
 import (
 	"bytes"
 	"encoding/json"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -38,9 +37,31 @@ func TestJSONLIncludesZeroValuedStableCounters(t *testing.T) {
 	r.Render(model.Event{Event: model.EvSummary, TS: time.Now()})
 
 	line := strings.TrimSpace(buf.String())
-	for _, field := range []string{"dry_run", "files_deleted", "bytes_freed", "errors", "cleaners_run", "cleaners_skipped", "cleaners_errored"} {
-		if !regexp.MustCompile(`"` + field + `":`).MatchString(line) {
+	for _, field := range []string{"files_deleted", "bytes_freed", "errors", "cleaners_run", "cleaners_skipped", "cleaners_errored"} {
+		if !strings.Contains(line, `"`+field+`":`) {
 			t.Fatalf("summary JSON missing %s: %s", field, line)
 		}
+	}
+}
+
+func TestJSONLOmitsIrrelevantZeroCountersOnSkippedEntry(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf)
+	r.Render(model.Event{Event: model.EvSkipped, CleanerID: "x", Path: "/tmp/x", Reason: "age_too_recent", TS: time.Now()})
+	line := strings.TrimSpace(buf.String())
+	for _, field := range []string{"files_deleted", "bytes_freed", "errors", "cleaners_run", "duration_ms", "dry_run"} {
+		if strings.Contains(line, `"`+field+`":`) {
+			t.Fatalf("skipped entry should omit %s: %s", field, line)
+		}
+	}
+}
+
+func TestJSONLStartIncludesDryRunFalse(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf)
+	r.Render(model.Event{Event: model.EvStart, CleanerID: "x", DryRun: false, TS: time.Now()})
+	line := strings.TrimSpace(buf.String())
+	if !strings.Contains(line, `"dry_run":false`) {
+		t.Fatalf("start should include dry_run false: %s", line)
 	}
 }

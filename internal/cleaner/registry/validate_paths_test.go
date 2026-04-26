@@ -26,3 +26,19 @@ func TestValidatePathsAcceptsGlobUnderHome(t *testing.T) {
 		t.Fatalf("unexpected: %v", err)
 	}
 }
+
+func TestValidatePathsUsesResolverFallbackWhenCommandMissing(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	c := model.Cleaner{
+		ID:    "npm",
+		Scope: model.ScopeUser,
+		Type:  model.TypePaths,
+		PathResolvers: []model.PathResolverRef{{
+			Resolver: "npm_cache",
+			Subpaths: []string{"_cacache/*"},
+		}},
+	}
+	if err := ValidatePaths(c, "/home/u"); err != nil {
+		t.Fatalf("fallback resolver path should validate: %v", err)
+	}
+}

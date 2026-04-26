@@ -56,7 +56,11 @@ func LoadWithHome(dir, home string) (*Config, error) {
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			cfg.whitelistTxt = append(cfg.whitelistTxt, expand(line, home))
+			expanded, err := expand(line, home)
+			if err != nil {
+				return nil, err
+			}
+			cfg.whitelistTxt = append(cfg.whitelistTxt, expanded)
 		}
 		if err := s.Err(); err != nil {
 			return nil, err
@@ -65,7 +69,11 @@ func LoadWithHome(dir, home string) (*Config, error) {
 		return nil, err
 	}
 	for i, p := range cfg.Whitelist {
-		cfg.Whitelist[i] = expand(p, home)
+		expanded, err := expand(p, home)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Whitelist[i] = expanded
 	}
 	return cfg, nil
 }
@@ -77,11 +85,12 @@ func (c *Config) MergedWhitelist() []string {
 	return out
 }
 
-func expand(p, home string) string {
+func expand(p, home string) (string, error) {
 	if strings.HasPrefix(p, "~/") {
 		if home != "" {
-			return filepath.Join(home, p[2:])
+			return filepath.Join(home, p[2:]), nil
 		}
+		return "", errors.New("~/ whitelist entries require a target home")
 	}
-	return os.ExpandEnv(p)
+	return os.ExpandEnv(p), nil
 }

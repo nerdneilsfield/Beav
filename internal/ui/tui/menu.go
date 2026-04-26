@@ -24,8 +24,7 @@ type menuModel struct {
 func (m menuModel) Init() tea.Cmd { return nil }
 
 func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	if msg, ok := msg.(tea.KeyMsg); ok {
 		switch msg.String() {
 		case "enter":
 			if selected, ok := m.list.SelectedItem().(item); ok {

@@ -52,9 +52,9 @@ func NewCleanCmd() *cobra.Command {
 }
 
 func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error {
-	scope, home, err := determineScope(f)
+	scope, home, targetUID, err := determineScope(f)
 	if err != nil {
-		return CLIError{code: 1, err: err}
+		return ExitError{code: 1, err: err}
 	}
 
 	cfgDir := f.ConfigDir
@@ -67,38 +67,38 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 	}
 	cfg, err := config.LoadWithHome(cfgDir, home)
 	if err != nil {
-		return CLIError{code: 2, err: fmt.Errorf("config load: %w", err)}
+		return ExitError{code: 2, err: fmt.Errorf("config load: %w", err)}
 	}
 
 	var builtinList []registry.Loaded
 	if !f.BuiltinDisabled {
 		builtinList, err = registry.LoadBuiltin(cleaners.Builtin)
 		if err != nil {
-			return CLIError{code: 2, err: fmt.Errorf("builtin load: %w", err)}
+			return ExitError{code: 2, err: fmt.Errorf("builtin load: %w", err)}
 		}
 	}
 	userList, err := registry.LoadUserDir(filepath.Join(cfgDir, "cleaners.d"))
 	if err != nil {
-		return CLIError{code: 2, err: fmt.Errorf("user cleaners: %w", err)}
+		return ExitError{code: 2, err: fmt.Errorf("user cleaners: %w", err)}
 	}
 	merged, err := registry.MergeByID(builtinList, userList)
 	if err != nil {
-		return CLIError{code: 2, err: err}
+		return ExitError{code: 2, err: err}
 	}
 	merged, err = applyEffectiveConfig(merged, cfg, f)
 	if err != nil {
-		return CLIError{code: 2, err: err}
+		return ExitError{code: 2, err: err}
 	}
 	for _, c := range merged {
 		if err := registry.Validate(c); err != nil {
-			return CLIError{code: 2, err: err}
+			return ExitError{code: 2, err: err}
 		}
 		validateHome := home
 		if c.Scope == model.ScopeSystem {
 			validateHome = ""
 		}
 		if err := registry.ValidatePaths(c, validateHome); err != nil {
-			return CLIError{code: 2, err: err}
+			return ExitError{code: 2, err: err}
 		}
 	}
 
@@ -107,10 +107,16 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 
 	var log *oplog.Logger
 	if os.Getenv("BEAV_NO_OPLOG") == "" && !f.DryRun {
-		stateDir := filepath.Join(os.Getenv("HOME"), ".local", "state", "beav")
-		if l, err := oplog.New(filepath.Join(stateDir, "operations.log"), 10*1024*1024, 5); err == nil {
-			log = l
-			defer func() { _ = log.Close() }()
+		logHome := home
+		if logHome == "" {
+			logHome, _ = os.UserHomeDir()
+		}
+		if logHome != "" {
+			stateDir := filepath.Join(logHome, ".local", "state", "beav")
+			if l, err := oplog.New(filepath.Join(stateDir, "operations.log"), 10*1024*1024, 5); err == nil {
+				log = l
+				defer func() { _ = log.Close() }()
+			}
 		}
 	}
 
@@ -118,7 +124,7 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 		engine.WithExecutor(model.TypePaths, executor.NewPathsExecutor(home, safety.NewWhitelist(cfg.MergedWhitelist()))),
 		engine.WithExecutor(model.TypeJournalVacuum, executor.NewJournalExecutor()),
 		engine.WithExecutor(model.TypePkgCache, executor.NewPkgCacheExecutor()),
-		engine.WithExecutor(model.TypeContainerPrune, executor.NewContainerExecutor()),
+		engine.WithExecutor(model.TypeContainerPrune, executor.NewContainerExecutor(executor.ContainerTarget{UID: targetUID, Home: home})),
 	)
 	emit := func(ev model.Event) {
 		if log != nil && ev.Event == model.EvDeleted {
@@ -135,12 +141,12 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return CLIError{code: 4, err: err}
+			return ExitError{code: 4, err: err}
 		}
-		return CLIError{code: 3, err: err}
+		return ExitError{code: 3, err: err}
 	}
 	if res.CleanersErrored > 0 {
-		return CLIError{code: 3, err: fmt.Errorf("errors in %d cleaners", res.CleanersErrored)}
+		return ExitError{code: 3, err: fmt.Errorf("errors in %d cleaners", res.CleanersErrored)}
 	}
 	_ = stderr
 	return nil
@@ -252,22 +258,22 @@ func chooseRenderer(flag, cfgDefault string, stdout io.Writer) ui.Renderer {
 	}
 }
 
-func determineScope(f CleanFlags) (model.Scope, string, error) {
+func determineScope(f CleanFlags) (model.Scope, string, int, error) {
 	if f.System && f.All {
-		return "", "", errors.New("--system and --all are mutually exclusive")
+		return "", "", 0, errors.New("--system and --all are mutually exclusive")
 	}
 	if !f.System && !f.All {
 		if os.Getuid() == 0 && !f.AllowRootHome {
-			return "", "", errors.New("running as root without --system/--all; pass --allow-root-home to clean /root")
+			return "", "", 0, errors.New("running as root without --system/--all; pass --allow-root-home to clean /root")
 		}
 		home, _ := os.UserHomeDir()
-		return model.ScopeUser, home, nil
+		return model.ScopeUser, home, os.Getuid(), nil
 	}
 	if os.Getuid() != 0 {
-		return "", "", errors.New("--system and --all require root; run with sudo")
+		return "", "", 0, errors.New("--system and --all require root; run with sudo")
 	}
 	if f.System {
-		return model.ScopeSystem, "", nil
+		return model.ScopeSystem, "", os.Getuid(), nil
 	}
 
 	resolver := sysinfo.DefaultSudoUserResolver()
@@ -275,31 +281,32 @@ func determineScope(f CleanFlags) (model.Scope, string, error) {
 	if f.UserOverride != "" {
 		uid, _, err := resolver.LookupByName(f.UserOverride)
 		if err != nil {
-			return "", "", err
+			return "", "", 0, err
 		}
 		env["SUDO_USER"] = f.UserOverride
 		env["SUDO_UID"] = strconv.FormatUint(uint64(uid), 10)
 	}
 	resolved, err := resolver.Resolve(env)
 	if err != nil {
-		return "", "", fmt.Errorf("--all home resolution failed: %w", err)
+		return "", "", 0, fmt.Errorf("--all home resolution failed: %w", err)
 	}
-	return "", resolved.Home, nil
+	return model.ScopeAll, resolved.Home, int(resolved.UID), nil
 }
 
-type CLIError struct {
+// ExitError wraps an error with the process exit code the CLI should return.
+type ExitError struct {
 	code int
 	err  error
 }
 
-func (e CLIError) Error() string {
+func (e ExitError) Error() string {
 	return e.err.Error()
 }
 
-func (e CLIError) Code() int {
+func (e ExitError) Code() int {
 	return e.code
 }
 
-func (e CLIError) Unwrap() error {
+func (e ExitError) Unwrap() error {
 	return e.err
 }

@@ -61,7 +61,10 @@ func TestSkipWhenRuntimeMissing(t *testing.T) {
 func TestSystemScopeSkipsRootlessDaemonEvenWithoutVerifiedSocket(t *testing.T) {
 	dir := t.TempDir()
 	docker := filepath.Join(dir, "docker")
-	if err := os.WriteFile(docker, []byte("#!/bin/sh\nif [ \"$1\" = info ]; then echo rootless; exit 0; fi\nexit 0\n"), 0o700); err != nil {
+	if err := os.WriteFile(docker, []byte("#!/bin/sh\nif [ \"$1\" = info ]; then echo rootless; exit 0; fi\nexit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(docker, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -80,6 +83,41 @@ func TestSystemScopeSkipsRootlessDaemonEvenWithoutVerifiedSocket(t *testing.T) {
 	})
 	if !hasCleanerSkip(evs, "runtime_not_rootless") {
 		t.Fatalf("expected rootless system skip; got %+v", evs)
+	}
+}
+
+func TestRootlessSocketVerificationUsesTargetUserAndHome(t *testing.T) {
+	home := t.TempDir()
+	sock := filepath.Join(home, "docker.sock")
+	if err := os.WriteFile(sock, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DOCKER_HOST", "unix://"+sock)
+	if !verifyRootlessSocket(testContext(t), "docker", os.Getuid(), home) {
+		t.Fatal("expected target-owned socket under target home to verify")
+	}
+}
+
+func TestDockerContextSocketDiscovery(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	sock := filepath.Join(home, "context.sock")
+	if err := os.WriteFile(sock, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	docker := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\nif [ \"$1\" = context ]; then echo unix://" + sock + "; exit 0; fi\nexit 1\n"
+	if err := os.WriteFile(docker, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(docker, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("DOCKER_HOST", "")
+	got := socketPath(testContext(t), "docker", 424242)
+	if got != sock {
+		t.Fatalf("socketPath = %q, want %q", got, sock)
 	}
 }
 

@@ -37,6 +37,45 @@ func TestEngineReturnsCanceledContext(t *testing.T) {
 	}
 }
 
+func TestEngineScopeAllRunsUserAndSystem(t *testing.T) {
+	cleaners := []model.Cleaner{
+		{ID: "u", Scope: model.ScopeUser, Type: model.TypePaths},
+		{ID: "s", Scope: model.ScopeSystem, Type: model.TypePaths},
+	}
+	stub := &stubExecutor{}
+	e := New(WithExecutor(model.TypePaths, stub))
+	res, err := e.Run(context.Background(), cleaners, Options{Scope: model.ScopeAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.CleanersRun != 2 || stub.ran != 2 {
+		t.Fatalf("result=%+v ran=%d, want both scopes", res, stub.ran)
+	}
+}
+
+func TestEngineEmitsErrorForMissingExecutor(t *testing.T) {
+	var events []model.Event
+	e := New()
+	res, err := e.Run(context.Background(), []model.Cleaner{{ID: "x", Scope: model.ScopeUser, Type: model.TypePaths}}, Options{
+		Scope: model.ScopeUser,
+		Emitter: func(e model.Event) {
+			events = append(events, e)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.CleanersErrored != 1 {
+		t.Fatalf("result=%+v, want one errored cleaner", res)
+	}
+	for _, e := range events {
+		if e.Event == model.EvError && e.Reason == "internal" {
+			return
+		}
+	}
+	t.Fatalf("missing executor error event not emitted: %+v", events)
+}
+
 type stubExecutor struct{ ran int }
 
 func (s *stubExecutor) Run(_ context.Context, c model.Cleaner, _ bool, emit func(model.Event)) error {

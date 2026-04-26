@@ -46,3 +46,11 @@ func TestBlacklisted(t *testing.T) {
 		}
 	}
 }
+
+func TestBlacklistRejectsKernelVirtualFilesystems(t *testing.T) {
+	for _, p := range []string{"/proc", "/proc/self", "/sys", "/sys/kernel", "/dev", "/dev/null", "/run", "/run/user"} {
+		if !Blacklisted(p, "/home/u") {
+			t.Fatalf("%s should be blacklisted", p)
+		}
+	}
+}

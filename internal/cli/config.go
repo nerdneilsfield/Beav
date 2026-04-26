@@ -19,7 +19,7 @@ func NewConfigCmd() *cobra.Command {
 	initCmd := &cobra.Command{
 		Use:   "init",
 		Short: "Create a starter config.yaml",
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			return runConfigInit(resolveConfigDir(dir), force)
 		},
 	}

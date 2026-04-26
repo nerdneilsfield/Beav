@@ -23,6 +23,7 @@ type Scope string
 const (
 	ScopeUser   Scope = "user"
 	ScopeSystem Scope = "system"
+	ScopeAll    Scope = "all"
 )
 
 func ParseScope(s string) (Scope, bool) {

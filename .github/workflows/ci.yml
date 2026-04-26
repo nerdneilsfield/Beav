@@ -14,7 +14,9 @@ jobs:
         with:
           go-version: "1.24"
       - run: go test -race -coverprofile=cover.out ./...
-      - run: go tool cover -func=cover.out
+      - run: |
+          go tool cover -func=cover.out | tee coverage.txt
+          awk -v min=50 '$1=="total:" { gsub("%","",$3); if ($3+0 < min) exit 1 }' coverage.txt
       - uses: golangci/golangci-lint-action@v6
         with:
           version: latest

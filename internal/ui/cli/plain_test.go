@@ -25,3 +25,9 @@ func TestPlainOneLinePerCleaner(t *testing.T) {
 		t.Errorf("missing status/size: %q", got)
 	}
 }
+
+func TestSafeBytesClampsNegativeValues(t *testing.T) {
+	if got := safeBytes(-1); got != 0 {
+		t.Fatalf("safeBytes(-1) = %d, want 0", got)
+	}
+}

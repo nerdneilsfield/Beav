@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"github.com/dengqi/beav/internal/cleaner/safety"
 	"golang.org/x/sys/unix"
 )
+
+var errNoMatches = errors.New("no matching paths")
 
 type PathsExecutor struct {
 	Home      string
@@ -34,7 +37,11 @@ func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, e
 
 	roots, err := p.expandRoots(c)
 	if err != nil {
-		emit(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: "boundary_violation", Detail: err.Error(), TS: time.Now()})
+		reason := "boundary_violation"
+		if errors.Is(err, errNoMatches) {
+			reason = "no_matches"
+		}
+		emit(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: reason, Detail: err.Error(), TS: time.Now()})
 		emitFinish(emit, c.ID, "skipped", 0, start)
 		return nil
 	}
@@ -64,7 +71,7 @@ func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, e
 				continue
 			}
 			if matchAny(excludes, abs, e.RelPath) {
-				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "whitelisted", TS: time.Now()})
+				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "excluded", TS: time.Now()})
 				continue
 			}
 			if dryRun {
@@ -124,7 +131,13 @@ func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, e
 }
 
 func (p *PathsExecutor) runRoot(c model.Cleaner, root, safeRoot string, age int, field safety.TimeField, process func(*safety.Walker, []safety.Entry), emit func(model.Event), errs *int) {
-	parentFD, err := safety.OpenAnchoredDirFD(safeRoot, filepath.Dir(root))
+	parent := filepath.Dir(root)
+	leaf := filepath.Base(root)
+	if filepath.Clean(root) == filepath.Clean(safeRoot) {
+		parent = safeRoot
+		leaf = "."
+	}
+	parentFD, err := safety.OpenAnchoredDirFD(safeRoot, parent)
 	if err != nil {
 		emitOpenSkip(c.ID, root, err, emit)
 		return
@@ -132,7 +145,8 @@ func (p *PathsExecutor) runRoot(c model.Cleaner, root, safeRoot string, age int,
 	defer unix.Close(parentFD)
 
 	var st unix.Stat_t
-	if err := unix.Fstatat(parentFD, filepath.Base(root), &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+	if err := unix.Fstatat(parentFD, leaf, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		emitOpenSkip(c.ID, root, err, emit)
 		return
 	}
 	mode := st.Mode & unix.S_IFMT
@@ -185,12 +199,15 @@ func entryOldEnough(e safety.Entry, age int, field safety.TimeField, now time.Ti
 
 func emitOpenSkip(cleanerID, path string, err error, emit func(model.Event)) {
 	reason := "permission_denied"
-	if errors.Is(err, safety.ErrSymlink) {
+	switch {
+	case errors.Is(err, safety.ErrSymlink):
 		reason = "symlink"
-	} else if errors.Is(err, safety.ErrCrossFS) {
+	case errors.Is(err, safety.ErrCrossFS):
 		reason = "cross_fs"
-	} else if errors.Is(err, safety.ErrNotInsideRoot) {
+	case errors.Is(err, safety.ErrNotInsideRoot):
 		reason = "blacklisted"
+	case errors.Is(err, safety.ErrNotDir):
+		reason = "wrong_type"
 	}
 	emit(model.Event{Event: model.EvSkipped, CleanerID: cleanerID, Path: path, Reason: reason, Detail: err.Error(), TS: time.Now()})
 }
@@ -215,12 +232,21 @@ func (p *PathsExecutor) expandRoots(c model.Cleaner) ([]string, error) {
 	}
 
 	out := make([]string, 0, len(raws))
+	hadMatch := false
 	for _, r := range raws {
-		matches, err := filepath.Glob(r)
-		if err != nil || len(matches) == 0 {
-			matches = []string{strings.TrimSuffix(r, string(filepath.Separator)+"*")}
+		matches := []string{r}
+		if hasGlobMeta(r) {
+			var err error
+			matches, err = filepath.Glob(r)
+			if err != nil {
+				return nil, fmt.Errorf("invalid glob %q: %w", r, err)
+			}
+			if len(matches) == 0 {
+				continue
+			}
 		}
 		for _, m := range matches {
+			hadMatch = true
 			clean := filepath.Clean(m)
 			if !safety.InsideAllowList(clean, p.Home) || safety.Blacklisted(clean, p.Home) {
 				continue
@@ -229,9 +255,16 @@ func (p *PathsExecutor) expandRoots(c model.Cleaner) ([]string, error) {
 		}
 	}
 	if len(out) == 0 {
+		if !hadMatch {
+			return nil, errNoMatches
+		}
 		return nil, errors.New("no valid roots after safety check")
 	}
 	return out, nil
+}
+
+func hasGlobMeta(p string) bool {
+	return strings.ContainsAny(p, "*?[")
 }
 
 func expandHome(p, home string) string {

@@ -29,7 +29,7 @@ func RunCommand(ctx context.Context, r CommandRun) error {
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, r.Argv[0], r.Argv[1:]...)
+	cmd := exec.CommandContext(ctx, r.Argv[0], r.Argv[1:]...) // #nosec G204 -- argv is selected by built-in executors, not shell-expanded user input.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err

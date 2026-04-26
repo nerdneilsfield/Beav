@@ -55,11 +55,18 @@ func (e *Engine) Run(ctx context.Context, cleaners []model.Cleaner, opt Options)
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
-		if !c.IsEnabled() || (opt.Scope != "" && c.Scope != opt.Scope) || !match(c, opt.Only, opt.Skip) {
+		if !c.IsEnabled() || (opt.Scope != "" && opt.Scope != model.ScopeAll && c.Scope != opt.Scope) || !match(c, opt.Only, opt.Skip) {
 			continue
 		}
 		ex, ok := e.executors[c.Type]
 		if !ok {
+			if opt.Emitter != nil {
+				opt.Emitter(model.Event{Event: model.EvStart, CleanerID: c.ID, Name: c.Name, Scope: c.Scope, Type: c.Type, DryRun: opt.DryRun, TS: time.Now()})
+				opt.Emitter(model.Event{Event: model.EvError, CleanerID: c.ID, Reason: "internal", Detail: "missing executor for type " + string(c.Type), TS: time.Now()})
+				opt.Emitter(model.Event{Event: model.EvFinish, CleanerID: c.ID, Status: "error", Errors: 1, TS: time.Now()})
+			}
+			res.CleanersErrored++
+			res.Errors++
 			continue
 		}
 

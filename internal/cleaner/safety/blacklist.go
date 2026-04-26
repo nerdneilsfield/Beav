@@ -5,12 +5,16 @@ import (
 	"strings"
 )
 
-var hardDenyExact = []string{"/", "/etc", "/boot", "/usr"}
+var hardDenyExact = []string{"/", "/etc", "/boot", "/usr", "/proc", "/sys", "/dev", "/run"}
 
 var hardDenyPrefix = []string{
 	"/etc/",
 	"/boot/",
 	"/usr/",
+	"/proc/",
+	"/sys/",
+	"/dev/",
+	"/run/",
 	"/var/lib/docker",
 	"/var/lib/containerd",
 	"/var/lib/kubelet",

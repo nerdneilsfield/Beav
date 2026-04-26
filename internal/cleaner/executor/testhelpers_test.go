@@ -38,6 +38,15 @@ func hasCleanerSkip(evs []model.Event, reason string) bool {
 	return false
 }
 
+func hasSkip(evs []model.Event, reason string) bool {
+	for _, e := range evs {
+		if e.Event == model.EvSkipped && e.Reason == reason {
+			return true
+		}
+	}
+	return false
+}
+
 func ptrInt(v int) *int { return &v }
 
 func testContext(t *testing.T) context.Context {

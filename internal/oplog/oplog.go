@@ -68,10 +68,6 @@ func (l *Logger) rotate() error {
 		for i := l.maxFiles - 1; i >= 1; i-- {
 			old := fmt.Sprintf("%s.%d", l.path, i)
 			newer := fmt.Sprintf("%s.%d", l.path, i+1)
-			if i+1 > l.maxFiles {
-				_ = os.Remove(old)
-				continue
-			}
 			_ = os.Rename(old, newer)
 		}
 		_ = os.Rename(l.path, l.path+".1")
