@@ -1,3 +1,5 @@
+// Package main is the entry point for the beav CLI application.
+// Package main 是 beav CLI 应用程序的入口点。
 package main
 
 import (
@@ -11,6 +13,8 @@ import (
 	"github.com/dengqi/beav/internal/cli"
 )
 
+// Build-time version information set via ldflags.
+// 构建时版本信息，通过 ldflags 设置。
 var (
 	version = "dev"
 	commit  = "none"
