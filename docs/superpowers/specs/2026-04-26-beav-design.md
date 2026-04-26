@@ -8,14 +8,21 @@
 
 ## 1. Goal
 
-A single-binary, pure-Go, Linux-first system cleaner. v1 ships two commands: `beav clean` (cache cleanup, age-aware) and `beav analyze` (interactive disk usage explorer). Status / optimize / uninstall stay out of v1.
+A single-binary, pure-Go, Linux-first system cleaner.
+
+**Primary v1 commands:** `beav clean` (cache cleanup, age-aware) and `beav analyze` (interactive disk usage explorer).
+
+**Auxiliary v1 commands** (also shipped, but trivial): `beav config`, `beav completion`, `beav version`.
+
+Status / optimize / uninstall stay out of v1.
 
 ## 2. Non-Goals
 
 - macOS / Windows support (v2+).
 - Real-time system monitor (use btop/htop).
 - App uninstaller (Linux apps are package-managed; not Mole's macOS use case).
-- Any operation that modifies files outside cache/log/tmp domains.
+- Any operation that modifies files outside cache/log/tmp domains. **This explicitly excludes `/boot`, package databases, and bootloader state — so old-kernel removal is not in v1** (see §14).
+- In-place file rewriting / transformation (e.g., editing `recently-used.xbel`) — v1 only deletes whole files/directories.
 - Any auto-elevation: Beav never silently calls `sudo`.
 
 ## 3. Privilege Model
@@ -27,10 +34,20 @@ Single binary, two scopes selected by the `--system` flag and the effective UID:
 | `beav clean` | non-root | user (caller's `$HOME`) |
 | `beav clean --system` | non-root | refuse, print `sudo beav clean --system` hint |
 | `sudo beav clean --system` | root | system only (`/var/cache`, `/var/log`, `/tmp`, journal, pkg cache) |
-| `sudo beav clean --all` | root | system + the original user's `$HOME` (resolved via `$SUDO_USER`) |
+| `sudo beav clean --all` | root | system + the original user's `$HOME` (resolved per §3.1) |
 | `beav clean` as root login | root | refuses unless `--allow-root-home`; the only home is `/root` and that's usually not what's wanted |
 
 After a non-root `beav clean`, if `/var/cache` etc. show non-trivial size, print a one-line hint: `system caches hold ~12 GiB; run 'sudo beav clean --system' to reclaim`.
+
+### 3.1 Resolving the target home for `--all`
+
+`$SUDO_USER` alone is not trustworthy (`su -`, `doas`, `sudo -E` from a hostile env, root login shells can all corrupt or clear it). Beav resolves the target home by **all three** of the following, and refuses if any disagree or are unavailable:
+
+1. `$SUDO_UID` is set, parses to a non-zero numeric uid, and `getpwuid(uid)` succeeds.
+2. `$SUDO_USER` is set, `getpwnam(name)` succeeds, and the resulting uid matches step 1.
+3. The home directory from `getpwuid` exists, is owned by that uid (via `lstat` + `st_uid` check), and is not a symlink.
+
+If any step fails, `--all` aborts with a clear error: "cannot determine invoking user safely; run `beav clean --system` and `beav clean` separately as that user." `--all` may also be given an explicit `--user=<name>` to bypass `$SUDO_*` entirely; the same three checks still apply to the named user.
 
 ## 4. Architecture
 
@@ -64,7 +81,7 @@ internal/
 cleaners/                         //go:embed YAML data
   user/{vscode,jetbrains,browsers,desktop,shells}.yaml
   user/langs/{npm,pnpm,yarn,bun,pip,cargo,go,gradle,maven}.yaml
-  system/{apt,dnf,pacman,zypper,journal,varcache,tmp,kernels}.yaml
+  system/{apt,dnf,pacman,zypper,journal,varcache,tmp}.yaml
 docs/
 testdata/
 Makefile
@@ -86,13 +103,16 @@ type: paths                   # paths | command | journal_vacuum | pkg_cache
 enabled: true
 min_age_days: 7               # null means "no age filter — requires --force-no-age"
 time_field: mtime             # mtime | ctime (default mtime)
-paths:                        # for type: paths — globs relative to $HOME or absolute
+paths:                        # for type: paths — static globs (~ or absolute only)
   - ~/.config/Code/Cache/*
   - ~/.config/Code/CachedData/*
   - ~/.config/Code/logs/*
   - ~/.cache/vscode-cpptools/**
   - ~/.vscode-server/data/CachedExtensionVSIXs/*
-exclude:                      # globs, evaluated after paths
+path_resolvers:               # dynamic paths resolved at runtime by built-in resolvers (see §5.3)
+  - resolver: npm_cache
+    subpaths: [_cacache, _npx, _logs, _prebuilds]
+exclude:                      # globs, evaluated after paths and path_resolvers
   - "**/keybindings.json"
 running_processes:            # skip cleaning if any of these are running
   - code
@@ -129,18 +149,59 @@ needs_root: true
 
 `type: command` is **not** an arbitrary shell hatch. The executor maps `pkg_cache.manager` to a hardcoded `exec.Command` invocation; YAML cannot specify the binary path or extra args. Same for `journal_vacuum` (always `/usr/bin/journalctl --vacuum-time=Nd`). This keeps user-provided YAML from being an RCE vector.
 
+### 5.3 Path Resolvers
+
+Many language toolchains store caches at user-configurable paths. YAML cannot embed shell calls, so dynamic paths are resolved by a **closed enum of built-in resolvers**:
+
+| Resolver | Source | Fallback |
+|---|---|---|
+| `npm_cache` | `npm config get cache` (2s timeout) | `$HOME/.npm` |
+| `pnpm_store` | `pnpm store path` (2s timeout) | `$HOME/.local/share/pnpm/store` |
+| `yarn_cache` | `yarn cache dir` (2s timeout) | `$HOME/.cache/yarn` |
+| `bun_cache` | `$BUN_INSTALL_CACHE_DIR` env | `$HOME/.bun/install/cache` |
+| `pip_cache` | `pip cache dir` (2s timeout) | `$HOME/.cache/pip` |
+| `cargo_home` | `$CARGO_HOME` env | `$HOME/.cargo` |
+| `gocache` | `go env GOCACHE` (2s timeout) | `$HOME/.cache/go-build` |
+| `gradle_home` | `$GRADLE_USER_HOME` env | `$HOME/.gradle` |
+| `maven_local_repo` | settings.xml `<localRepository>` (2s timeout via `mvn help:evaluate`) | `$HOME/.m2/repository` |
+| `xdg_cache` | `$XDG_CACHE_HOME` env | `$HOME/.cache` |
+| `xdg_state` | `$XDG_STATE_HOME` env | `$HOME/.local/state` |
+| `xdg_data` | `$XDG_DATA_HOME` env | `$HOME/.local/share` |
+
+Resolver semantics:
+
+- **Resolution failure** (binary missing, returns non-zero, times out, returns empty/non-absolute path): use the fallback. Failure is logged at debug level; the cleaner still runs against the fallback.
+- **Boundary check after resolution**: every resolved path is re-validated against §6 layer 1 (allow-list) and layer 2 (blacklist). A resolver returning, say, `/etc/foo` is rejected at runtime — the cleaner skips with an error.
+- **No env-var injection in YAML**: `path_resolvers` lists resolver names from the table above; arbitrary `${VAR}` interpolation in `paths:` is not supported.
+- **Subpaths**: `subpaths: [a, b]` joined under the resolved root; each subpath is treated as a glob pattern under that root.
+
+User-supplied YAML can use these resolvers but cannot define new ones; adding a resolver requires a Go-level change (gated by code review).
+
 ## 6. Safety Layers
 
-Every path slated for deletion passes through these gates in order. Failing any gate skips the file (logged, not aborted).
+### 6.1 Per-cleaner gates (load time)
 
-1. **Allow-list boundary** — must be inside `$HOME`, `/var/cache`, `/var/log`, `/tmp`, `/var/tmp`. Anything else → refuse the entire cleaner with a load-time error.
-2. **Hard blacklist** — never touched even if YAML asks: `/`, `/etc`, `/boot`, `/usr` (except explicitly listed `/usr/share/man/cache`), `/home/*` (except resolved caller home), `$HOME` itself, `$HOME/{Documents,Desktop,Downloads,Pictures,Videos,Music}`, `$HOME/.ssh`, `$HOME/.gnupg`, `$HOME/.password-store`, any directory containing a `.git` directory.
-3. **No symlink follow** — open with `O_NOFOLLOW`, refuse symlinks pointing outside the parent.
-4. **No cross-fs** — compare `st_dev` to the registry root; refuse if different.
-5. **Type filter** — `lstat` must report regular file or directory; sockets/FIFOs/device nodes skipped.
-6. **Age filter** — `now - mtime ≥ min_age_days` (or ctime per `time_field`). Always-on unless `--force-no-age`.
-7. **Process guard** — if any name in `running_processes` matches a live process (`/proc` scan), the cleaner is skipped with a clear message.
-8. **User whitelist** — `~/.config/beav/whitelist.txt` prefixes are excluded path-by-path.
+Refusing a whole cleaner before it touches disk:
+
+1. **Allow-list boundary** — every static `path` and every resolver fallback must be inside `$HOME`, `/var/cache`, `/var/log`, `/tmp`, `/var/tmp`. Anything else → refuse the entire cleaner at registry load time with a clear error.
+2. **Hard blacklist** — refusal at registry load: `/`, `/etc`, `/boot`, `/usr` (no exceptions in v1), `/home/*` (except the resolved caller home), `$HOME` itself, `$HOME/{Documents,Desktop,Downloads,Pictures,Videos,Music}`, `$HOME/.ssh`, `$HOME/.gnupg`, `$HOME/.password-store`. A directory containing `.git` is checked at runtime per-entry, not at load.
+
+### 6.2 Per-entry gates (runtime, recursive)
+
+The executor walks the matched tree using **`openat`-style descent with a directory file descriptor at every level** (Go: `golang.org/x/sys/unix.Openat` + `os.NewFile` wrapped in a `*Dir`). It never resolves a full path string with `os.Open` after the initial root open, so an attacker swapping a parent into a symlink mid-walk cannot redirect us.
+
+For every entry encountered during the walk:
+
+3. **lstat each level** — at every directory descent and before any unlink, call `fstatat` with `AT_SYMLINK_NOFOLLOW`. A symlink is never followed; if the entry is a symlink, it is skipped (or unlinked only if the cleaner explicitly opts into `delete_symlinks: true`, which v1 cleaners do not).
+4. **No cross-fs** — `st_dev` of every entry must equal the `st_dev` captured when the cleaner's root was first opened. Mismatch → skip subtree.
+5. **Type filter** — only regular files and directories. Sockets/FIFOs/character/block devices are skipped silently.
+6. **`.git` guard** — if a directory's children include `.git`, the entire subtree is skipped (it's a git work tree, not cache).
+7. **Recursive age filter** — `now - mtime(entry) ≥ min_age_days` is checked **per individual file**, not per directory. A directory itself is considered for removal **only after** its children have been processed and only if it is then empty *and* its own mtime also meets the threshold. Whole-tree `RemoveAll` is forbidden inside the executor; deletion is always a bottom-up walk.
+8. **Re-stat before unlink (TOCTOU)** — immediately before calling `unlinkat`, re-`fstatat` the entry; if `(st_ino, st_dev, st_size, st_mtim)` differs from the value captured during the walk, the entry is skipped. This narrows the TOCTOU window to a single syscall.
+9. **Process guard** — before the cleaner starts, scan `/proc/*/comm` and `/proc/*/cmdline` for any name in `running_processes`. If matched, the cleaner is skipped with a clear message. (Re-checked once mid-walk for long-running cleaners.)
+10. **User whitelist** — entries whose absolute path has any prefix listed in `~/.config/beav/whitelist.txt` or `config.yaml`'s `whitelist:` array are skipped.
+
+The two whitelist sources (txt + yaml) are merged into a single in-memory prefix set; they are not redundant in code, but the user-facing surface is one concept. We still document both, since `whitelist.txt` is convenient for ops scripts and `config.yaml` is convenient for declarative dotfile management.
 
 Operations log (`~/.local/state/beav/operations.log`) records every delete with timestamp, path, size, cleaner id. Disable with `BEAV_NO_OPLOG=1`.
 
@@ -172,8 +233,32 @@ beav version
 - **No args + TTY** → bubbletea main menu (Clean / Analyze / List cleaners / Quit).
 - **`beav clean` + TTY** → spinner renderer (Mole-style line output). Each cleaner gets one line: spinner → `✓ <name> · <freed>` or `⚠ <name> · skipped (<reason>)`.
 - **`beav clean` + non-TTY** (pipe, CI, SSH stdout to file) → plain renderer (no ANSI, no spinner, one line per cleaner).
-- **`beav clean --output json`** → JSONL events: one object per cleaner finished, plus a final summary.
+- **`beav clean --output json`** → JSONL events on stdout, one JSON object per line (see §8.1 for schema). Logs go to stderr.
 - **`beav analyze`** → always TUI; refuses if non-TTY (suggests `du`/`gdu` directly).
+
+### 8.1 JSONL output schema
+
+Stable across v1.x (additive only). Every line is one of:
+
+```json
+{"event":"start","cleaner_id":"editor-vscode","name":"VS Code Cache","scope":"user","dry_run":false,"ts":"2026-04-26T12:00:00Z"}
+{"event":"deleted","cleaner_id":"editor-vscode","path":"/home/dq/.config/Code/Cache/x","size":4096,"ts":"..."}
+{"event":"skipped","cleaner_id":"editor-vscode","path":"/home/dq/.config/Code/Cache/y","reason":"age_too_recent","ts":"..."}
+{"event":"finish","cleaner_id":"editor-vscode","files_deleted":42,"bytes_freed":12345678,"errors":0,"duration_ms":83}
+{"event":"summary","cleaners_run":12,"cleaners_skipped":1,"files_deleted":1024,"bytes_freed":987654321,"errors":2,"duration_ms":4200}
+```
+
+`reason` enum: `age_too_recent`, `whitelisted`, `running_process`, `cross_fs`, `symlink`, `wrong_type`, `inside_git`, `blacklisted`, `permission_denied`, `toctou_changed`, `dry_run`.
+
+### 8.2 Exit codes
+
+- `0` — every selected cleaner ran to completion. Per-entry skips (age, whitelist, running process) do **not** cause non-zero; they are normal.
+- `1` — usage error (bad flags, unknown cleaner id, refused privilege escalation request).
+- `2` — config / registry load error (malformed YAML, allow-list violation in YAML, missing required field).
+- `3` — at least one cleaner reported an `error` event during execution (permission denied on a path that should have been writable, syscall error, command-type cleaner exited non-zero). Other cleaners still completed; output reflects partial success.
+- `4` — aborted by signal (Ctrl+C). Already-deleted entries remain deleted; oplog is flushed.
+
+`--dry-run` always exits `0` unless flags are malformed.
 
 ## 9. Default Cleaners (v1 Registry)
 
@@ -183,7 +268,6 @@ beav version
 |---|---|---|
 | `desktop-trash` | `~/.local/share/Trash` | 30d |
 | `desktop-thumbnails` | `~/.cache/thumbnails` | 30d |
-| `desktop-recent` | `~/.local/share/recently-used.xbel` (rewrite, not delete) | 30d |
 | `editor-vscode` | VS Code Cache, CachedData, logs, cpptools, vscode-server VSIXs | 7d |
 | `editor-jetbrains` | `~/.cache/JetBrains/<Product><Version>` | 30d |
 | `editor-nvim` | `~/.local/state/nvim/{log,swap,undo}` | 30d |
@@ -199,7 +283,8 @@ beav version
 | `lang-gradle` | `~/.gradle/caches` | 30d |
 | `lang-maven` | `~/.m2/repository/.cache` | 30d |
 | `shell-zsh` | `~/.cache/zsh/*`, zcompdump | 30d |
-| `cache-generic` | other `~/.cache/*` (anything not claimed above) | 30d |
+
+> Note: there is intentionally **no** "catch-all `~/.cache/*` cleaner" in v1. `~/.cache` legitimately holds anything an app's author decided to put there, including data the app cannot regenerate. v1 cleans only known-safe subdirectories explicitly listed by ID. Users wanting to clean an unlisted directory add a tiny YAML to `~/.config/beav/cleaners.d/`.
 
 ### System scope
 
@@ -212,9 +297,10 @@ beav version
 | `sys-journal` | `journalctl --vacuum-time=14d` | 14d |
 | `sys-varcache` | `/var/cache/man`, `/var/cache/fontconfig`, etc. (allow-list per distro) | 30d |
 | `sys-tmp` | `/tmp`, `/var/tmp` regular files | 10d |
-| `sys-kernels` | keep latest 2 kernels (apt/dnf only; not pacman to avoid breaking dual-boot users) | N/A |
 
 Cleaners detect their distro / package manager at runtime; an unsupported manager is silently skipped.
+
+Old-kernel removal is **not** in v1: it touches `/boot`, the package DB, and the bootloader, all of which are outside the cache/log/tmp domain declared in §2. It is filed as a v1.x feature behind an explicit `beav prune-kernels` command with strong confirmation (see §14).
 
 ## 10. Safety Decisions Confirmed
 
@@ -243,7 +329,11 @@ whitelist:
 
 CLI flags > config file > built-in defaults.
 
-`~/.config/beav/whitelist.txt` (one prefix per line) is the simpler always-skip list.
+**Whitelist sources** (merged into a single in-memory prefix set):
+- `~/.config/beav/config.yaml` `whitelist:` array — declarative, dotfile-managed.
+- `~/.config/beav/whitelist.txt` — one prefix per line, easy for ad-hoc / scripted appends.
+
+The two are functionally equivalent; we ship both because the cost is one file reader and the user-facing concept is identical.
 
 ## 12. Dependencies
 
@@ -271,6 +361,8 @@ No viper, no zap, no third-party process libs (we read `/proc` directly).
 
 - `beav status` (live system dashboard).
 - `beav optimize` (rebuild caches, restart services).
+- `beav prune-kernels` — dedicated maintenance command for old-kernel removal. Touches `/boot` and the package DB; needs explicit confirmation, dry-run-first UX, and per-distro logic (apt vs dnf vs pacman). Out of scope for v1's cache-only domain.
+- `beav prune-recents` — rewrites `~/.local/share/recently-used.xbel`. Requires a `transform` executor type (read → filter → atomic-replace with backup), which v1's executor enum does not include.
 - Flatpak / Snap / AppImage cleanup (sandboxed semantics need extra care).
 - Browser profile-aware cleaning (cookies, localStorage opt-in).
 - TUI editor for `cleaners.d/` YAML.
