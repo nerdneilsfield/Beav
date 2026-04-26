@@ -21,7 +21,9 @@ Status / optimize / uninstall stay out of v1.
 - macOS / Windows support (v2+).
 - Real-time system monitor (use btop/htop).
 - App uninstaller (Linux apps are package-managed; not Mole's macOS use case).
-- Any operation that modifies files outside cache/log/tmp domains. **This explicitly excludes `/boot`, package databases, and bootloader state — so old-kernel removal is not in v1** (see §14).
+- Any operation that modifies files outside cache/log/tmp domains, **with one explicit exception**: container runtime garbage collection via whitelisted CLI commands (`docker`/`podman` prune subcommands — see §5.4). These touch container-runtime-managed state (build cache, dangling/unused images, stopped containers, unused networks) but never touch persistent user data and never directly modify `/var/lib/{docker,containerd,kubelet}` paths. This exception **does not** extend to:
+  - `/boot`, package databases, bootloader state — old-kernel removal is not in v1 (see §14).
+  - `docker volume prune` — volumes are persistent state, not cache; volume cleanup is moved to v1.x (see §14).
 - In-place file rewriting / transformation (e.g., editing `recently-used.xbel`) — v1 only deletes whole files/directories.
 - Any auto-elevation: Beav never silently calls `sudo`.
 
@@ -63,7 +65,7 @@ internal/
       command.go                  whitelisted external command (apt, journalctl, npm, ...)
       journal.go                  journalctl --vacuum-time wrapper
       pkgcache.go                 apt clean / dnf clean / pacman -Sc / zypper clean
-      container.go                docker/podman {builder,image,container,network,volume,system} prune --filter until=
+      container.go                docker/podman {builder,image,container,network,system} prune --filter until=
     safety/
       blacklist.go                hard-deny path prefixes
       bounds.go                   $HOME/$VARCACHE/$VARLOG/$TMP boundary check
@@ -158,10 +160,9 @@ scope: system                 # rootful docker; rootless variant has scope: user
 type: container_prune
 container_prune:
   runtime: docker             # docker | podman
-  target: builder             # builder | image | container | network | volume | system
-min_age_days: 14              # mapped to "--filter until=${age*24}h"
+  target: builder             # builder | image | container | network | system  (volume is v1.x)
+min_age_days: 14              # mapped to "--filter until=${age*24}h" — required
 needs_root: true              # rootful only; rootless: false
-running_processes: []         # not used for this type — see §5.4 daemon guard
 ```
 
 ### 5.2 Executor Whitelist
@@ -170,21 +171,41 @@ running_processes: []         # not used for this type — see §5.4 daemon guar
 
 ### 5.4 Container Runtime Cleaners
 
-`type: container_prune` invokes `docker` or `podman` with a fixed argv shape; YAML may only choose `runtime` (enum: `docker | podman`) and `target` (enum: `builder | image | container | network | volume | system`). The executor builds:
+`type: container_prune` invokes `docker` or `podman` with a **fixed per-target argv** chosen from the table below. YAML chooses `runtime` (enum: `docker | podman`) and `target` (enum: `builder | image | container | network | system`); the executor builds the argv from this table — YAML cannot inject extra args.
 
-```
-<runtime> <target> prune -f --filter until=<age*24>h
-```
+`min_age_days` is **required** (`null` rejected at registry load) and converted to `${age*24}h` for the `until` filter where supported.
 
-`age*24` converts `min_age_days` to hours because Docker's `until` filter expects a duration. `min_age_days: null` is rejected at registry load for `container_prune`; an explicit age is required.
+| runtime | target | argv | Notes |
+|---|---|---|---|
+| `docker` | `builder` | `docker builder prune -f --filter until=Nh` | `until` supported per [docker builder prune](https://docs.docker.com/reference/cli/docker/builder/prune/) |
+| `docker` | `image` | `docker image prune -af --filter until=Nh` | `-a` removes all unused (not just dangling); `until` supported |
+| `docker` | `container` | `docker container prune -f --filter until=Nh` | only stopped; `until` supported |
+| `docker` | `network` | `docker network prune -f --filter until=Nh` | unused user-defined; `until` supported |
+| `docker` | `system` | not in v1 | `docker system prune` already lacks `--all` for images by default; we expose individual targets instead for clarity |
+| `podman` | `builder` | `podman builder prune -f --filter until=Nh` | matches docker semantics |
+| `podman` | `image` | `podman image prune -af --filter until=Nh` | |
+| `podman` | `container` | `podman container prune -f --filter until=Nh` | |
+| `podman` | `network` | `podman network prune -f --filter until=Nh` | |
+| `podman` | `system` | `podman system prune -f --filter until=Nh` | per [podman-system-prune docs](https://docs.podman.io/en/stable/markdown/podman-system-prune.1.html); does **not** prune volumes by default, which is the safety property we want |
+| any | `volume` | **not in v1** — see §14 | `docker volume prune` only supports `label` filter, not `until`; needs a different executor design |
 
-**Daemon guard:** before running, the executor calls `docker info` (or `podman info`) with a 3 s timeout. If the daemon is unreachable, the cleaner is skipped with reason `runtime_unavailable` (not an error — common on machines that don't run Docker).
+The registry loader rejects any `runtime`/`target` combination not in the table.
 
-**In-flight build guard:** before `target: builder | image`, the executor runs `docker ps --format '{{.State}}' --filter status=running` and counts results. If non-zero, those two targets are skipped with reason `runtime_busy`; `container | network` still proceed because they only touch stopped objects by definition.
+**Daemon guard:** before running, the executor calls `<runtime> info --format '{{.ServerVersion}}'` with a 3 s timeout. If the daemon is unreachable, the cleaner is skipped with reason `runtime_unavailable` — not an error.
 
-**Volume safety:** `target: volume` is the only one capable of deleting persistent state. Built-in YAML for it is `enabled: false` and tagged `dangerous`; users must explicitly enable in `~/.config/beav/config.yaml` or pass `--include-dangerous`. The CLI prints a confirmation requiring the literal token `prune-volumes` typed back when running interactively (skipped under `--yes`).
+**In-flight build/run guard:** before `target: builder | image`, the executor runs `<runtime> ps -q --filter status=running` and counts. If non-zero, those targets are skipped with reason `runtime_busy`; `container | network | system` still proceed (they only touch stopped/unused objects by definition).
 
-**Rootless detection:** when scope is `user`, the executor sets `DOCKER_HOST=unix:///run/user/$UID/docker.sock` if unset and falls back to the standard rootless socket path. Rootless podman is the default and needs no override.
+**Rootless verification (user-scope cleaners):** the cleaner refuses to run unless **all** of the following hold (otherwise skipped with reason `runtime_not_rootless`):
+
+1. `<runtime> info --format '{{.SecurityOptions}}'` (docker) / `--format '{{.Host.Security.Rootless}}'` (podman) reports rootless mode.
+2. The active socket path (`docker context inspect` for docker, `podman info --format '{{.Host.RemoteSocket.Path}}'` for podman) is **owned by the invoking UID** (verified by `lstat`).
+3. The socket path is under `/run/user/$UID/`, `$XDG_RUNTIME_DIR/`, or `$HOME/`.
+
+If `DOCKER_HOST` is set in the environment, it is honored only if it points at a rootless socket meeting (2) and (3); otherwise the cleaner skips. Beav never overrides a user's explicit `DOCKER_HOST`.
+
+For system-scope cleaners (`needs_root: true`, run under `sudo beav clean --system`), the daemon is assumed rootful and Beav uses the default socket; rootless verification is inverted (skip if rootless).
+
+**No `--include-dangerous` flag, no `dangerous` tag in v1.** Every container_prune cleaner shipped in v1 operates only on caches/dangling-or-unused objects. Volume pruning, which is the only cleaner that could touch persistent state, is in v1.x (§14) behind a separate command with proper UX.
 
 ### 5.3 Path Resolvers
 
@@ -256,8 +277,7 @@ beav clean --min-age=14d            global override
 beav clean --min-age=cache=3d,logs=30d   per-tag override
 beav clean --force-no-age           allow cleaners without age filter to run
 beav clean --output json            machine-readable
-beav clean --yes                    skip first-run dry-run hint and dangerous-cleaner confirmation
-beav clean --include-dangerous      enable cleaners tagged 'dangerous' (e.g., docker volume prune)
+beav clean --yes                    skip first-run dry-run hint
 
 beav analyze [PATH]                 bubbletea wrapper around gdu library
 beav config show                    print effective merged config + cleaner list
@@ -279,14 +299,36 @@ beav version
 Stable across v1.x (additive only). Every line is one of:
 
 ```json
-{"event":"start","cleaner_id":"editor-vscode","name":"VS Code Cache","scope":"user","dry_run":false,"ts":"2026-04-26T12:00:00Z"}
+{"event":"start","cleaner_id":"editor-vscode","name":"VS Code Cache","scope":"user","type":"paths","dry_run":false,"ts":"2026-04-26T12:00:00Z"}
 {"event":"deleted","cleaner_id":"editor-vscode","path":"/home/dq/.config/Code/Cache/x","size":4096,"ts":"..."}
 {"event":"skipped","cleaner_id":"editor-vscode","path":"/home/dq/.config/Code/Cache/y","reason":"age_too_recent","ts":"..."}
-{"event":"finish","cleaner_id":"editor-vscode","files_deleted":42,"bytes_freed":12345678,"errors":0,"duration_ms":83}
-{"event":"summary","cleaners_run":12,"cleaners_skipped":1,"files_deleted":1024,"bytes_freed":987654321,"errors":2,"duration_ms":4200}
+{"event":"cleaner_skipped","cleaner_id":"container-docker-builder","reason":"runtime_unavailable","ts":"..."}
+{"event":"command_output","cleaner_id":"pkg-apt","stream":"stdout","line":"Reading package lists...","ts":"..."}
+{"event":"error","cleaner_id":"sys-journal","path":null,"reason":"command_failed","detail":"journalctl exited 1: failed to vacuum","ts":"..."}
+{"event":"finish","cleaner_id":"editor-vscode","status":"ok","files_deleted":42,"bytes_freed":12345678,"errors":0,"duration_ms":83}
+{"event":"summary","cleaners_run":12,"cleaners_skipped":1,"cleaners_errored":1,"files_deleted":1024,"bytes_freed":987654321,"errors":2,"duration_ms":4200}
 ```
 
-`reason` enum: `age_too_recent`, `whitelisted`, `running_process`, `cross_fs`, `symlink`, `wrong_type`, `inside_git`, `blacklisted`, `permission_denied`, `toctou_changed`, `dry_run`.
+**Per-entry skip `reason` enum** (event `skipped`):
+`age_too_recent`, `whitelisted`, `cross_fs`, `symlink`, `wrong_type`, `inside_git`, `blacklisted`, `permission_denied`, `toctou_changed`, `dry_run`.
+
+**Whole-cleaner skip `reason` enum** (event `cleaner_skipped`):
+`disabled`, `not_selected`, `wrong_scope`, `running_process`, `runtime_unavailable`, `runtime_busy`, `runtime_not_rootless`, `manager_not_installed`, `boundary_violation`, `resolver_failed`, `user_declined`.
+
+**Error event schema** (event `error`): emitted when a cleaner encounters a non-skip failure during execution — distinct from `skipped` (intentional) and `cleaner_skipped` (precondition not met). Fields:
+
+```json
+{"event":"error",
+ "cleaner_id":"<id>",
+ "path":"<absolute path or null>",
+ "reason":"<enum>",
+ "detail":"<human-readable string>",
+ "ts":"<RFC3339>"}
+```
+
+Error `reason` enum: `unlink_failed`, `walk_failed`, `command_failed`, `command_timeout`, `oplog_write_failed`, `internal`. Each cleaner may emit multiple `error` events; the `finish` event then carries `status: "error"` and the count of errors encountered.
+
+**`finish.status` enum:** `ok` | `skipped` | `error`. `ok` if no `error` events were emitted; `skipped` if the cleaner emitted `cleaner_skipped` and never started work; `error` if at least one `error` event was emitted.
 
 ### 8.2 Exit codes
 
@@ -342,11 +384,10 @@ Stable across v1.x (additive only). Every line is one of:
 | `sys-varcache` | `/var/cache/man`, `/var/cache/fontconfig`, etc. (allow-list per distro) | 30d |
 | `sys-tmp` | `/tmp`, `/var/tmp` regular files | 10d |
 | `container-docker-builder` | rootful: `docker builder prune --filter until=` | 14d |
-| `container-docker-images` | rootful: `docker image prune -a --filter until=` (unused images) | 30d |
+| `container-docker-images` | rootful: `docker image prune -af --filter until=` (unused images) | 30d |
 | `container-docker-containers` | rootful: `docker container prune --filter until=` (stopped only) | 7d |
 | `container-docker-networks` | rootful: `docker network prune --filter until=` | 30d |
-| `container-docker-volumes` | rootful: `docker volume prune --filter until=` — **disabled by default**, tagged `dangerous` | 60d |
-| `container-podman-system` | rootful podman: `podman system prune --filter until=` (no volumes) | 14d |
+| `container-podman-system` | rootful podman: `podman system prune --filter until=` (no volumes by default) | 14d |
 
 Cleaners detect their distro / package manager at runtime; an unsupported manager is silently skipped.
 
@@ -413,6 +454,7 @@ No viper, no zap, no third-party process libs (we read `/proc` directly).
 - `beav optimize` (rebuild caches, restart services).
 - `beav prune-kernels` — dedicated maintenance command for old-kernel removal. Touches `/boot` and the package DB; needs explicit confirmation, dry-run-first UX, and per-distro logic (apt vs dnf vs pacman). Out of scope for v1's cache-only domain.
 - `beav prune-recents` — rewrites `~/.local/share/recently-used.xbel`. Requires a `transform` executor type (read → filter → atomic-replace with backup), which v1's executor enum does not include.
+- `beav prune-volumes` — Docker/Podman volume pruning. Volumes are persistent data, not cache, and `docker volume prune` only supports the `label` filter (no `until`), so age-based deletion is not directly available. Needs a dedicated executor: `inspect` each volume, compute "last referenced" age via container references / `Mountpoint` mtime, then `volume rm` selectively. Will live behind a separate command with confirm-by-typing UX, never enabled by default.
 - Flatpak / Snap / AppImage cleanup (sandboxed semantics need extra care).
 - Browser profile-aware cleaning (cookies, localStorage opt-in).
 - TUI editor for `cleaners.d/` YAML.
