@@ -75,6 +75,9 @@ func TestSelectedHonorsScopeAndSelectors(t *testing.T) {
 	}
 }
 
+// TestEngineEmitsErrorForMissingExecutor verifies that the engine emits an error event
+// when a cleaner has no registered executor.
+// TestEngineEmitsErrorForMissingExecutor 验证当清理器没有注册执行器时引擎会发出错误事件。
 func TestEngineEmitsErrorForMissingExecutor(t *testing.T) {
 	var events []model.Event
 	e := New()

@@ -15,6 +15,11 @@ import (
 	"github.com/dengqi/beav/internal/cleaner/safety"
 )
 
+// TestFakeHomeEndToEnd performs an end-to-end test using a fake home directory.
+// It verifies that old files are deleted while newer files are preserved
+// based on the MinAgeDays configuration.
+// TestFakeHomeEndToEnd 使用模拟主目录进行端到端测试。
+// 它根据 MinAgeDays 配置验证旧文件被删除而新文件被保留。
 func TestFakeHomeEndToEnd(t *testing.T) {
 	home := t.TempDir()
 	mk := func(rel, content string, age time.Duration) string {

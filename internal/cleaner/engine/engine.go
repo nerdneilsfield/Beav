@@ -8,10 +8,14 @@ import (
 	"github.com/dengqi/beav/internal/cleaner/model"
 )
 
+// Executor defines the interface for running a cleaner.
+// Executor 定义了运行清理器的接口。
 type Executor interface {
 	Run(ctx context.Context, c model.Cleaner, dryRun bool, emit func(model.Event)) error
 }
 
+// Options holds the configuration for running the engine.
+// Options 保存运行引擎的配置。
 type Options struct {
 	Scope   model.Scope
 	DryRun  bool
@@ -20,6 +24,8 @@ type Options struct {
 	Emitter func(model.Event)
 }
 
+// Result aggregates statistics from a cleaning run.
+// Result 聚合清理运行的统计信息。
 type Result struct {
 	CleanersRun     int
 	CleanersSkipped int
@@ -29,18 +35,26 @@ type Result struct {
 	Errors          int
 }
 
+// Engine orchestrates the execution of cleaners with registered executors.
+// Engine 协调已注册执行器来运行清理器。
 type Engine struct {
 	executors map[model.ExecutorType]Executor
 }
 
+// Option configures an Engine instance.
+// Option 用于配置 Engine 实例。
 type Option func(*Engine)
 
+// WithExecutor registers an executor for a given executor type.
+// WithExecutor 为指定的执行器类型注册一个执行器。
 func WithExecutor(t model.ExecutorType, ex Executor) Option {
 	return func(e *Engine) {
 		e.executors[t] = ex
 	}
 }
 
+// New creates a new Engine with the provided options.
+// New 使用提供的选项创建一个新的 Engine。
 func New(opts ...Option) *Engine {
 	e := &Engine{executors: map[model.ExecutorType]Executor{}}
 	for _, opt := range opts {
@@ -49,6 +63,8 @@ func New(opts ...Option) *Engine {
 	return e
 }
 
+// Run executes the given cleaners according to the options and returns aggregated results.
+// Run 根据选项执行给定的清理器并返回聚合结果。
 func (e *Engine) Run(ctx context.Context, cleaners []model.Cleaner, opt Options) (Result, error) {
 	res := Result{}
 	for _, c := range cleaners {
@@ -125,6 +141,7 @@ func (e *Engine) Run(ctx context.Context, cleaners []model.Cleaner, opt Options)
 }
 
 // Selected reports whether c should run for the requested scope and selectors.
+// Selected 报告清理器 c 是否应在请求的范围和选择器下运行。
 func Selected(c model.Cleaner, scope model.Scope, only, skip []string) bool {
 	if !c.IsEnabled() {
 		return false
