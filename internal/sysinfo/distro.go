@@ -27,6 +27,8 @@ func DetectPackageManager() (string, bool) {
 	})
 }
 
+// parseOSRelease parses the contents of an os-release file into an OSRelease struct.
+// parseOSRelease 将 os-release 文件的内容解析为 OSRelease 结构体。
 func parseOSRelease(s string) OSRelease {
 	out := OSRelease{}
 	scanner := bufio.NewScanner(strings.NewReader(s))

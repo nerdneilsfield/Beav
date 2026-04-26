@@ -2,6 +2,8 @@ package sysinfo
 
 import "testing"
 
+// TestSudoUserResolutionRequiresAllThree verifies that SUDO_UID and SUDO_USER are correctly resolved together.
+// TestSudoUserResolutionRequiresAllThree 验证 SUDO_UID 和 SUDO_USER 一起正确解析。
 func TestSudoUserResolutionRequiresAllThree(t *testing.T) {
 	r := SudoUserResolver{
 		LookupByUID:  func(_ uint32) (string, string, error) { return "alice", "/home/alice", nil },

@@ -21,6 +21,8 @@ type SudoUserResolver struct {
 	Lstat        func(path string) (uid uint32, isSymlink bool, err error)
 }
 
+// DefaultSudoUserResolver returns a SudoUserResolver using system calls for user lookups.
+// DefaultSudoUserResolver 返回使用系统调用进行用户查找的 SudoUserResolver。
 func DefaultSudoUserResolver() SudoUserResolver {
 	return SudoUserResolver{
 		LookupByUID: func(uid uint32) (string, string, error) {

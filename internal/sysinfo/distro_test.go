@@ -12,6 +12,8 @@ VERSION_ID="24.04"`)
 	}
 }
 
+// TestDetectPackageManagerPrefersDistroDefaultWhenPresent verifies that distro-preferred package managers are selected first.
+// TestDetectPackageManagerPrefersDistroDefaultWhenPresent 验证优先选择发行版首选的包管理器。
 func TestDetectPackageManagerPrefersDistroDefaultWhenPresent(t *testing.T) {
 	got, ok := detectPackageManager(OSRelease{ID: "ubuntu", IDLike: "debian"}, func(name string) bool {
 		return name == "apt-get" || name == "dnf"
