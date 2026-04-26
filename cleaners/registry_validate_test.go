@@ -7,6 +7,8 @@ import (
 	"github.com/dengqi/beav/internal/cleaner/registry"
 )
 
+// TestEmbeddedRegistryValidates verifies that all embedded builtin cleaner definitions pass validation.
+// TestEmbeddedRegistryValidates 验证所有嵌入的内置清理器定义通过验证。
 func TestEmbeddedRegistryValidates(t *testing.T) {
 	loaded, err := registry.LoadBuiltin(cleaners.Builtin)
 	if err != nil {
