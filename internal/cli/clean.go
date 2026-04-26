@@ -89,17 +89,8 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 	if err != nil {
 		return ExitError{code: 2, err: err}
 	}
-	for _, c := range merged {
-		if err := registry.Validate(c); err != nil {
-			return ExitError{code: 2, err: err}
-		}
-		validateHome := home
-		if c.Scope == model.ScopeSystem {
-			validateHome = ""
-		}
-		if err := registry.ValidatePaths(c, validateHome); err != nil {
-			return ExitError{code: 2, err: err}
-		}
+	if err := validateCleanersForRun(merged, scope, home, f); err != nil {
+		return ExitError{code: 2, err: err}
 	}
 
 	renderer := chooseRenderer(f.Output, cfg.Defaults.Output, stdout)
@@ -149,6 +140,25 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 		return ExitError{code: 3, err: fmt.Errorf("errors in %d cleaners", res.CleanersErrored)}
 	}
 	_ = stderr
+	return nil
+}
+
+func validateCleanersForRun(cleaners []model.Cleaner, scope model.Scope, home string, f CleanFlags) error {
+	for _, c := range cleaners {
+		if !engine.Selected(c, scope, f.Only, f.Skip) {
+			continue
+		}
+		if err := registry.Validate(c); err != nil {
+			return err
+		}
+		validateHome := home
+		if c.Scope == model.ScopeSystem {
+			validateHome = ""
+		}
+		if err := registry.ValidatePaths(c, validateHome); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

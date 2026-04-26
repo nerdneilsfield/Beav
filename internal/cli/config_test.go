@@ -24,8 +24,11 @@ func TestConfigShowPrintsCleaners(t *testing.T) {
 
 func TestConfigInitCreatesAutoDefault(t *testing.T) {
 	dir := t.TempDir()
+	var buf bytes.Buffer
 	cmd := NewRootCmd("t", "t", "t")
 	cmd.SetArgs([]string{"config", "init", "--config-dir", dir})
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -45,14 +48,20 @@ func TestConfigInitRefusesExistingWithoutForce(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var buf bytes.Buffer
 	cmd := NewRootCmd("t", "t", "t")
 	cmd.SetArgs([]string{"config", "init", "--config-dir", dir})
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("expected existing config to be refused")
 	}
 
+	buf.Reset()
 	cmd = NewRootCmd("t", "t", "t")
 	cmd.SetArgs([]string{"config", "init", "--config-dir", dir, "--force"})
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}

@@ -55,7 +55,7 @@ func (e *Engine) Run(ctx context.Context, cleaners []model.Cleaner, opt Options)
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
-		if !c.IsEnabled() || (opt.Scope != "" && opt.Scope != model.ScopeAll && c.Scope != opt.Scope) || !match(c, opt.Only, opt.Skip) {
+		if !Selected(c, opt.Scope, opt.Only, opt.Skip) {
 			continue
 		}
 		ex, ok := e.executors[c.Type]
@@ -122,6 +122,17 @@ func (e *Engine) Run(ctx context.Context, cleaners []model.Cleaner, opt Options)
 		})
 	}
 	return res, nil
+}
+
+// Selected reports whether c should run for the requested scope and selectors.
+func Selected(c model.Cleaner, scope model.Scope, only, skip []string) bool {
+	if !c.IsEnabled() {
+		return false
+	}
+	if scope != "" && scope != model.ScopeAll && c.Scope != scope {
+		return false
+	}
+	return match(c, only, skip)
 }
 
 func match(c model.Cleaner, only, skip []string) bool {

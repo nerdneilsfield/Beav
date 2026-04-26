@@ -53,6 +53,28 @@ func TestEngineScopeAllRunsUserAndSystem(t *testing.T) {
 	}
 }
 
+func TestSelectedHonorsScopeAndSelectors(t *testing.T) {
+	cleaner := model.Cleaner{
+		ID:    "browser-firefox",
+		Scope: model.ScopeUser,
+		Type:  model.TypePaths,
+		Tags:  []string{"browser"},
+	}
+
+	if Selected(cleaner, model.ScopeSystem, nil, nil) {
+		t.Fatal("system scope should not select a user cleaner")
+	}
+	if !Selected(cleaner, model.ScopeAll, []string{"browser"}, nil) {
+		t.Fatal("tag selector should select cleaner in all scope")
+	}
+	if Selected(cleaner, model.ScopeAll, []string{"browser"}, []string{"browser-firefox"}) {
+		t.Fatal("skip selector should override only selector")
+	}
+	if !Selected(cleaner, model.ScopeUser, []string{"browser"}, nil) {
+		t.Fatal("matching scope and selector should select cleaner")
+	}
+}
+
 func TestEngineEmitsErrorForMissingExecutor(t *testing.T) {
 	var events []model.Event
 	e := New()
