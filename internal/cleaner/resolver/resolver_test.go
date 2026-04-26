@@ -22,6 +22,8 @@ func TestXDGCacheUsesEnvOrDefault(t *testing.T) {
 	}
 }
 
+// TestUnknownResolver verifies that Resolve returns an error for unknown resolver names.
+// TestUnknownResolver 验证 Resolve 对未知的解析器名称返回错误。
 func TestUnknownResolver(t *testing.T) {
 	if _, err := Resolve("nosuch", "/home/u"); err == nil {
 		t.Fatal("want error")

@@ -27,6 +27,8 @@ var resolvers = map[string]Resolver{
 	"maven_local_repo": cmdResolver([]string{"mvn", "help:evaluate", "-Dexpression=settings.localRepository", "-q", "-DforceStdout"}, "$HOME/.m2/repository"),
 }
 
+// Resolve looks up a resolver by name and returns the resolved absolute path.
+// Resolve 按名称查找解析器并返回解析后的绝对路径。
 func Resolve(name, home string) (string, error) {
 	r, ok := resolvers[name]
 	if !ok {
