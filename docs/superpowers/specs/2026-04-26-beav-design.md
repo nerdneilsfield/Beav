@@ -332,13 +332,13 @@ Error `reason` enum: `unlink_failed`, `walk_failed`, `command_failed`, `command_
 
 ### 8.2 Exit codes
 
-- `0` — every selected cleaner ran to completion. Per-entry skips (age, whitelist, running process) do **not** cause non-zero; they are normal.
+- `0` — every selected cleaner finished without an `error` event. Expected skips — whether per-entry (age, whitelist, blacklist, TOCTOU) or whole-cleaner precondition skips (`running_process`, `runtime_unavailable`, `runtime_busy`, `manager_not_installed`, etc.) — do **not** cause non-zero; they are normal.
 - `1` — usage error (bad flags, unknown cleaner id, refused privilege escalation request).
 - `2` — config / registry load error (malformed YAML, allow-list violation in YAML, missing required field).
 - `3` — at least one cleaner reported an `error` event during execution (permission denied on a path that should have been writable, syscall error, command-type cleaner exited non-zero). Other cleaners still completed; output reflects partial success.
 - `4` — aborted by signal (Ctrl+C). Already-deleted entries remain deleted; oplog is flushed.
 
-`--dry-run` always exits `0` unless flags are malformed.
+`--dry-run` exits `0` unless flag, config, or registry validation fails (in which case `1` or `2` applies as above).
 
 ## 9. Default Cleaners (v1 Registry)
 
