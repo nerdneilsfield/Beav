@@ -63,6 +63,7 @@ internal/
       command.go                  whitelisted external command (apt, journalctl, npm, ...)
       journal.go                  journalctl --vacuum-time wrapper
       pkgcache.go                 apt clean / dnf clean / pacman -Sc / zypper clean
+      container.go                docker/podman {builder,image,container,network,volume,system} prune --filter until=
     safety/
       blacklist.go                hard-deny path prefixes
       bounds.go                   $HOME/$VARCACHE/$VARLOG/$TMP boundary check
@@ -81,7 +82,10 @@ internal/
 cleaners/                         //go:embed YAML data
   user/{vscode,jetbrains,browsers,desktop,shells}.yaml
   user/langs/{npm,pnpm,yarn,bun,pip,cargo,go,gradle,maven}.yaml
+  user/k8s/{minikube,helm,k9s,kubectl}.yaml
+  user/containers/{docker-rootless,podman-rootless}.yaml
   system/{apt,dnf,pacman,zypper,journal,varcache,tmp}.yaml
+  system/containers/{docker,podman}.yaml
 docs/
 testdata/
 Makefile
@@ -99,7 +103,7 @@ id: vscode-cache              # unique, kebab-case, namespaced
 name: VS Code Cache
 description: Editor blob and code cache; rebuilt on next launch.
 scope: user                   # user | system
-type: paths                   # paths | command | journal_vacuum | pkg_cache
+type: paths                   # paths | command | journal_vacuum | pkg_cache | container_prune
 enabled: true
 min_age_days: 7               # null means "no age filter — requires --force-no-age"
 time_field: mtime             # mtime | ctime (default mtime)
@@ -145,9 +149,42 @@ min_age_days: 14
 needs_root: true
 ```
 
+For `type: container_prune`:
+
+```yaml
+id: docker-builder-cache
+name: Docker BuildKit cache
+scope: system                 # rootful docker; rootless variant has scope: user
+type: container_prune
+container_prune:
+  runtime: docker             # docker | podman
+  target: builder             # builder | image | container | network | volume | system
+min_age_days: 14              # mapped to "--filter until=${age*24}h"
+needs_root: true              # rootful only; rootless: false
+running_processes: []         # not used for this type — see §5.4 daemon guard
+```
+
 ### 5.2 Executor Whitelist
 
-`type: command` is **not** an arbitrary shell hatch. The executor maps `pkg_cache.manager` to a hardcoded `exec.Command` invocation; YAML cannot specify the binary path or extra args. Same for `journal_vacuum` (always `/usr/bin/journalctl --vacuum-time=Nd`). This keeps user-provided YAML from being an RCE vector.
+`type: command` is **not** an arbitrary shell hatch. The executor maps `pkg_cache.manager` to a hardcoded `exec.Command` invocation; YAML cannot specify the binary path or extra args. Same for `journal_vacuum` (always `/usr/bin/journalctl --vacuum-time=Nd`) and `container_prune` (see §5.4). This keeps user-provided YAML from being an RCE vector.
+
+### 5.4 Container Runtime Cleaners
+
+`type: container_prune` invokes `docker` or `podman` with a fixed argv shape; YAML may only choose `runtime` (enum: `docker | podman`) and `target` (enum: `builder | image | container | network | volume | system`). The executor builds:
+
+```
+<runtime> <target> prune -f --filter until=<age*24>h
+```
+
+`age*24` converts `min_age_days` to hours because Docker's `until` filter expects a duration. `min_age_days: null` is rejected at registry load for `container_prune`; an explicit age is required.
+
+**Daemon guard:** before running, the executor calls `docker info` (or `podman info`) with a 3 s timeout. If the daemon is unreachable, the cleaner is skipped with reason `runtime_unavailable` (not an error — common on machines that don't run Docker).
+
+**In-flight build guard:** before `target: builder | image`, the executor runs `docker ps --format '{{.State}}' --filter status=running` and counts results. If non-zero, those two targets are skipped with reason `runtime_busy`; `container | network` still proceed because they only touch stopped objects by definition.
+
+**Volume safety:** `target: volume` is the only one capable of deleting persistent state. Built-in YAML for it is `enabled: false` and tagged `dangerous`; users must explicitly enable in `~/.config/beav/config.yaml` or pass `--include-dangerous`. The CLI prints a confirmation requiring the literal token `prune-volumes` typed back when running interactively (skipped under `--yes`).
+
+**Rootless detection:** when scope is `user`, the executor sets `DOCKER_HOST=unix:///run/user/$UID/docker.sock` if unset and falls back to the standard rootless socket path. Rootless podman is the default and needs no override.
 
 ### 5.3 Path Resolvers
 
@@ -184,7 +221,7 @@ User-supplied YAML can use these resolvers but cannot define new ones; adding a 
 Refusing a whole cleaner before it touches disk:
 
 1. **Allow-list boundary** — every static `path` and every resolver fallback must be inside `$HOME`, `/var/cache`, `/var/log`, `/tmp`, `/var/tmp`. Anything else → refuse the entire cleaner at registry load time with a clear error.
-2. **Hard blacklist** — refusal at registry load: `/`, `/etc`, `/boot`, `/usr` (no exceptions in v1), `/home/*` (except the resolved caller home), `$HOME` itself, `$HOME/{Documents,Desktop,Downloads,Pictures,Videos,Music}`, `$HOME/.ssh`, `$HOME/.gnupg`, `$HOME/.password-store`. A directory containing `.git` is checked at runtime per-entry, not at load.
+2. **Hard blacklist** — refusal at registry load: `/`, `/etc`, `/boot`, `/usr` (no exceptions in v1), `/home/*` (except the resolved caller home), `$HOME` itself, `$HOME/{Documents,Desktop,Downloads,Pictures,Videos,Music}`, `$HOME/.ssh`, `$HOME/.gnupg`, `$HOME/.password-store`, `$HOME/.docker/config.json`, `$HOME/.kube/config` (and any non-`cache`/non-`http-cache` child of `$HOME/.kube/`), `/var/lib/docker` (must be cleaned via `container_prune`, never raw-pathed), `/var/lib/containerd`, `/var/lib/kubelet`. A directory containing `.git` is checked at runtime per-entry, not at load.
 
 ### 6.2 Per-entry gates (runtime, recursive)
 
@@ -219,7 +256,8 @@ beav clean --min-age=14d            global override
 beav clean --min-age=cache=3d,logs=30d   per-tag override
 beav clean --force-no-age           allow cleaners without age filter to run
 beav clean --output json            machine-readable
-beav clean --yes                    skip first-run dry-run hint
+beav clean --yes                    skip first-run dry-run hint and dangerous-cleaner confirmation
+beav clean --include-dangerous      enable cleaners tagged 'dangerous' (e.g., docker volume prune)
 
 beav analyze [PATH]                 bubbletea wrapper around gdu library
 beav config show                    print effective merged config + cleaner list
@@ -283,6 +321,12 @@ Stable across v1.x (additive only). Every line is one of:
 | `lang-gradle` | `~/.gradle/caches` | 30d |
 | `lang-maven` | `~/.m2/repository/.cache` | 30d |
 | `shell-zsh` | `~/.cache/zsh/*`, zcompdump | 30d |
+| `k8s-minikube-cache` | `~/.minikube/cache/` | 30d |
+| `k8s-helm-cache` | `~/.cache/helm/` | 30d |
+| `k8s-k9s-cache` | `~/.cache/k9s/` | 30d |
+| `k8s-kubectl-cache` | `~/.kube/cache/`, `~/.kube/http-cache/` (never `~/.kube/config`) | 30d |
+| `container-rootless-docker` | rootless: `docker {builder,image,container,network} prune --filter until=` | 14d |
+| `container-rootless-podman` | rootless: `podman {builder,image,container,network} prune --filter until=` | 14d |
 
 > Note: there is intentionally **no** "catch-all `~/.cache/*` cleaner" in v1. `~/.cache` legitimately holds anything an app's author decided to put there, including data the app cannot regenerate. v1 cleans only known-safe subdirectories explicitly listed by ID. Users wanting to clean an unlisted directory add a tiny YAML to `~/.config/beav/cleaners.d/`.
 
@@ -297,6 +341,12 @@ Stable across v1.x (additive only). Every line is one of:
 | `sys-journal` | `journalctl --vacuum-time=14d` | 14d |
 | `sys-varcache` | `/var/cache/man`, `/var/cache/fontconfig`, etc. (allow-list per distro) | 30d |
 | `sys-tmp` | `/tmp`, `/var/tmp` regular files | 10d |
+| `container-docker-builder` | rootful: `docker builder prune --filter until=` | 14d |
+| `container-docker-images` | rootful: `docker image prune -a --filter until=` (unused images) | 30d |
+| `container-docker-containers` | rootful: `docker container prune --filter until=` (stopped only) | 7d |
+| `container-docker-networks` | rootful: `docker network prune --filter until=` | 30d |
+| `container-docker-volumes` | rootful: `docker volume prune --filter until=` — **disabled by default**, tagged `dangerous` | 60d |
+| `container-podman-system` | rootful podman: `podman system prune --filter until=` (no volumes) | 14d |
 
 Cleaners detect their distro / package manager at runtime; an unsupported manager is silently skipped.
 
@@ -374,3 +424,6 @@ No viper, no zap, no third-party process libs (we read `/proc` directly).
 - **VS Code Server on remote dev hosts**: cleaning `~/.vscode-server` while a remote session is live can break the session. Process guard catches local `code` but not the remote tunnel; we conservatively check for `node` processes whose cmdline contains `vscode-server`.
 - **Browser profiles vary by channel**: Chrome stable / beta / canary all share path patterns; YAML uses globs (`~/.config/google-chrome*/*/Cache`) — verified before enabling per channel.
 - **Snap / Flatpak shadow caches**: even if we don't clean them, they can re-fill `~/.cache` under sandbox-specific paths. Document, don't act.
+- **Docker / Podman daemon availability**: `container_prune` cleaners depend on a running daemon and a usable socket. We treat unreachable daemons as "skip with reason `runtime_unavailable`", never as an error, so machines without Docker installed produce a clean run. False negatives (daemon up but socket permission denied because the user is not in the `docker` group) are reported with the actual error.
+- **Docker image churn on dev hosts**: `docker image prune -a --filter until=720h` (30 d) will remove any image not used by a container in 30 days. On dev hosts that pull large base images for occasional builds, this can cause unexpected re-pulls. Mitigation: default tag is `dev-only`; users with this concern can set `enabled: false` in config.
+- **k8s control-plane / node hosts**: cleaners assume a workstation, not a node. `/var/lib/kubelet` and `/var/lib/containerd` are blacklisted in §6.1; an admin running Beav on a node by mistake will not damage workloads. We do not attempt `crictl` cleanup in v1.
