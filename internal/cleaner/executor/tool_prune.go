@@ -74,13 +74,16 @@ func WithToolTimeout(timeout time.Duration) ToolPruneOption {
 // ToolPruneExecutor runs only closed, built-in tool profiles.
 // ToolPruneExecutor 仅运行闭合集成 tool profile。
 type ToolPruneExecutor struct {
-	Home             string
-	Whitelist        *safety.Whitelist
-	SearchPath       []string
-	Target           CommandIdentity
-	HasTarget        bool
-	ExtraEnv         map[string]string
-	Timeout          time.Duration
+	Home       string
+	Whitelist  *safety.Whitelist
+	SearchPath []string
+	Target     CommandIdentity
+	HasTarget  bool
+	ExtraEnv   map[string]string
+	Timeout    time.Duration
+	// procRoot is fixed to /proc in production; package tests use a synthetic
+	// tree to exercise fail-closed descriptor inspection deterministically.
+	procRoot         string
 	identityResolver toolIdentityResolver
 	// binaryResolver is an in-package test seam. Production system profiles
 	// always use resolveTrustedProfileBinary and cannot inject search paths.
@@ -98,6 +101,7 @@ func NewToolPruneExecutor(home string, whitelist *safety.Whitelist, options ...T
 		Home:      cleanHome,
 		Whitelist: whitelist,
 		Timeout:   5 * time.Minute,
+		procRoot:  "/proc",
 	}
 	for _, option := range options {
 		if option != nil {
@@ -160,7 +164,7 @@ func (e *ToolPruneExecutor) Run(ctx context.Context, c model.Cleaner, dryRun boo
 	}
 	if profile.Busy != nil {
 		for _, root := range roots {
-			busy, busyErr := profile.Busy(root)
+			busy, busyErr := profile.Busy(root, e.procRoot)
 			if busy || busyErr != nil {
 				detail := "cache lock or open descriptor indicates activity"
 				if busyErr != nil {

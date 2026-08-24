@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -127,8 +128,12 @@ func (e *Engine) Run(ctx context.Context, cleaners []model.Cleaner, opt Options)
 			errs = ev.Errors
 		}
 
-		if err := ex.Run(ctx, c, opt.DryRun, emit); err != nil {
-			return res, err
+		runErr := ex.Run(ctx, c, opt.DryRun, emit)
+		// Cleaner-local failures are already represented by Error/Finish
+		// events; aggregate them and continue so later cleaners and summary
+		// remain usable. Context cancellation/deadline still aborts the run.
+		if runErr != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
+			return res, runErr
 		}
 		if err := ctx.Err(); err != nil {
 			return res, err

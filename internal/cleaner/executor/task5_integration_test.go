@@ -156,3 +156,60 @@ func mustLoadBuiltinForTask5(t *testing.T) []registry.Loaded {
 	}
 	return loaded
 }
+
+func TestEngineContinuesAfterToolPruneCommandFailure(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("temporary user-profile identity seam requires non-root test user")
+	}
+	binDir := t.TempDir()
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".cache", "Homebrew"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	brew := filepath.Join(binDir, "brew")
+	if err := os.WriteFile(brew, []byte("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' 'Homebrew 4.0'; exit 0; fi\nexit 17\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewToolPruneExecutor(home, nil, WithToolSearchPath(binDir), tempToolIdentityOption(t, home))
+	succeeding := &task5SuccessExecutor{}
+	eng := engine.New(
+		engine.WithExecutor(model.TypeToolPrune, tool),
+		engine.WithExecutor(model.TypePaths, succeeding),
+	)
+	cleaners := []model.Cleaner{
+		{ID: "brew", Scope: model.ScopeUser, Type: model.TypeToolPrune, ToolPrune: &model.ToolPruneCfg{Profile: "pkg-homebrew"}},
+		{ID: "after", Scope: model.ScopeUser, Type: model.TypePaths},
+	}
+	var events []model.Event
+	result, err := eng.Run(context.Background(), cleaners, engine.Options{
+		Scope:   model.ScopeUser,
+		Emitter: func(event model.Event) { events = append(events, event) },
+	})
+	if err != nil {
+		t.Fatalf("non-context tool failure should be summarized, err=%v events=%+v", err, events)
+	}
+	if succeeding.ran != 1 {
+		t.Fatalf("succeeding cleaner ran %d times, want one; events=%+v", succeeding.ran, events)
+	}
+	if result.CleanersRun != 1 || result.CleanersErrored != 1 || result.Errors != 1 {
+		t.Fatalf("result=%+v, want one run and one accumulated error", result)
+	}
+	var summary model.Event
+	for _, event := range events {
+		if event.Event == model.EvSummary {
+			summary = event
+		}
+	}
+	if summary.Event != model.EvSummary || summary.Errors != 1 || summary.CleanersErrored != 1 {
+		t.Fatalf("summary=%+v, want accumulated tool error", summary)
+	}
+}
+
+type task5SuccessExecutor struct{ ran int }
+
+func (e *task5SuccessExecutor) Run(_ context.Context, c model.Cleaner, _ bool, emit func(model.Event)) error {
+	e.ran++
+	emit(model.Event{Event: model.EvStart, CleanerID: c.ID})
+	emit(model.Event{Event: model.EvFinish, CleanerID: c.ID, Status: "ok"})
+	return nil
+}

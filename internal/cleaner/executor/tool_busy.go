@@ -65,15 +65,15 @@ func inspectHuggingFaceBusyFD(rootFD int, root, procRoot string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer w.Close()
 	walkErr := w.Walk(func(entry safety.Entry) {
 		identities = append(identities, safety.FileIdentity{Dev: entry.Dev(), Ino: entry.Ino()})
 	})
+	closeErr := w.Close()
 	if walkErr != nil {
 		return false, fmt.Errorf("walk cache root: %w", walkErr)
 	}
-	if lockBusy {
-		return true, nil
+	if closeErr != nil {
+		return false, fmt.Errorf("close cache walk: %w", closeErr)
 	}
 	deletedBusy, err := inspectDeletedDescriptorUnder(root, procRoot)
 	if err != nil {
@@ -82,7 +82,7 @@ func inspectHuggingFaceBusyFD(rootFD int, root, procRoot string) (bool, error) {
 	if deletedBusy {
 		return true, nil
 	}
-	busy, err := safety.OpenDescriptorsMatch(procRoot, identities)
+	busy, err := safety.OpenDescriptorMatchesExceptFD(procRoot, identities, os.Getpid(), rootFD)
 	if err != nil {
 		return false, err
 	}

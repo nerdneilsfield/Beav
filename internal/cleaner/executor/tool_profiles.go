@@ -11,7 +11,7 @@ type toolProfile struct {
 	System             bool
 	RootResolver       func(home string) []string
 	BuildArgs          func(root string, age int, dryRun bool) []string
-	Busy               func(root string) (bool, error)
+	Busy               func(root, procRoot string) (bool, error)
 	ProbeArgs          []string
 	Required           []string
 	DryRunProbeArgs    []string
@@ -98,7 +98,9 @@ var toolProfiles = map[string]toolProfile{
 			}
 			return args
 		},
-		Busy:           huggingFaceRootBusy,
+		Busy: func(root, procRoot string) (bool, error) {
+			return inspectHuggingFaceBusy(root, procRoot)
+		},
 		ProbeArgs:      []string{"cache", "prune", "--help"},
 		Required:       []string{"--cache-dir", "--yes"},
 		DryRunRequired: []string{"--dry-run"},

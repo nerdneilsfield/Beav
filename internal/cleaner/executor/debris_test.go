@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -581,6 +582,49 @@ func TestHuggingFaceBusyDetectsHardlinkAlias(t *testing.T) {
 	}
 	if _, err := os.Stat(candidate); err != nil {
 		t.Fatalf("candidate should remain: %v", err)
+	}
+}
+
+func TestHuggingFaceDebrisIgnoresCleanerHeldRootDescriptor(t *testing.T) {
+	home := t.TempDir()
+	candidate := filepath.Join(home, ".cache", "huggingface", "hub", "model.incomplete")
+	writeDebrisAged(t, candidate, -48*time.Hour)
+	procRoot := t.TempDir()
+	fdRoot := filepath.Join(procRoot, strconv.Itoa(os.Getpid()), "fd")
+	if err := os.MkdirAll(fdRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reserved.Close()
+	rootFD := int(reserved.Fd()) + 2
+	root := filepath.Join(home, ".cache", "huggingface")
+	if err := os.Symlink(root, filepath.Join(fdRoot, strconv.Itoa(rootFD))); err != nil {
+		t.Fatal(err)
+	}
+	e := NewDebrisExecutor(home, nil)
+	e.procRoot = procRoot
+	e.env = func(string) string { return "" }
+	minAge := 0
+	c := model.Cleaner{
+		ID:         "hf",
+		Scope:      model.ScopeUser,
+		Type:       model.TypeDebris,
+		MinAgeDays: &minAge,
+		Debris:     &model.DebrisCfg{Profile: "ai-huggingface-incomplete"},
+	}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := e.Run(context.Background(), c, false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := os.Stat(candidate); !os.IsNotExist(err) {
+		t.Fatalf("HF debris candidate should be deleted; stat = %v, events=%+v", err, events)
+	}
+	if hasCleanerSkip(events, "cache_busy") {
+		t.Fatalf("cleaner's own held root descriptor marked debris busy: %+v", events)
 	}
 }
 

@@ -236,6 +236,103 @@ func TestEngineSeparatesDryRunCandidatesAndUnmeasuredCleaners(t *testing.T) {
 	}
 }
 
+func TestEngineContinuesAfterExecutorErrorAndEmitsOneSummary(t *testing.T) {
+	toolErr := errors.New("tool command failed")
+	var events []model.Event
+	var succeedingRan bool
+	failing := executorFunc(func(_ context.Context, c model.Cleaner, _ bool, emit func(model.Event)) error {
+		emit(model.Event{Event: model.EvStart, CleanerID: c.ID})
+		emit(model.Event{Event: model.EvError, CleanerID: c.ID, Reason: "command_failed", Detail: toolErr.Error()})
+		emit(model.Event{Event: model.EvFinish, CleanerID: c.ID, Status: "error", Errors: 1})
+		return toolErr
+	})
+	succeeding := executorFunc(func(_ context.Context, c model.Cleaner, _ bool, emit func(model.Event)) error {
+		succeedingRan = true
+		emit(model.Event{Event: model.EvStart, CleanerID: c.ID})
+		emit(model.Event{Event: model.EvFinish, CleanerID: c.ID, Status: "ok"})
+		return nil
+	})
+	e := New(
+		WithExecutor(model.TypeToolPrune, failing),
+		WithExecutor(model.TypePaths, succeeding),
+	)
+	res, err := e.Run(context.Background(), []model.Cleaner{
+		{ID: "tool", Scope: model.ScopeUser, Type: model.TypeToolPrune},
+		{ID: "after", Scope: model.ScopeUser, Type: model.TypePaths},
+	}, Options{
+		Scope:   model.ScopeUser,
+		Emitter: func(event model.Event) { events = append(events, event) },
+	})
+	if err != nil {
+		t.Fatalf("non-context executor error should be represented in result: %v", err)
+	}
+	if !succeedingRan {
+		t.Fatal("engine stopped before succeeding cleaner")
+	}
+	if res.CleanersRun != 1 || res.CleanersErrored != 1 || res.Errors != 1 {
+		t.Fatalf("result = %+v, want one run and one error", res)
+	}
+	var summaries int
+	for _, event := range events {
+		if event.Event == model.EvSummary {
+			summaries++
+			if event.Errors != 1 || event.CleanersErrored != 1 {
+				t.Fatalf("summary = %+v, want accumulated error", event)
+			}
+		}
+	}
+	if summaries != 1 {
+		t.Fatalf("summary count = %d, want one", summaries)
+	}
+	var toolErrors, toolFinishes int
+	for _, event := range events {
+		if event.CleanerID != "tool" {
+			continue
+		}
+		switch event.Event {
+		case model.EvError:
+			toolErrors++
+		case model.EvFinish:
+			toolFinishes++
+		}
+	}
+	if toolErrors != 1 || toolFinishes != 1 {
+		t.Fatalf("tool error/finish events = %d/%d, want one each", toolErrors, toolFinishes)
+	}
+}
+
+func TestEnginePropagatesExecutorContextCancellationAndStops(t *testing.T) {
+	for _, want := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(want.Error(), func(t *testing.T) {
+			var succeedingRan bool
+			failing := executorFunc(func(_ context.Context, c model.Cleaner, _ bool, emit func(model.Event)) error {
+				emit(model.Event{Event: model.EvStart, CleanerID: c.ID})
+				emit(model.Event{Event: model.EvFinish, CleanerID: c.ID, Status: "error", Errors: 1})
+				return want
+			})
+			succeeding := executorFunc(func(_ context.Context, c model.Cleaner, _ bool, emit func(model.Event)) error {
+				succeedingRan = true
+				emit(model.Event{Event: model.EvFinish, CleanerID: c.ID, Status: "ok"})
+				return nil
+			})
+			e := New(
+				WithExecutor(model.TypeToolPrune, failing),
+				WithExecutor(model.TypePaths, succeeding),
+			)
+			_, err := e.Run(context.Background(), []model.Cleaner{
+				{ID: "tool", Scope: model.ScopeUser, Type: model.TypeToolPrune},
+				{ID: "after", Scope: model.ScopeUser, Type: model.TypePaths},
+			}, Options{Scope: model.ScopeUser})
+			if !errors.Is(err, want) {
+				t.Fatalf("err = %v, want %v", err, want)
+			}
+			if succeedingRan {
+				t.Fatal("engine continued after context cancellation/deadline")
+			}
+		})
+	}
+}
+
 type executorFunc func(context.Context, model.Cleaner, bool, func(model.Event)) error
 
 func (f executorFunc) Run(ctx context.Context, c model.Cleaner, dryRun bool, emit func(model.Event)) error {

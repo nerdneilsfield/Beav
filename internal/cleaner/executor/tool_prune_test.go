@@ -471,6 +471,107 @@ func TestHuggingFaceBusyInspectionTreatsOpenRootDirectoryAsBusy(t *testing.T) {
 	}
 }
 
+func TestHuggingFaceBusyInspectionIgnoresCurrentPIDHeldRoot(t *testing.T) {
+	root := t.TempDir()
+	held, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	procRoot := t.TempDir()
+	fdRoot := filepath.Join(procRoot, strconv.Itoa(os.Getpid()), "fd")
+	if err := os.MkdirAll(fdRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(root, filepath.Join(fdRoot, strconv.Itoa(int(held.Fd())))); err != nil {
+		t.Fatal(err)
+	}
+	busy, err := inspectHuggingFaceBusyFD(int(held.Fd()), root, procRoot)
+	if err != nil {
+		t.Fatalf("busy=%v err=%v, want synthetic proc inspection to succeed", busy, err)
+	}
+	if busy {
+		t.Fatal("cleaner's own held root descriptor should not mark HF cache busy")
+	}
+}
+
+func TestHuggingFaceBusyInspectionKeepsOtherCurrentPIDCacheDescriptor(t *testing.T) {
+	root := t.TempDir()
+	held, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	other, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	procRoot := t.TempDir()
+	fdRoot := filepath.Join(procRoot, strconv.Itoa(os.Getpid()), "fd")
+	if err := os.MkdirAll(fdRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, fd := range []uintptr{held.Fd(), other.Fd()} {
+		if err := os.Symlink(root, filepath.Join(fdRoot, strconv.Itoa(int(fd)))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	busy, err := inspectHuggingFaceBusyFD(int(held.Fd()), root, procRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !busy {
+		t.Fatal("other same-process cache descriptor should remain busy")
+	}
+}
+
+func TestToolPruneHuggingFaceProfileIgnoresCleanerHeldRootDescriptor(t *testing.T) {
+	binDir := t.TempDir()
+	home := t.TempDir()
+	root := filepath.Join(home, ".cache", "huggingface")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	procRoot := t.TempDir()
+	fdRoot := filepath.Join(procRoot, strconv.Itoa(os.Getpid()), "fd")
+	if err := os.MkdirAll(fdRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reserved.Close()
+	rootFD := int(reserved.Fd()) + 2
+	if err := os.Symlink(root, filepath.Join(fdRoot, strconv.Itoa(rootFD))); err != nil {
+		t.Fatal(err)
+	}
+	hf := filepath.Join(binDir, "hf")
+	if err := os.WriteFile(hf, []byte("#!/bin/sh\nif [ \"$1\" = \"cache\" ] && [ \"$2\" = \"prune\" ] && [ \"$3\" = \"--help\" ]; then printf '%s\\n' 'hf cache prune --cache-dir ROOT --yes'; exit 0; fi\nif [ \"$1\" = \"cache\" ] && [ \"$2\" = \"prune\" ]; then /bin/touch \"$HOME/hf-ran\"; exit 0; fi\nprintf '%s\\n' 'hf 1.0'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	c := model.Cleaner{
+		ID:        "hf",
+		Scope:     model.ScopeUser,
+		Type:      model.TypeToolPrune,
+		ToolPrune: &model.ToolPruneCfg{Profile: "ai-huggingface-prune"},
+	}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		e := NewToolPruneExecutor(home, nil, WithToolSearchPath(binDir), tempToolIdentityOption(t, home))
+		e.procRoot = procRoot
+		if err := e.Run(context.Background(), c, false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := os.Stat(filepath.Join(home, "hf-ran")); err != nil {
+		t.Fatalf("HF tool should run after ignoring cleaner-held root descriptor: %v, events=%+v", err, events)
+	}
+	if hasCleanerSkip(events, "cache_busy") {
+		t.Fatalf("cleaner's own held root descriptor marked tool profile busy: %+v", events)
+	}
+}
+
 func TestHuggingFaceBusyInspectionFailsClosedOnWalkError(t *testing.T) {
 	busy, err := inspectHuggingFaceBusy(filepath.Join(t.TempDir(), "missing"), t.TempDir())
 	if err == nil || busy {
