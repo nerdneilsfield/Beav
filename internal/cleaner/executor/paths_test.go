@@ -100,6 +100,41 @@ func TestPathsDryRunReportsCandidatesWithoutActualDeletionMetrics(t *testing.T) 
 	}
 }
 
+func TestPathsDeletionLeavesCandidateMetricsZero(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".cache", "demo")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(cache, "old.bin")
+	if err := os.WriteFile(old, []byte("deleted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(old, when, when); err != nil {
+		t.Fatal(err)
+	}
+	c := model.Cleaner{ID: "demo", Scope: model.ScopeUser, Type: model.TypePaths, MinAgeDays: ptrInt(7), Paths: []string{cache}}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := NewPathsExecutor(home, safety.NewWhitelist(nil)).Run(context.Background(), c, false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, ev := range events {
+		if ev.Event != model.EvFinish {
+			continue
+		}
+		if ev.FilesDeleted != 1 || ev.BytesFreed != int64(len("deleted")) {
+			t.Fatalf("actual metrics = files %d bytes %d", ev.FilesDeleted, ev.BytesFreed)
+		}
+		if ev.FilesCandidate != 0 || ev.BytesCandidate != 0 {
+			t.Fatalf("candidate metrics for real deletion = files %d bytes %d, want zero", ev.FilesCandidate, ev.BytesCandidate)
+		}
+		return
+	}
+	t.Fatal("missing finish event")
+}
+
 // TestRunRootHandlesSafeRootItself verifies that runRoot correctly handles when root equals safeRoot.
 // TestRunRootHandlesSafeRootItself 验证 runRoot 在 root 等于 safeRoot 时正确处理。
 func TestRunRootHandlesSafeRootItself(t *testing.T) {

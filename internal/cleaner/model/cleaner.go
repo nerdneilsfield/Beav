@@ -268,7 +268,14 @@ func (c *Cleaner) UnmarshalYAML(value *yaml.Node) error {
 }
 
 func validateCleanerYAMLFields(value *yaml.Node) error {
-	if value.Kind != yaml.MappingNode {
+	if err := validateYAMLAliasGraph(value, map[*yaml.Node]bool{}); err != nil {
+		return err
+	}
+	resolved, err := resolveYAMLAlias(value, map[*yaml.Node]bool{})
+	if err != nil {
+		return err
+	}
+	if resolved.Kind != yaml.MappingNode {
 		return nil
 	}
 	allowed := map[string]struct{}{
@@ -278,9 +285,16 @@ func validateCleanerYAMLFields(value *yaml.Node) error {
 		"needs_root": {}, "tags": {}, "pkg_cache": {}, "container_prune": {},
 		"tool_prune": {}, "debris": {}, "managed_cache": {},
 	}
-	for i := 0; i+1 < len(value.Content); i += 2 {
-		key := value.Content[i].Value
-		nested := value.Content[i+1]
+	for i := 0; i+1 < len(resolved.Content); i += 2 {
+		keyNode, err := resolveYAMLAlias(resolved.Content[i], map[*yaml.Node]bool{})
+		if err != nil {
+			return err
+		}
+		key := keyNode.Value
+		nested, err := resolveYAMLAlias(resolved.Content[i+1], map[*yaml.Node]bool{})
+		if err != nil {
+			return err
+		}
 		if _, ok := allowed[key]; !ok {
 			return fmt.Errorf("field %s not found in type model.Cleaner", key)
 		}
@@ -302,6 +316,48 @@ func validateCleanerYAMLFields(value *yaml.Node) error {
 		}
 	}
 	return nil
+}
+
+func validateYAMLAliasGraph(node *yaml.Node, stack map[*yaml.Node]bool) error {
+	if node == nil {
+		return fmt.Errorf("malformed YAML node")
+	}
+	if stack[node] {
+		return fmt.Errorf("cyclic YAML alias")
+	}
+	stack[node] = true
+	defer delete(stack, node)
+	if node.Kind == yaml.AliasNode {
+		if node.Alias == nil {
+			return fmt.Errorf("malformed YAML alias")
+		}
+		return validateYAMLAliasGraph(node.Alias, stack)
+	}
+	for _, child := range node.Content {
+		if err := validateYAMLAliasGraph(child, stack); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func resolveYAMLAlias(node *yaml.Node, seen map[*yaml.Node]bool) (*yaml.Node, error) {
+	if node == nil {
+		return nil, fmt.Errorf("malformed YAML node")
+	}
+	if node.Kind != yaml.AliasNode {
+		return node, nil
+	}
+	if node.Alias == nil {
+		return nil, fmt.Errorf("malformed YAML alias")
+	}
+	if seen[node] {
+		return nil, fmt.Errorf("cyclic YAML alias")
+	}
+	seen[node] = true
+	resolved, err := resolveYAMLAlias(node.Alias, seen)
+	delete(seen, node)
+	return resolved, err
 }
 
 // IsEnabled returns true if the cleaner is enabled.

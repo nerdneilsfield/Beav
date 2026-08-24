@@ -87,6 +87,71 @@ func TestYAMLUnmarshalPreservesInvalidImpactForValidation(t *testing.T) {
 	}
 }
 
+func TestYAMLProfileAliasStillValidatesClosedFields(t *testing.T) {
+	target := cleanerYAMLMapping(
+		"id", "uv",
+		"scope", "user",
+		"type", "tool_prune",
+		"tool_prune", &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "profile"}, {Kind: yaml.ScalarNode, Value: "lang-uv"},
+			{Kind: yaml.ScalarNode, Value: "command"}, {Kind: yaml.ScalarNode, Value: "rm -rf /"},
+		}},
+	)
+	alias := &yaml.Node{Kind: yaml.AliasNode, Alias: target}
+	var c Cleaner
+	if err := c.UnmarshalYAML(alias); err == nil {
+		t.Fatal("expected aliased unknown profile field to be rejected")
+	}
+}
+
+func TestYAMLProfileAliasAcceptsKnownFields(t *testing.T) {
+	target := cleanerYAMLMapping(
+		"id", "uv",
+		"scope", "user",
+		"type", "tool_prune",
+		"tool_prune", &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "profile"}, {Kind: yaml.ScalarNode, Value: "lang-uv"},
+		}},
+	)
+	alias := &yaml.Node{Kind: yaml.AliasNode, Alias: target}
+	var c Cleaner
+	if err := c.UnmarshalYAML(alias); err != nil {
+		t.Fatalf("known alias rejected: %v", err)
+	}
+	if c.ToolPrune == nil || c.ToolPrune.Profile != "lang-uv" {
+		t.Fatalf("decoded profile = %+v", c.ToolPrune)
+	}
+}
+
+func cleanerYAMLMapping(fields ...any) *yaml.Node {
+	node := &yaml.Node{Kind: yaml.MappingNode}
+	for i := 0; i < len(fields); i += 2 {
+		key := &yaml.Node{Kind: yaml.ScalarNode, Value: fields[i].(string)}
+		value, ok := fields[i+1].(*yaml.Node)
+		if !ok {
+			value = &yaml.Node{Kind: yaml.ScalarNode, Value: fields[i+1].(string)}
+		}
+		node.Content = append(node.Content, key, value)
+	}
+	return node
+}
+
+func TestYAMLProfileAliasCyclesFailClosed(t *testing.T) {
+	key := &yaml.Node{Kind: yaml.ScalarNode, Value: "tool_prune"}
+	alias := &yaml.Node{Kind: yaml.AliasNode}
+	root := &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{key, alias}}
+	alias.Alias = root
+	var c Cleaner
+	if err := c.UnmarshalYAML(root); err == nil {
+		t.Fatal("expected cyclic alias to fail closed")
+	}
+
+	malformed := &yaml.Node{Kind: yaml.AliasNode}
+	if err := c.UnmarshalYAML(malformed); err == nil {
+		t.Fatal("expected malformed alias to fail closed")
+	}
+}
+
 // TestScopeKnown tests that ParseScope correctly parses known scopes.
 // TestScopeKnown 测试 ParseScope 是否正确解析已知的作用范围。
 func TestScopeKnown(t *testing.T) {

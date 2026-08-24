@@ -112,8 +112,6 @@ func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, e
 			emit(model.Event{Event: model.EvDeleted, CleanerID: c.ID, Path: abs, Size: e.Size(), TS: time.Now()})
 			bytesFreed += e.Size()
 			filesDeleted++
-			bytesCandidate += e.Size()
-			filesCandidate++
 		}
 	}
 
