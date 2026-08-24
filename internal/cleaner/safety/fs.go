@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -76,9 +77,15 @@ func (e Entry) Size() int64 { return e.stat.Size }
 // Mtime 返回条目的修改时间（Unix 时间戳）。
 func (e Entry) Mtime() int64 { return int64(e.stat.Mtim.Sec) }
 
+// MtimeTime returns the full-precision modification time of the entry.
+func (e Entry) MtimeTime() time.Time { return time.Unix(e.stat.Mtim.Sec, e.stat.Mtim.Nsec) }
+
 // Ctime returns the change time of the entry as a Unix timestamp.
 // Ctime 返回条目的状态变更时间（Unix 时间戳）。
 func (e Entry) Ctime() int64 { return int64(e.stat.Ctim.Sec) }
+
+// CtimeTime returns the full-precision change time of the entry.
+func (e Entry) CtimeTime() time.Time { return time.Unix(e.stat.Ctim.Sec, e.stat.Ctim.Nsec) }
 
 // Dev returns the device number captured for the entry.
 func (e Entry) Dev() uint64 { return uint64(e.stat.Dev) }
@@ -138,6 +145,16 @@ func (w *Walker) Close() error { return unix.Close(w.rootFD) }
 // Root returns the absolute path of the walker root directory.
 // Root 返回 walker 根目录的绝对路径。
 func (w *Walker) Root() string { return w.rootAbs }
+
+// DupRootFD returns a close-on-exec duplicate of the held walker root.
+func (w *Walker) DupRootFD() (int, error) {
+	fd, err := unix.Dup(w.rootFD)
+	if err != nil {
+		return -1, err
+	}
+	unix.CloseOnExec(fd)
+	return fd, nil
+}
 
 // WalkFunc is the callback function type invoked for each entry during Walk.
 // WalkFunc 是在 Walk 期间为每个条目调用的回调函数类型。
@@ -343,6 +360,65 @@ func OpenAnchoredDirFD(safeRoot, target string) (int, error) {
 		return cur, nil
 	}
 
+	rest := strings.TrimPrefix(target, safeRoot+string(filepath.Separator))
+	for _, part := range strings.Split(rest, string(filepath.Separator)) {
+		if part == "" || part == "." || part == ".." {
+			_ = unix.Close(cur)
+			return -1, ErrNotDir
+		}
+		var st unix.Stat_t
+		if err := unix.Fstatat(cur, part, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			_ = unix.Close(cur)
+			return -1, err
+		}
+		if (st.Mode & unix.S_IFMT) == unix.S_IFLNK {
+			_ = unix.Close(cur)
+			return -1, ErrSymlink
+		}
+		if st.Dev != rootSt.Dev {
+			_ = unix.Close(cur)
+			return -1, ErrCrossFS
+		}
+		if (st.Mode & unix.S_IFMT) != unix.S_IFDIR {
+			_ = unix.Close(cur)
+			return -1, ErrNotDir
+		}
+		next, err := unix.Openat(cur, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		_ = unix.Close(cur)
+		if err != nil {
+			return -1, err
+		}
+		cur = next
+	}
+	return cur, nil
+}
+
+// OpenAnchoredDirFDFromFD traverses target relative to an already-held safe
+// root descriptor. The safeRoot/target strings are used only for boundary
+// validation; no pathname reopen of safeRoot occurs.
+func OpenAnchoredDirFDFromFD(rootFD int, safeRoot, target string) (int, error) {
+	safeRoot = filepath.Clean(safeRoot)
+	target = filepath.Clean(target)
+	if target != safeRoot && !strings.HasPrefix(target, safeRoot+string(filepath.Separator)) {
+		return -1, ErrNotInsideRoot
+	}
+	cur, err := unix.Dup(rootFD)
+	if err != nil {
+		return -1, err
+	}
+	unix.CloseOnExec(cur)
+	var rootSt unix.Stat_t
+	if err := unix.Fstat(cur, &rootSt); err != nil {
+		_ = unix.Close(cur)
+		return -1, err
+	}
+	if (rootSt.Mode & unix.S_IFMT) != unix.S_IFDIR {
+		_ = unix.Close(cur)
+		return -1, ErrNotDir
+	}
+	if target == safeRoot {
+		return cur, nil
+	}
 	rest := strings.TrimPrefix(target, safeRoot+string(filepath.Separator))
 	for _, part := range strings.Split(rest, string(filepath.Separator)) {
 		if part == "" || part == "." || part == ".." {

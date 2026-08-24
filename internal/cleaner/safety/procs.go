@@ -2,6 +2,7 @@ package safety
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,11 +11,76 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// VerifyProcVisibility rejects proc mounts whose hidepid setting prevents a
+// complete file-descriptor view. A synthetic proc root without a mounts file
+// is an explicit test fixture seam; the real /proc must provide mount data.
+func VerifyProcVisibility(procRoot string, _ uint32) error {
+	data, err := os.ReadFile(filepath.Join(procRoot, "mounts"))
+	if err != nil {
+		if procRoot != "/proc" && errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	found := false
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[1] != "/proc" || fields[2] != "proc" {
+			continue
+		}
+		found = true
+		options := fields[3]
+		for i, field := range fields {
+			if field == "-" && i+3 < len(fields) {
+				options += "," + fields[i+3]
+				break
+			}
+		}
+		for _, option := range strings.Split(options, ",") {
+			if !strings.HasPrefix(option, "hidepid") {
+				continue
+			}
+			parts := strings.SplitN(option, "=", 2)
+			if len(parts) != 2 {
+				return fmt.Errorf("proc mount has malformed %s", option)
+			}
+			value, parseErr := strconv.Atoi(parts[1])
+			if parseErr != nil || value != 0 {
+				return fmt.Errorf("proc mount hides process descriptors: %s", option)
+			}
+		}
+	}
+	if !found && procRoot == "/proc" {
+		return errors.New("proc mount visibility could not be proven")
+	}
+	return nil
+}
+
+// FileIdentity identifies a filesystem object independent of pathname.
+type FileIdentity struct {
+	Dev uint64
+	Ino uint64
+}
+
 // OpenDescriptorMatches scans procRoot's file descriptors for a descriptor
 // referring to the supplied device and inode. The root argument is retained
 // for callers that resolve a candidate relative to a trusted root; identity,
 // rather than a pathname, is deliberately used for the comparison.
 func OpenDescriptorMatches(_ string, dev, ino uint64, procRoot string) (bool, error) {
+	return OpenDescriptorsMatch(procRoot, []FileIdentity{{Dev: dev, Ino: ino}})
+}
+
+// OpenDescriptorsMatch scans every visible process descriptor and compares
+// fstat device/inode identities against candidates. It never uses descriptor
+// symlink pathnames to decide whether an object is open.
+func OpenDescriptorsMatch(procRoot string, identities []FileIdentity) (bool, error) {
+	if err := VerifyProcVisibility(procRoot, 0); err != nil {
+		return false, err
+	}
+	want := make(map[FileIdentity]struct{}, len(identities))
+	for _, identity := range identities {
+		want[identity] = struct{}{}
+	}
 	processes, err := os.ReadDir(procRoot)
 	if err != nil {
 		return false, err
@@ -29,25 +95,35 @@ func OpenDescriptorMatches(_ string, dev, ino uint64, procRoot string) (bool, er
 		fdRoot := filepath.Join(procRoot, process.Name(), "fd")
 		fds, err := os.ReadDir(fdRoot)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
 			return false, err
 		}
 		for _, fd := range fds {
-			var st unix.Stat_t
-			if err := unix.Stat(filepath.Join(fdRoot, fd.Name()), &st); err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					continue
-				}
+			identity, err := statProcFD(filepath.Join(fdRoot, fd.Name()))
+			if err != nil {
 				return false, err
 			}
-			if uint64(st.Dev) == dev && uint64(st.Ino) == ino {
+			if _, ok := want[identity]; ok {
 				return true, nil
 			}
 		}
 	}
 	return false, nil
+}
+
+// statProcFD opens a visible proc descriptor link and fstats the resulting
+// object. O_PATH permits identity inspection without requiring read/write
+// access to the target file and avoids trusting the link's pathname text.
+func statProcFD(path string) (FileIdentity, error) {
+	fd, err := unix.Open(path, unix.O_PATH|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return FileIdentity{}, err
+	}
+	defer unix.Close(fd)
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return FileIdentity{}, err
+	}
+	return FileIdentity{Dev: uint64(st.Dev), Ino: uint64(st.Ino)}, nil
 }
 
 // AnyProcessRunning checks if any process with the given names is currently running.
@@ -90,7 +166,7 @@ func AnyProcessRunningChecked(names []string, procRoot string) (bool, error) {
 			if want[strings.TrimSpace(string(comm))] {
 				return true, nil
 			}
-		} else if !errors.Is(err, os.ErrNotExist) {
+		} else {
 			return false, err
 		}
 		if cmd, err := os.ReadFile(filepath.Join(procRoot, pid, "cmdline")); err == nil {
@@ -104,7 +180,7 @@ func AnyProcessRunningChecked(names []string, procRoot string) (bool, error) {
 					return true, nil
 				}
 			}
-		} else if !errors.Is(err, os.ErrNotExist) {
+		} else {
 			return false, err
 		}
 	}

@@ -453,6 +453,162 @@ func TestDebrisRejectsSymlinkRoot(t *testing.T) {
 	}
 }
 
+// TestDebrisRejectsRootSwapBeforeOpen verifies that replacing the selected
+// root before opening it cannot redirect cleanup to a different directory.
+func TestDebrisRejectsRootSwapBeforeOpen(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".cache", "pyinstaller")
+	candidate := filepath.Join(root, "old.bin")
+	writeDebrisAged(t, candidate, -48*time.Hour)
+	e := NewDebrisExecutor(home, nil)
+	e.procRoot = t.TempDir()
+	e.env = func(string) string { return "" }
+	minAge := 0
+	c := model.Cleaner{ID: "pyinstaller", Scope: model.ScopeUser, Type: model.TypeDebris, MinAgeDays: &minAge, Debris: &model.DebrisCfg{Profile: "python-pyinstaller-cache"}}
+	e.beforeRootOpen = func(selected string) error {
+		moved := selected + ".moved"
+		if err := os.Rename(selected, moved); err != nil {
+			return err
+		}
+		return os.Mkdir(selected, 0o755)
+	}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := e.Run(context.Background(), c, false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !hasCleanerSkip(events, "root_identity_changed") {
+		t.Fatalf("root replacement should fail closed; events: %+v", events)
+	}
+	if _, err := os.Stat(filepath.Join(root+".moved", "old.bin")); err != nil {
+		t.Fatalf("original candidate should remain in moved directory: %v", err)
+	}
+}
+
+// TestDebrisRejectsMountIDMismatch verifies that a mount identity change is
+// rejected even when device, inode, and owner remain otherwise acceptable.
+func TestDebrisRejectsMountIDMismatch(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".cache", "pyinstaller")
+	writeDebrisAged(t, filepath.Join(root, "old.bin"), -48*time.Hour)
+	e := NewDebrisExecutor(home, nil)
+	e.procRoot = t.TempDir()
+	e.env = func(string) string { return "" }
+	fdCalls := 0
+	e.fdIdentity = func(fd int) (debrisIdentity, error) {
+		identity, err := readDebrisFDIdentity(fd)
+		if err != nil {
+			return debrisIdentity{}, err
+		}
+		fdCalls++
+		if fdCalls == 2 {
+			identity.MntID++
+		}
+		return identity, nil
+	}
+	minAge := 0
+	c := model.Cleaner{ID: "pyinstaller", Scope: model.ScopeUser, Type: model.TypeDebris, MinAgeDays: &minAge, Debris: &model.DebrisCfg{Profile: "python-pyinstaller-cache"}}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := e.Run(context.Background(), c, false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !hasCleanerSkip(events, "root_identity_changed") {
+		t.Fatalf("mount identity mismatch should fail closed; events: %+v", events)
+	}
+}
+
+// TestDebrisRejectsHidepidProcVisibility verifies that hidepid=2 cannot be
+// treated as a complete fd view for deletion safety.
+func TestDebrisRejectsHidepidProcVisibility(t *testing.T) {
+	home := t.TempDir()
+	candidate := filepath.Join(home, "Downloads", "old.part")
+	writeDebrisAged(t, candidate, -48*time.Hour)
+	procRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(procRoot, "mounts"), []byte("proc /proc proc rw,nosuid,hidepid=2 0 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e := NewDebrisExecutor(home, nil)
+	e.procRoot = procRoot
+	e.env = func(string) string { return "" }
+	minAge := 0
+	c := model.Cleaner{ID: "downloads", Scope: model.ScopeUser, Type: model.TypeDebris, MinAgeDays: &minAge, Debris: &model.DebrisCfg{Profile: "desktop-download-partials"}}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := e.Run(context.Background(), c, false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !hasCleanerSkip(events, "proc_inspection_failed") {
+		t.Fatalf("hidepid proc view should skip; events: %+v", events)
+	}
+	if _, err := os.Stat(candidate); err != nil {
+		t.Fatalf("candidate should remain: %v", err)
+	}
+}
+
+// TestHuggingFaceBusyDetectsHardlinkAlias verifies that an open descriptor
+// reached through an alias outside the cache root still matches by identity.
+func TestHuggingFaceBusyDetectsHardlinkAlias(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".cache", "huggingface")
+	blob := filepath.Join(root, "hub", "blob")
+	alias := filepath.Join(home, "outside-alias")
+	writeDebrisAged(t, blob, -48*time.Hour)
+	if err := os.Link(blob, alias); err != nil {
+		t.Fatal(err)
+	}
+	procRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(procRoot, "123", "fd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(alias, filepath.Join(procRoot, "123", "fd", "7")); err != nil {
+		t.Fatal(err)
+	}
+	candidate := filepath.Join(root, "hub", "model.incomplete")
+	writeDebrisAged(t, candidate, -48*time.Hour)
+	e := NewDebrisExecutor(home, nil)
+	e.procRoot = procRoot
+	e.env = func(string) string { return "" }
+	minAge := 0
+	c := model.Cleaner{ID: "hf", Scope: model.ScopeUser, Type: model.TypeDebris, MinAgeDays: &minAge, Debris: &model.DebrisCfg{Profile: "ai-huggingface-incomplete"}}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := e.Run(context.Background(), c, false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !hasCleanerSkip(events, "cache_busy") {
+		t.Fatalf("hardlink alias should mark HF cache busy; events: %+v", events)
+	}
+	if _, err := os.Stat(candidate); err != nil {
+		t.Fatalf("candidate should remain: %v", err)
+	}
+}
+
+// TestDebrisAgeBoundaryUsesNanoseconds verifies that an artifact one fraction
+// of a second newer than the threshold is not deleted early.
+func TestDebrisAgeBoundaryUsesNanoseconds(t *testing.T) {
+	home := t.TempDir()
+	candidate := filepath.Join(home, "Downloads", "boundary.part")
+	writeDebrisAged(t, candidate, -48*time.Hour)
+	now := time.Unix(2_000_000_000, 900_000_000)
+	boundary := now.Add(-24 * time.Hour).Add(10 * time.Millisecond)
+	if err := os.Chtimes(candidate, boundary, boundary); err != nil {
+		t.Fatal(err)
+	}
+	e := NewDebrisExecutor(home, nil)
+	e.procRoot = t.TempDir()
+	e.env = func(string) string { return "" }
+	e.now = func() time.Time { return now }
+	minAge := 0
+	c := model.Cleaner{ID: "downloads", Scope: model.ScopeUser, Type: model.TypeDebris, MinAgeDays: &minAge, Debris: &model.DebrisCfg{Profile: "desktop-download-partials"}}
+	if err := e.Run(context.Background(), c, false, func(model.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(candidate); err != nil {
+		t.Fatalf("subsecond-new candidate should remain: %v", err)
+	}
+}
+
 func writeDebrisAged(t *testing.T, path string, age time.Duration) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

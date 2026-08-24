@@ -30,6 +30,14 @@ type debrisProfile struct {
 	locks       bool
 }
 
+type debrisIdentity struct {
+	Dev   uint64
+	Ino   uint64
+	UID   uint32
+	MntID uint64
+	Mode  uint32
+}
+
 // DebrisExecutor removes only artifacts named by the closed debris profile
 // registry. It never accepts roots or matching rules from YAML.
 type DebrisExecutor struct {
@@ -37,11 +45,15 @@ type DebrisExecutor struct {
 	Whitelist *safety.Whitelist
 	TargetUID uint32
 
-	procRoot     string
-	env          func(string) string
-	userDirsPath string
-	processCheck func([]string, string) (bool, error)
-	now          func() time.Time
+	procRoot       string
+	env            func(string) string
+	userDirsPath   string
+	processCheck   func([]string, string) (bool, error)
+	procVisibility func(string, uint32) error
+	beforeRootOpen func(string) error
+	pathIdentity   func(string) (debrisIdentity, error)
+	fdIdentity     func(int) (debrisIdentity, error)
+	now            func() time.Time
 }
 
 // NewDebrisExecutor creates a profile-backed debris executor. The optional
@@ -52,13 +64,16 @@ func NewDebrisExecutor(home string, wl *safety.Whitelist, targetUID ...uint32) *
 		uid = targetUID[0]
 	}
 	return &DebrisExecutor{
-		Home:         filepath.Clean(home),
-		Whitelist:    wl,
-		TargetUID:    uid,
-		procRoot:     "/proc",
-		env:          os.Getenv,
-		processCheck: checkedProcessRunning,
-		now:          time.Now,
+		Home:           filepath.Clean(home),
+		Whitelist:      wl,
+		TargetUID:      uid,
+		procRoot:       "/proc",
+		env:            os.Getenv,
+		processCheck:   checkedProcessRunning,
+		procVisibility: safety.VerifyProcVisibility,
+		pathIdentity:   readDebrisPathIdentity,
+		fdIdentity:     readDebrisFDIdentity,
+		now:            time.Now,
 	}
 }
 
@@ -132,10 +147,13 @@ func (e *DebrisExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 	if err != nil {
 		return e.finishDebrisSkip(emit, c, start, "root_unavailable", err.Error())
 	}
-	if err := e.validateDebrisRoot(root); err != nil {
+	rootFD, err := e.openDebrisRoot(root)
+	if err != nil {
 		reason := "boundary_violation"
 		if errors.Is(err, errDebrisRootUnavailable) {
 			reason = "root_unavailable"
+		} else if errors.Is(err, errDebrisRootChanged) {
+			reason = "root_identity_changed"
 		} else if errors.Is(err, safety.ErrSymlink) {
 			reason = string(model.SkipReasonSymlink)
 		} else if errors.Is(err, safety.ErrCrossFS) {
@@ -143,18 +161,27 @@ func (e *DebrisExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 		}
 		return e.finishDebrisSkip(emit, c, start, reason, err.Error())
 	}
+	if e.procVisibility != nil {
+		if visibilityErr := e.procVisibility(e.procRoot, e.TargetUID); visibilityErr != nil {
+			_ = unix.Close(rootFD)
+			return e.finishDebrisSkip(emit, c, start, "proc_inspection_failed", visibilityErr.Error())
+		}
+	}
 	if len(profile.processes) > 0 {
 		busy, checkErr := e.processCheck(profile.processes, e.procRoot)
 		if checkErr != nil {
+			_ = unix.Close(rootFD)
 			return e.finishDebrisSkip(emit, c, start, "proc_inspection_failed", checkErr.Error())
 		}
 		if busy {
+			_ = unix.Close(rootFD)
 			return e.finishDebrisSkip(emit, c, start, string(model.SkipReasonRunningProcess), "profile owner process is running")
 		}
 	}
 	if profile.locks {
-		busy, checkErr := inspectHuggingFaceBusy(root, e.procRoot)
+		busy, checkErr := inspectHuggingFaceBusyFD(rootFD, root, e.procRoot)
 		if busy || checkErr != nil {
+			_ = unix.Close(rootFD)
 			detail := "cache lock or open descriptor indicates activity"
 			if checkErr != nil {
 				detail = "cache inspection failed closed: " + checkErr.Error()
@@ -163,11 +190,7 @@ func (e *DebrisExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 		}
 	}
 
-	dirFD, err := safety.OpenAnchoredDirFD(e.Home, root)
-	if err != nil {
-		return e.finishDebrisSkip(emit, c, start, "root_unavailable", err.Error())
-	}
-	w, err := safety.OpenWalkerFD(dirFD, root)
+	w, err := safety.OpenWalkerFD(rootFD, root)
 	if err != nil {
 		return e.finishDebrisSkip(emit, c, start, "root_unavailable", err.Error())
 	}
@@ -176,7 +199,7 @@ func (e *DebrisExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 	if requested := c.AgeOrDefault(14); requested > minAge {
 		minAge = requested
 	}
-	threshold := e.now().Add(-time.Duration(minAge) * 24 * time.Hour).Unix()
+	threshold := e.now().Add(-time.Duration(minAge) * 24 * time.Hour)
 	field := safety.TimeFieldMtime
 	if c.TimeField == model.TimeCtime {
 		field = safety.TimeFieldCtime
@@ -193,12 +216,12 @@ func (e *DebrisExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 		if !entry.IsRegular() || entry.Nlink() != 1 || !profile.match(filepath.Base(entry.RelPath)) {
 			return
 		}
-		stamp := entry.Mtime()
+		stamp := entry.MtimeTime()
 		if field == safety.TimeFieldCtime {
-			stamp = entry.Ctime()
+			stamp = entry.CtimeTime()
 		}
 		// Profile floors are mandatory; NoAgeFilter cannot lower them.
-		if stamp > threshold {
+		if stamp.After(threshold) {
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: filepath.Join(root, entry.RelPath), Reason: string(model.SkipReasonAgeTooRecent), TS: e.now()})
 			return
 		}
@@ -251,7 +274,10 @@ func (e *DebrisExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 	return nil
 }
 
-var errDebrisRootUnavailable = errors.New("debris root unavailable")
+var (
+	errDebrisRootUnavailable = errors.New("debris root unavailable")
+	errDebrisRootChanged     = errors.New("debris root identity changed")
+)
 
 func (e *DebrisExecutor) finishDebrisSkip(emit func(model.Event), c model.Cleaner, start time.Time, reason, detail string) error {
 	emit(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: reason, Detail: detail, TS: e.now()})
@@ -419,39 +445,99 @@ func (e *DebrisExecutor) resolveAzureLogsRoot() (string, error) {
 	return filepath.Join(e.Home, ".azure", "commands"), nil
 }
 
-func (e *DebrisExecutor) validateDebrisRoot(root string) error {
+func readDebrisPathIdentity(path string) (debrisIdentity, error) {
+	var st unix.Stat_t
+	if err := unix.Lstat(path, &st); err != nil {
+		return debrisIdentity{}, err
+	}
+	var sx unix.Statx_t
+	if err := unix.Statx(unix.AT_FDCWD, path, unix.AT_SYMLINK_NOFOLLOW|unix.AT_STATX_SYNC_AS_STAT|unix.AT_NO_AUTOMOUNT, unix.STATX_BASIC_STATS|unix.STATX_MNT_ID, &sx); err != nil {
+		return debrisIdentity{}, fmt.Errorf("statx %q: %w", path, err)
+	}
+	if sx.Mnt_id == 0 {
+		return debrisIdentity{}, errors.New("statx did not provide mount identity")
+	}
+	return debrisIdentity{Dev: uint64(st.Dev), Ino: uint64(st.Ino), UID: st.Uid, MntID: sx.Mnt_id, Mode: uint32(st.Mode & unix.S_IFMT)}, nil
+}
+
+func readDebrisFDIdentity(fd int) (debrisIdentity, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return debrisIdentity{}, err
+	}
+	var sx unix.Statx_t
+	if err := unix.Statx(fd, "", unix.AT_EMPTY_PATH|unix.AT_STATX_SYNC_AS_STAT|unix.AT_NO_AUTOMOUNT, unix.STATX_BASIC_STATS|unix.STATX_MNT_ID, &sx); err != nil {
+		return debrisIdentity{}, fmt.Errorf("statx fd %d: %w", fd, err)
+	}
+	if sx.Mnt_id == 0 {
+		return debrisIdentity{}, errors.New("statx fd did not provide mount identity")
+	}
+	return debrisIdentity{Dev: uint64(st.Dev), Ino: uint64(st.Ino), UID: st.Uid, MntID: sx.Mnt_id, Mode: uint32(st.Mode & unix.S_IFMT)}, nil
+}
+
+func sameDebrisIdentity(a, b debrisIdentity) bool {
+	return a.Dev == b.Dev && a.Ino == b.Ino && a.UID == b.UID && a.MntID == b.MntID && a.Mode == b.Mode
+}
+
+func (e *DebrisExecutor) openDebrisRoot(root string) (int, error) {
 	home := filepath.Clean(e.Home)
 	root = filepath.Clean(root)
 	if home == "." || !filepath.IsAbs(home) || !debrisPathWithin(root, home) || root == home {
-		return fmt.Errorf("debris root is outside target home")
+		return -1, fmt.Errorf("debris root is outside target home")
 	}
-	var homeSt, rootSt unix.Stat_t
-	if err := unix.Lstat(home, &homeSt); err != nil {
-		return fmt.Errorf("%w: target home: %v", errDebrisRootUnavailable, err)
-	}
-	if homeSt.Mode&unix.S_IFMT != unix.S_IFDIR || homeSt.Uid != e.TargetUID {
-		return fmt.Errorf("debris target home ownership/type invalid")
-	}
-	if err := unix.Lstat(root, &rootSt); err != nil {
-		return fmt.Errorf("%w: %v", errDebrisRootUnavailable, err)
-	}
-	if rootSt.Mode&unix.S_IFMT == unix.S_IFLNK {
-		return safety.ErrSymlink
-	}
-	if rootSt.Mode&unix.S_IFMT != unix.S_IFDIR {
-		return fmt.Errorf("debris root is not a directory")
-	}
-	if rootSt.Uid != e.TargetUID {
-		return fmt.Errorf("debris root owner differs from target UID")
-	}
-	if rootSt.Dev != homeSt.Dev {
-		return safety.ErrCrossFS
-	}
-	fd, err := safety.OpenAnchoredDirFD(home, root)
+	homeFD, err := safety.OpenAnchoredDirFD(home, home)
 	if err != nil {
-		return err
+		return -1, fmt.Errorf("%w: target home: %v", errDebrisRootUnavailable, err)
 	}
-	return unix.Close(fd)
+	defer unix.Close(homeFD)
+	homeID, err := e.fdIdentity(homeFD)
+	if err != nil {
+		return -1, fmt.Errorf("%w: target home identity: %v", errDebrisRootUnavailable, err)
+	}
+	if homeID.Mode != unix.S_IFDIR || homeID.UID != e.TargetUID || homeID.MntID == 0 {
+		return -1, fmt.Errorf("debris target home ownership/type/mount identity invalid")
+	}
+	selected, err := e.pathIdentity(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return -1, fmt.Errorf("%w: %v", errDebrisRootUnavailable, err)
+		}
+		return -1, fmt.Errorf("%w: selected root identity: %v", errDebrisRootChanged, err)
+	}
+	if selected.Mode == unix.S_IFLNK {
+		return -1, safety.ErrSymlink
+	}
+	if selected.Mode != unix.S_IFDIR {
+		return -1, fmt.Errorf("debris root is not a directory")
+	}
+	if selected.UID != e.TargetUID {
+		return -1, fmt.Errorf("debris root owner differs from target UID")
+	}
+	if selected.Dev != homeID.Dev {
+		return -1, safety.ErrCrossFS
+	}
+	if selected.MntID == 0 || selected.MntID != homeID.MntID {
+		return -1, errDebrisRootChanged
+	}
+	if e.beforeRootOpen != nil {
+		if err := e.beforeRootOpen(root); err != nil {
+			return -1, fmt.Errorf("%w: pre-open hook: %v", errDebrisRootChanged, err)
+		}
+	}
+	fd, err := safety.OpenAnchoredDirFDFromFD(homeFD, home, root)
+	if err != nil {
+		return -1, err
+	}
+	opened, err := e.fdIdentity(fd)
+	if err != nil {
+		_ = unix.Close(fd)
+		return -1, fmt.Errorf("%w: opened root identity: %v", errDebrisRootChanged, err)
+	}
+	if !sameDebrisIdentity(selected, opened) || opened.MntID != homeID.MntID {
+		_ = unix.Close(fd)
+		return -1, errDebrisRootChanged
+	}
+	return fd, nil
 }
 
 func debrisPathWithin(path, root string) bool {

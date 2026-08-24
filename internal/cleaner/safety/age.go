@@ -45,17 +45,17 @@ func (p *Plan) Ordered() []Entry {
 // AgePlan analyzes the filesystem tree and creates a deletion plan based on file age.
 // AgePlan 分析文件系统树并根据文件年龄创建删除计划。
 func AgePlan(w *Walker, minAgeDays int, field TimeField, now time.Time, noAgeFilter bool) *Plan {
-	threshold := now.Add(-time.Duration(minAgeDays) * 24 * time.Hour).Unix()
+	threshold := now.Add(-time.Duration(minAgeDays) * 24 * time.Hour)
 	var all []ageInfo
 	rootAbs := w.Root()
 	_ = w.Walk(func(e Entry) {
 		passed := true
 		if !noAgeFilter {
-			ts := e.Mtime()
+			ts := e.MtimeTime()
 			if field == TimeFieldCtime {
-				ts = e.Ctime()
+				ts = e.CtimeTime()
 			}
-			passed = ts <= threshold
+			passed = !ts.After(threshold)
 		}
 		all = append(all, ageInfo{entry: e, passed: passed, absPath: filepath.Join(rootAbs, e.RelPath)})
 	})

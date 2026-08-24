@@ -1,11 +1,13 @@
 package executor
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/dengqi/beav/internal/cleaner/safety"
+	"golang.org/x/sys/unix"
 )
 
 func huggingFaceRootBusy(root string) (bool, error) {
@@ -13,46 +15,88 @@ func huggingFaceRootBusy(root string) (bool, error) {
 }
 
 func inspectHuggingFaceBusy(root, procRoot string) (bool, error) {
-	root = filepath.Clean(root)
-	if info, err := os.Stat(root); err != nil {
+	w, err := safety.OpenWalker(root)
+	if err != nil {
 		return false, err
-	} else if !info.IsDir() {
-		return false, errors.New("cache root is not a directory")
 	}
-	busy := false
-	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry == nil {
-			return errors.New("cache walk returned nil entry")
-		}
-		if entry.IsDir() && (entry.Name() == ".locks" || entry.Name() == "locks") {
-			children, readErr := os.ReadDir(path)
-			if readErr != nil {
-				return readErr
-			}
-			if len(children) > 0 {
-				busy = true
-			}
-			return filepath.SkipDir
-		}
-		name := strings.ToLower(entry.Name())
+	fd, err := w.DupRootFD()
+	_ = w.Close()
+	if err != nil {
+		return false, err
+	}
+	defer unix.Close(fd)
+	return inspectHuggingFaceBusyFD(fd, filepath.Clean(root), procRoot)
+}
+
+// inspectHuggingFaceBusyFD enumerates cache through held root fd and compares
+// process descriptors by device/inode identity.
+func inspectHuggingFaceBusyFD(rootFD int, root, procRoot string) (bool, error) {
+	// Open a fresh file description beneath the held root. A plain dup shares
+	// directory offsets with rootFD, which could make the later cleanup walk
+	// miss entries after this guard scan.
+	scanFD, err := unix.Openat(rootFD, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false, err
+	}
+	unix.CloseOnExec(scanFD)
+	w, err := safety.OpenWalkerFD(scanFD, root)
+	if err != nil {
+		return false, err
+	}
+	defer w.Close()
+	identities := make([]safety.FileIdentity, 0)
+	lockBusy := false
+	walkErr := w.Walk(func(entry safety.Entry) {
+		identities = append(identities, safety.FileIdentity{Dev: entry.Dev(), Ino: entry.Ino()})
+		name := strings.ToLower(filepath.Base(entry.RelPath))
 		if strings.HasSuffix(name, ".lock") || name == "lock" {
-			busy = true
-			return filepath.SkipAll
+			lockBusy = true
 		}
-		return nil
-	}); err != nil {
-		return false, fmt.Errorf("walk cache root: %w", err)
+		parts := strings.Split(filepath.Clean(entry.RelPath), string(filepath.Separator))
+		for _, part := range parts[:len(parts)-1] {
+			if strings.EqualFold(part, ".locks") || strings.EqualFold(part, "locks") {
+				lockBusy = true
+			}
+		}
+	})
+	if walkErr != nil {
+		return false, fmt.Errorf("walk cache root: %w", walkErr)
+	}
+	if lockBusy {
+		return true, nil
+	}
+	deletedBusy, err := inspectDeletedDescriptorUnder(root, procRoot)
+	if err != nil {
+		return false, err
+	}
+	if deletedBusy {
+		return true, nil
+	}
+	busy, err := safety.OpenDescriptorsMatch(procRoot, identities)
+	if err != nil {
+		return false, err
 	}
 	if busy {
 		return true, nil
 	}
-	return inspectOpenDescriptorUnder(root, procRoot)
+	return false, nil
 }
 
 func inspectOpenDescriptorUnder(root, procRoot string) (bool, error) {
+	w, err := safety.OpenWalker(root)
+	if err != nil {
+		return false, err
+	}
+	fd, err := w.DupRootFD()
+	_ = w.Close()
+	if err != nil {
+		return false, err
+	}
+	defer unix.Close(fd)
+	return inspectHuggingFaceBusyFD(fd, filepath.Clean(root), procRoot)
+}
+
+func inspectDeletedDescriptorUnder(root, procRoot string) (bool, error) {
 	root = filepath.Clean(root)
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
@@ -65,35 +109,19 @@ func inspectOpenDescriptorUnder(root, procRoot string) (bool, error) {
 		fdRoot := filepath.Join(procRoot, process.Name(), "fd")
 		fds, err := os.ReadDir(fdRoot)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
 			return false, fmt.Errorf("read %s: %w", fdRoot, err)
 		}
 		for _, fd := range fds {
 			fdPath := filepath.Join(fdRoot, fd.Name())
 			link, err := os.Readlink(fdPath)
 			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					continue
-				}
 				return false, fmt.Errorf("readlink %s: %w", fdPath, err)
 			}
 			rawLink := filepath.Clean(link)
-			link = strings.TrimSuffix(rawLink, " (deleted)")
-			if !pathWithin(link, root) {
-				continue
-			}
-			if strings.HasSuffix(rawLink, " (deleted)") {
+			cleanLink := strings.TrimSuffix(rawLink, " (deleted)")
+			if strings.HasSuffix(rawLink, " (deleted)") && pathWithin(cleanLink, root) {
 				return true, nil
 			}
-			if _, err := os.Stat(fdPath); err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					return true, nil
-				}
-				return false, fmt.Errorf("stat %s: %w", fdPath, err)
-			}
-			return true, nil
 		}
 	}
 	return false, nil

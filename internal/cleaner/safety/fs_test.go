@@ -216,6 +216,31 @@ func TestOpenAnchoredRejectsIntermediateRegularFileAsNotDir(t *testing.T) {
 	}
 }
 
+// TestOpenAnchoredDirFDFromHeldRootSurvivesPathRename verifies traversal uses
+// the already-held target-home descriptor instead of reopening its pathname.
+func TestOpenAnchoredDirFDFromHeldRootSurvivesPathRename(t *testing.T) {
+	home := t.TempDir()
+	target := filepath.Join(home, "cache")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	held, err := OpenAnchoredDirFD(home, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(held)
+	moved := home + ".moved"
+	if err := os.Rename(home, moved); err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(moved)
+	fd, err := OpenAnchoredDirFDFromFD(held, home, target)
+	if err != nil {
+		t.Fatalf("held-root traversal failed after pathname rename: %v", err)
+	}
+	defer unix.Close(fd)
+}
+
 // TestWalkSkipsDirectoryContainingGitWithoutSwallowingParentSiblings verifies .git directory skipping behavior.
 // TestWalkSkipsDirectoryContainingGitWithoutSwalkingParentSiblings 验证包含 .git 的目录跳过行为。
 func TestWalkSkipsDirectoryContainingGitWithoutSwallowingParentSiblings(t *testing.T) {

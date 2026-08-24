@@ -206,11 +206,11 @@ func (p *PathsExecutor) runRoot(c model.Cleaner, root, safeRoot string, age int,
 }
 
 func entryOldEnough(e safety.Entry, age int, field safety.TimeField, now time.Time) bool {
-	ts := e.Mtime()
+	ts := e.MtimeTime()
 	if field == safety.TimeFieldCtime {
-		ts = e.Ctime()
+		ts = e.CtimeTime()
 	}
-	return ts <= now.Add(-time.Duration(age)*24*time.Hour).Unix()
+	return !ts.After(now.Add(-time.Duration(age) * 24 * time.Hour))
 }
 
 func emitOpenSkip(cleanerID, path string, err error, emit func(model.Event)) {
