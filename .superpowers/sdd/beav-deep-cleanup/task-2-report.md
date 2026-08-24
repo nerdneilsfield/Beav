@@ -64,12 +64,12 @@ Observed: `3 passed`; Homebrew uses one resolved absolute binary with native dry
 
 ### Verification
 
-- `rtk go test ./...` — 114 passed.
-- `rtk go test -race ./...` — 114 passed.
+- `rtk go test ./...` — 115 passed.
+- `rtk go test -race ./...` — 115 passed.
 - `rtk go vet ./...` — passed.
 - `rtk git diff --check` — passed.
 
-Post-commit self-review tightened root `SUDO_UID` home matching; `rtk go test ./...` remained 114 passed.
+Post-commit self-review tightened root `SUDO_UID` home matching; `rtk go test ./...` remained green.
 
 ### RED 4 — expose exact target identity resolution
 
