@@ -61,6 +61,9 @@ func Validate(c model.Cleaner) error {
 		if !model.KnownProfile(model.TypeManagedCache, c.ManagedCache.Profile) {
 			return fmt.Errorf("cleaner %q: unknown managed_cache profile %q", c.ID, c.ManagedCache.Profile)
 		}
+		if c.NoAgeFilter {
+			return fmt.Errorf("cleaner %q: managed_cache rejects no_age_filter", c.ID)
+		}
 	}
 	return nil
 }

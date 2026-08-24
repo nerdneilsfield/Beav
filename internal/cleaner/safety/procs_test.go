@@ -3,7 +3,10 @@ package safety
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // TestAnyProcessRunningSelf verifies that the function can detect running system processes.
@@ -118,5 +121,67 @@ func TestOpenDescriptorMatchesFailsClosedOnDanglingFD(t *testing.T) {
 	}
 	if busy {
 		t.Fatal("inspection error should not claim confirmed descriptor")
+	}
+}
+
+func TestOpenDescriptorMatchesExceptPIDIgnoresHeldCleanerFD(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "held")
+	if err := os.WriteFile(path, []byte("held"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var st unix.Stat_t
+	if err := unix.Fstat(int(f.Fd()), &st); err != nil {
+		t.Fatal(err)
+	}
+	procRoot := t.TempDir()
+	fdRoot := filepath.Join(procRoot, strconv.Itoa(os.Getpid()), "fd")
+	if err := os.MkdirAll(fdRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(path, filepath.Join(fdRoot, "7")); err != nil {
+		t.Fatal(err)
+	}
+	busy, err := OpenDescriptorMatchesExceptPID(procRoot, []FileIdentity{{Dev: uint64(st.Dev), Ino: uint64(st.Ino)}}, os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if busy {
+		t.Fatal("cleaner's own held descriptor should be ignored")
+	}
+}
+
+func TestOpenDescriptorMatchesExceptFDStillFindsOtherSamePIDDescriptor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "held")
+	if err := os.WriteFile(path, []byte("held"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var st unix.Stat_t
+	if err := unix.Fstat(int(f.Fd()), &st); err != nil {
+		t.Fatal(err)
+	}
+	procRoot := t.TempDir()
+	fdRoot := filepath.Join(procRoot, strconv.Itoa(os.Getpid()), "fd")
+	if err := os.MkdirAll(fdRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(path, filepath.Join(fdRoot, "7")); err != nil {
+		t.Fatal(err)
+	}
+	busy, err := OpenDescriptorMatchesExceptFD(procRoot, []FileIdentity{{Dev: uint64(st.Dev), Ino: uint64(st.Ino)}}, os.Getpid(), 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !busy {
+		t.Fatal("other same-process descriptor should remain visible")
 	}
 }

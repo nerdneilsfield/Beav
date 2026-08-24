@@ -191,6 +191,21 @@ func TestValidateAcceptsClosedProfileExecutors(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsNoAgeFilterForManagedCache(t *testing.T) {
+	c := model.Cleaner{
+		ID:          "managed",
+		Scope:       model.ScopeUser,
+		Type:        model.TypeManagedCache,
+		NoAgeFilter: true,
+		ManagedCache: &model.ManagedCacheCfg{
+			Profile: "ai-torch-hub",
+		},
+	}
+	if err := Validate(c); err == nil || !strings.Contains(err.Error(), "no_age_filter") {
+		t.Fatalf("err = %v, want managed cache no_age_filter rejection", err)
+	}
+}
+
 func TestRejectsImmutableTypeOverride(t *testing.T) {
 	builtin := []Loaded{{From: "builtin", Cleaner: mustParse(t, `
 id: editor-vscode
