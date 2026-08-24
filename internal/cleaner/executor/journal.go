@@ -32,7 +32,7 @@ func (j *JournalExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool,
 	argv := []string{"journalctl", "--vacuum-time=" + fmt.Sprintf("%dd", age)}
 	if dryRun {
 		emit(model.Event{Event: model.EvCommandOutput, CleanerID: c.ID, Stream: "stdout", Line: "[dry-run] " + strings.Join(argv, " "), TS: time.Now()})
-		emitFinish(emit, c.ID, "ok", 0, start)
+		emitFinishWithMetrics(emit, c.ID, "ok", 0, start, true)
 		return nil
 	}
 	errs := 0

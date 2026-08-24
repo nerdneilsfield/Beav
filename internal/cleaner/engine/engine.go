@@ -17,22 +17,29 @@ type Executor interface {
 // Options holds the configuration for running the engine.
 // Options 保存运行引擎的配置。
 type Options struct {
-	Scope   model.Scope
-	DryRun  bool
-	Only    []string
-	Skip    []string
-	Emitter func(model.Event)
+	Scope  model.Scope
+	DryRun bool
+	Only   []string
+	Skip   []string
+	// IncludeHeavy authorizes cleaners whose effective impact is heavy.
+	// IncludeHeavy 授权 effective impact 为 heavy 的清理器。
+	IncludeHeavy bool
+	Emitter      func(model.Event)
 }
 
 // Result aggregates statistics from a cleaning run.
 // Result 聚合清理运行的统计信息。
 type Result struct {
-	CleanersRun     int
-	CleanersSkipped int
-	CleanersErrored int
-	BytesFreed      int64
-	FilesDeleted    int64
-	Errors          int
+	CleanersRun        int
+	CleanersSkipped    int
+	CleanersErrored    int
+	BytesFreed         int64
+	FilesDeleted       int64
+	BytesCandidate     int64
+	FilesCandidate     int64
+	MetricsIncomplete  bool
+	UnmeasuredCleaners []string
+	Errors             int
 }
 
 // Engine orchestrates the execution of cleaners with registered executors.
@@ -74,6 +81,16 @@ func (e *Engine) Run(ctx context.Context, cleaners []model.Cleaner, opt Options)
 		if !Selected(c, opt.Scope, opt.Only, opt.Skip) {
 			continue
 		}
+		if c.EffectiveImpact() == model.ImpactHeavy && !HeavyAuthorized(c, opt.IncludeHeavy, opt.Only) {
+			if opt.Emitter != nil {
+				now := time.Now()
+				opt.Emitter(model.Event{Event: model.EvStart, CleanerID: c.ID, Name: c.Name, Scope: c.Scope, Type: c.Type, DryRun: opt.DryRun, TS: now})
+				opt.Emitter(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: string(model.SkipReasonHeavyNotAuthorized), TS: time.Now()})
+				opt.Emitter(model.Event{Event: model.EvFinish, CleanerID: c.ID, Status: "skipped", TS: time.Now()})
+			}
+			res.CleanersSkipped++
+			continue
+		}
 		ex, ok := e.executors[c.Type]
 		if !ok {
 			if opt.Emitter != nil {
@@ -89,6 +106,9 @@ func (e *Engine) Run(ctx context.Context, cleaners []model.Cleaner, opt Options)
 		var status string
 		var bytesFreed int64
 		var filesDeleted int64
+		var bytesCandidate int64
+		var filesCandidate int64
+		var metricsIncomplete bool
 		var errs int
 		emit := func(ev model.Event) {
 			ev.DryRun = opt.DryRun
@@ -101,6 +121,9 @@ func (e *Engine) Run(ctx context.Context, cleaners []model.Cleaner, opt Options)
 			status = ev.Status
 			bytesFreed = ev.BytesFreed
 			filesDeleted = ev.FilesDeleted
+			bytesCandidate = ev.BytesCandidate
+			filesCandidate = ev.FilesCandidate
+			metricsIncomplete = ev.MetricsIncomplete
 			errs = ev.Errors
 		}
 
@@ -123,18 +146,28 @@ func (e *Engine) Run(ctx context.Context, cleaners []model.Cleaner, opt Options)
 		}
 		res.BytesFreed += bytesFreed
 		res.FilesDeleted += filesDeleted
+		res.BytesCandidate += bytesCandidate
+		res.FilesCandidate += filesCandidate
+		if metricsIncomplete {
+			res.MetricsIncomplete = true
+			res.UnmeasuredCleaners = appendUnique(res.UnmeasuredCleaners, c.ID)
+		}
 	}
 	if opt.Emitter != nil {
 		opt.Emitter(model.Event{
-			Event:           model.EvSummary,
-			DryRun:          opt.DryRun,
-			CleanersRun:     res.CleanersRun,
-			CleanersSkipped: res.CleanersSkipped,
-			CleanersErrored: res.CleanersErrored,
-			BytesFreed:      res.BytesFreed,
-			FilesDeleted:    res.FilesDeleted,
-			Errors:          res.Errors,
-			TS:              time.Now(),
+			Event:              model.EvSummary,
+			DryRun:             opt.DryRun,
+			CleanersRun:        res.CleanersRun,
+			CleanersSkipped:    res.CleanersSkipped,
+			CleanersErrored:    res.CleanersErrored,
+			BytesFreed:         res.BytesFreed,
+			FilesDeleted:       res.FilesDeleted,
+			BytesCandidate:     res.BytesCandidate,
+			FilesCandidate:     res.FilesCandidate,
+			MetricsIncomplete:  res.MetricsIncomplete,
+			UnmeasuredCleaners: append([]string(nil), res.UnmeasuredCleaners...),
+			Errors:             res.Errors,
+			TS:                 time.Now(),
 		})
 	}
 	return res, nil
@@ -150,6 +183,23 @@ func Selected(c model.Cleaner, scope model.Scope, only, skip []string) bool {
 		return false
 	}
 	return match(c, only, skip)
+}
+
+// HeavyAuthorized reports whether heavy impact c has an explicit authorization.
+// HeavyAuthorized 报告 heavy 清理器 c 是否取得显式授权。
+func HeavyAuthorized(c model.Cleaner, includeHeavy bool, only []string) bool {
+	if c.EffectiveImpact() != model.ImpactHeavy {
+		return true
+	}
+	if includeHeavy {
+		return true
+	}
+	for _, selector := range only {
+		if selector == c.ID {
+			return true
+		}
+	}
+	return false
 }
 
 func match(c model.Cleaner, only, skip []string) bool {
@@ -174,4 +224,13 @@ func matchesAny(c model.Cleaner, selectors []string) bool {
 		}
 	}
 	return false
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }

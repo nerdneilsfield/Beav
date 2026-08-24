@@ -51,7 +51,11 @@ func MergeByID(builtin, user []Loaded) ([]model.Cleaner, error) {
 	}
 	out := make([]model.Cleaner, 0, len(order))
 	for _, id := range order {
-		out = append(out, byID[id])
+		c := byID[id]
+		if err := Validate(c); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
 	}
 	return out, nil
 }

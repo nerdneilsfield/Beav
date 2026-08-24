@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
@@ -48,9 +49,12 @@ func loadFS(root fs.FS, base string) ([]Loaded, error) {
 		}
 
 		var list []model.Cleaner
-		if err := yaml.Unmarshal(data, &list); err == nil {
+		if err := decodeYAML(data, &list); err == nil {
 			for _, c := range list {
 				if c.ID != "" {
+					if err := normalizeAndValidate(&c); err != nil {
+						return fmt.Errorf("%s: %w", p, err)
+					}
 					out = append(out, Loaded{From: p, Cleaner: c})
 				}
 			}
@@ -58,11 +62,14 @@ func loadFS(root fs.FS, base string) ([]Loaded, error) {
 		}
 
 		var c model.Cleaner
-		if err := yaml.Unmarshal(data, &c); err != nil {
+		if err := decodeYAML(data, &c); err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
 		if c.ID == "" {
 			return nil
+		}
+		if err := normalizeAndValidate(&c); err != nil {
+			return fmt.Errorf("%s: %w", p, err)
 		}
 		out = append(out, Loaded{From: p, Cleaner: c})
 		return nil
@@ -71,4 +78,35 @@ func loadFS(root fs.FS, base string) ([]Loaded, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func decodeYAML(data []byte, out any) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	return decoder.Decode(out)
+}
+
+// normalizeAndValidate applies compatibility defaults and validates structural
+// fields before a cleaner can enter the registry. Mutable user override files
+// may contain only an ID plus override fields; those are validated after merge.
+func normalizeAndValidate(c *model.Cleaner) error {
+	if c.Impact == "" {
+		c.Impact = model.ImpactSafe
+	}
+	if c.Type == "" {
+		if c.Impact != model.ImpactSafe && c.Impact != model.ImpactHeavy {
+			return fmt.Errorf("cleaner %q: invalid impact %q", c.ID, c.Impact)
+		}
+		if c.ToolPrune != nil && !model.KnownProfile(model.TypeToolPrune, c.ToolPrune.Profile) {
+			return fmt.Errorf("cleaner %q: unknown tool_prune profile %q", c.ID, c.ToolPrune.Profile)
+		}
+		if c.Debris != nil && !model.KnownProfile(model.TypeDebris, c.Debris.Profile) {
+			return fmt.Errorf("cleaner %q: unknown debris profile %q", c.ID, c.Debris.Profile)
+		}
+		if c.ManagedCache != nil && !model.KnownProfile(model.TypeManagedCache, c.ManagedCache.Profile) {
+			return fmt.Errorf("cleaner %q: unknown managed_cache profile %q", c.ID, c.ManagedCache.Profile)
+		}
+		return nil
+	}
+	return Validate(*c)
 }

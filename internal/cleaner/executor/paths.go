@@ -66,6 +66,8 @@ func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, e
 	excludes := compileGlobs(c.Exclude)
 	var bytesFreed int64
 	var filesDeleted int64
+	var bytesCandidate int64
+	var filesCandidate int64
 	var errs int
 
 	process := func(w *safety.Walker, entries []safety.Entry) {
@@ -88,8 +90,8 @@ func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, e
 			}
 			if dryRun {
 				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "dry_run", Size: e.Size(), TS: time.Now()})
-				bytesFreed += e.Size()
-				filesDeleted++
+				bytesCandidate += e.Size()
+				filesCandidate++
 				continue
 			}
 			var unlinkErr error
@@ -110,6 +112,8 @@ func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, e
 			emit(model.Event{Event: model.EvDeleted, CleanerID: c.ID, Path: abs, Size: e.Size(), TS: time.Now()})
 			bytesFreed += e.Size()
 			filesDeleted++
+			bytesCandidate += e.Size()
+			filesCandidate++
 		}
 	}
 
@@ -130,14 +134,16 @@ func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, e
 		status = "error"
 	}
 	emit(model.Event{
-		Event:        model.EvFinish,
-		CleanerID:    c.ID,
-		Status:       status,
-		FilesDeleted: filesDeleted,
-		BytesFreed:   bytesFreed,
-		Errors:       errs,
-		DurationMs:   time.Since(start).Milliseconds(),
-		TS:           time.Now(),
+		Event:          model.EvFinish,
+		CleanerID:      c.ID,
+		Status:         status,
+		FilesDeleted:   filesDeleted,
+		BytesFreed:     bytesFreed,
+		FilesCandidate: filesCandidate,
+		BytesCandidate: bytesCandidate,
+		Errors:         errs,
+		DurationMs:     time.Since(start).Milliseconds(),
+		TS:             time.Now(),
 	})
 	return nil
 }

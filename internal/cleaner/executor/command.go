@@ -87,12 +87,17 @@ func drain(r io.Reader, fn func(string)) {
 // emitFinish emits a finish event with the given status and error count.
 // emitFinish 发出带有给定状态和错误计数的完成事件。
 func emitFinish(emit func(model.Event), id, status string, errs int, start time.Time) {
+	emitFinishWithMetrics(emit, id, status, errs, start, false)
+}
+
+func emitFinishWithMetrics(emit func(model.Event), id, status string, errs int, start time.Time, metricsIncomplete bool) {
 	emit(model.Event{
-		Event:      model.EvFinish,
-		CleanerID:  id,
-		Status:     status,
-		Errors:     errs,
-		DurationMs: time.Since(start).Milliseconds(),
-		TS:         time.Now(),
+		Event:             model.EvFinish,
+		CleanerID:         id,
+		Status:            status,
+		Errors:            errs,
+		MetricsIncomplete: metricsIncomplete,
+		DurationMs:        time.Since(start).Milliseconds(),
+		TS:                time.Now(),
 	})
 }

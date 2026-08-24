@@ -59,3 +59,23 @@ func TestEventJSONShapesByEventType(t *testing.T) {
 		})
 	}
 }
+
+func TestSummaryJSONIncludesCandidateAndMetricCompletenessFields(t *testing.T) {
+	b, err := json.Marshal(Event{
+		Event:              EvSummary,
+		FilesCandidate:     2,
+		BytesCandidate:     8,
+		MetricsIncomplete:  true,
+		UnmeasuredCleaners: []string{"tool"},
+		TS:                 time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	for _, want := range []string{`"files_candidate":2`, `"bytes_candidate":8`, `"metrics_incomplete":true`, `"unmeasured_cleaners":["tool"]`} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("summary JSON %s missing %s", s, want)
+		}
+	}
+}

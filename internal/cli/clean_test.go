@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/dengqi/beav/internal/cleaner/model"
@@ -55,5 +56,23 @@ func TestValidateCleanersForRunSkipsWrongScopeBeforePathValidation(t *testing.T)
 
 	if err := validateCleanersForRun(cleaners, model.ScopeSystem, "", CleanFlags{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCleanCommandExposesIncludeHeavyFlag(t *testing.T) {
+	cmd := NewCleanCmd()
+	if cmd.Flags().Lookup("include-heavy") == nil {
+		t.Fatal("missing --include-heavy flag")
+	}
+}
+
+func TestValidateCleanersForRunRejectsInvalidUnselectedCleaner(t *testing.T) {
+	cleaners := []model.Cleaner{
+		{ID: "valid", Scope: model.ScopeUser, Type: model.TypePaths, Paths: []string{"~/.cache/valid/*"}},
+		{ID: "bad-command", Scope: model.ScopeSystem, Type: model.TypeCommand},
+	}
+	err := validateCleanersForRun(cleaners, model.ScopeUser, t.TempDir(), CleanFlags{Only: []string{"valid"}})
+	if err == nil || !strings.Contains(err.Error(), "bad-command") {
+		t.Fatalf("err = %v, want invalid unselected cleaner error", err)
 	}
 }

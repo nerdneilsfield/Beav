@@ -42,6 +42,7 @@ func NewCleanCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&f.All, "all", false, "clean both user and system scopes")
 	cmd.Flags().BoolVar(&f.DryRun, "dry-run", false, "show what would be removed")
 	cmd.Flags().StringSliceVar(&f.Only, "only", nil, "run only matching cleaner IDs, tags, or ID prefixes")
+	cmd.Flags().BoolVar(&f.IncludeHeavy, "include-heavy", false, "authorize heavy-impact cleaners")
 	cmd.Flags().StringSliceVar(&f.Skip, "skip", nil, "skip matching cleaner IDs, tags, or ID prefixes")
 	cmd.Flags().StringVar(&f.MinAge, "min-age", "", "override min age, for example 14d or tag=3d")
 	cmd.Flags().BoolVar(&f.ForceNoAge, "force-no-age", false, "allow cleaners that explicitly have no age filter")
@@ -130,11 +131,12 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 		renderer.Render(ev)
 	}
 	res, err := eng.Run(ctx, merged, engine.Options{
-		Scope:   scope,
-		DryRun:  f.DryRun,
-		Only:    f.Only,
-		Skip:    f.Skip,
-		Emitter: emit,
+		Scope:        scope,
+		DryRun:       f.DryRun,
+		Only:         f.Only,
+		Skip:         f.Skip,
+		IncludeHeavy: f.IncludeHeavy,
+		Emitter:      emit,
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -153,11 +155,11 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 // validateCleanersForRun 在执行前验证给定范围和标志的清理器。
 func validateCleanersForRun(cleaners []model.Cleaner, scope model.Scope, home string, f CleanFlags) error {
 	for _, c := range cleaners {
-		if !engine.Selected(c, scope, f.Only, f.Skip) {
-			continue
-		}
 		if err := registry.Validate(c); err != nil {
 			return err
+		}
+		if !engine.Selected(c, scope, f.Only, f.Skip) {
+			continue
 		}
 		validateHome := home
 		if c.Scope == model.ScopeSystem {

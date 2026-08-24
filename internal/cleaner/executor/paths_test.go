@@ -63,6 +63,43 @@ func TestPathsExecutorDeletesAgedFiles(t *testing.T) {
 	}
 }
 
+func TestPathsDryRunReportsCandidatesWithoutActualDeletionMetrics(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".cache", "demo")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(cache, "old.bin")
+	if err := os.WriteFile(old, []byte("candidate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(old, when, when); err != nil {
+		t.Fatal(err)
+	}
+	c := model.Cleaner{ID: "demo", Scope: model.ScopeUser, Type: model.TypePaths, MinAgeDays: ptrInt(7), Paths: []string{cache}}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := NewPathsExecutor(home, safety.NewWhitelist(nil)).Run(context.Background(), c, true, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var finish model.Event
+	for _, ev := range events {
+		if ev.Event == model.EvFinish {
+			finish = ev
+		}
+	}
+	if finish.FilesDeleted != 0 || finish.BytesFreed != 0 {
+		t.Fatalf("actual dry-run metrics = files %d bytes %d, want zero", finish.FilesDeleted, finish.BytesFreed)
+	}
+	if finish.FilesCandidate != 1 || finish.BytesCandidate != int64(len("candidate")) {
+		t.Fatalf("candidate metrics = files %d bytes %d", finish.FilesCandidate, finish.BytesCandidate)
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Fatalf("dry-run removed candidate: %v", err)
+	}
+}
+
 // TestRunRootHandlesSafeRootItself verifies that runRoot correctly handles when root equals safeRoot.
 // TestRunRootHandlesSafeRootItself 验证 runRoot 在 root 等于 safeRoot 时正确处理。
 func TestRunRootHandlesSafeRootItself(t *testing.T) {
