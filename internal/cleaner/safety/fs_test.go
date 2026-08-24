@@ -42,6 +42,32 @@ func TestWalkSkipsSymlinks(t *testing.T) {
 	}
 }
 
+func TestWalkerRejectsMountIdentityMismatch(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "f"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		_ = unix.Close(fd)
+		t.Fatal(err)
+	}
+	mountID, err := mountIDForFD(fd)
+	if err != nil {
+		_ = unix.Close(fd)
+		t.Fatal(err)
+	}
+	w := &Walker{rootFD: fd, rootDev: uint64(st.Dev), rootMountID: mountID + 1, rootAbs: root}
+	defer w.Close()
+	if err := w.Walk(func(Entry) {}); !errors.Is(err, ErrCrossFS) {
+		t.Fatalf("mount mismatch should fail closed, got %v", err)
+	}
+}
+
 // TestReStatBeforeUnlinkDetectsChange verifies that modifications are detected before unlinking.
 // TestReStatBeforeUnlinkDetectsChange 验证在删除之前能够检测到文件修改。
 func TestReStatBeforeUnlinkDetectsChange(t *testing.T) {

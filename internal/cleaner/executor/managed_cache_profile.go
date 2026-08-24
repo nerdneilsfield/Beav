@@ -96,6 +96,9 @@ func completeManagedArrowUnit(fd int, leaf string) (bool, error) {
 		if identity.Mode == unix.S_IFLNK {
 			return false, nil
 		}
+		if identity.Nlink != 1 {
+			return false, nil
+		}
 		lower := strings.ToLower(name)
 		if strings.Contains(lower, "incomplete") || strings.HasSuffix(lower, ".lock") || strings.HasSuffix(lower, ".part") || strings.HasSuffix(lower, ".tmp") {
 			return false, nil

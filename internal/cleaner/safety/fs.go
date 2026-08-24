@@ -48,6 +48,32 @@ var ErrNotInsideRoot = errors.New("target is not under the safe root")
 // ErrNotDir 在路径组件不是目录时返回。
 var ErrNotDir = errors.New("path component is not a directory")
 
+// ErrMountIdentityUnavailable is returned when Linux cannot prove a stable
+// mount identity with statx. Callers performing destructive traversal must
+// fail closed rather than fall back to device numbers.
+var ErrMountIdentityUnavailable = errors.New("mount identity unavailable")
+
+const safetyStatxMask = unix.STATX_BASIC_STATS | unix.STATX_MNT_ID
+
+func statxMountID(fd int, path string, flags int) (uint64, error) {
+	var st unix.Statx_t
+	if err := unix.Statx(fd, path, flags, safetyStatxMask, &st); err != nil {
+		return 0, err
+	}
+	if st.Mask&unix.STATX_MNT_ID == 0 || st.Mnt_id == 0 {
+		return 0, ErrMountIdentityUnavailable
+	}
+	return st.Mnt_id, nil
+}
+
+func mountIDForFD(fd int) (uint64, error) {
+	return statxMountID(fd, "", unix.AT_EMPTY_PATH)
+}
+
+func mountIDAt(parentFD int, leaf string) (uint64, error) {
+	return statxMountID(parentFD, leaf, unix.AT_SYMLINK_NOFOLLOW)
+}
+
 // Entry represents a filesystem entry with its relative path and stat information.
 // Entry 表示一个文件系统条目，包含其相对路径和 stat 信息。
 type Entry struct {
@@ -55,6 +81,7 @@ type Entry struct {
 	// RelPath 是相对于 walker 根目录的路径。
 	RelPath string
 	stat    unix.Stat_t
+	mountID uint64
 }
 
 // IsRegular returns true if the entry is a regular file.
@@ -99,12 +126,16 @@ func (e Entry) Nlink() uint64 { return uint64(e.stat.Nlink) }
 // UID returns the captured owner user ID.
 func (e Entry) UID() uint32 { return e.stat.Uid }
 
+// MountID returns the stable Linux mount ID captured for the entry.
+func (e Entry) MountID() uint64 { return e.mountID }
+
 // Walker provides safe filesystem traversal anchored at a root directory.
 // Walker 提供以根目录为锚点的安全文件系统遍历功能。
 type Walker struct {
-	rootFD  int
-	rootDev uint64
-	rootAbs string
+	rootFD      int
+	rootDev     uint64
+	rootMountID uint64
+	rootAbs     string
 }
 
 // OpenWalker opens a new Walker rooted at the given directory path.
@@ -119,8 +150,13 @@ func OpenWalker(root string) (*Walker, error) {
 		_ = unix.Close(fd)
 		return nil, err
 	}
+	mountID, err := mountIDForFD(fd)
+	if err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
 	abs, _ := filepath.Abs(root)
-	return &Walker{rootFD: fd, rootDev: st.Dev, rootAbs: abs}, nil
+	return &Walker{rootFD: fd, rootDev: uint64(st.Dev), rootMountID: mountID, rootAbs: abs}, nil
 }
 
 // OpenWalkerFD opens a new Walker using an existing directory file descriptor.
@@ -135,7 +171,12 @@ func OpenWalkerFD(fd int, absPath string) (*Walker, error) {
 		_ = unix.Close(fd)
 		return nil, errors.New("fd is not a directory")
 	}
-	return &Walker{rootFD: fd, rootDev: st.Dev, rootAbs: absPath}, nil
+	mountID, err := mountIDForFD(fd)
+	if err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+	return &Walker{rootFD: fd, rootDev: uint64(st.Dev), rootMountID: mountID, rootAbs: absPath}, nil
 }
 
 // Close releases the file descriptor held by the Walker.
@@ -186,8 +227,15 @@ func (w *Walker) walkDir(parentFD int, rel string, fn WalkFunc) (bool, error) {
 		if err := unix.Fstatat(parentFD, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 			continue
 		}
-		if st.Dev != w.rootDev {
-			continue
+		if uint64(st.Dev) != w.rootDev {
+			return false, ErrCrossFS
+		}
+		mountID, err := mountIDAt(parentFD, name)
+		if err != nil {
+			return false, err
+		}
+		if mountID != w.rootMountID {
+			return false, ErrCrossFS
 		}
 		entryRel := filepath.Join(rel, name)
 		mode := st.Mode & unix.S_IFMT
@@ -198,7 +246,7 @@ func (w *Walker) walkDir(parentFD int, rel string, fn WalkFunc) (bool, error) {
 		default:
 			continue
 		}
-		e := Entry{RelPath: entryRel, stat: st}
+		e := Entry{RelPath: entryRel, stat: st, mountID: mountID}
 		if e.IsDir() {
 			fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 			if err != nil {
@@ -234,6 +282,15 @@ func (w *Walker) reopenLeaf(rel string) (int, string, error) {
 		if err != nil {
 			return -1, "", err
 		}
+		mountID, mountErr := mountIDForFD(next)
+		if mountErr != nil {
+			_ = unix.Close(next)
+			return -1, "", mountErr
+		}
+		if mountID != w.rootMountID {
+			_ = unix.Close(next)
+			return -1, "", ErrCrossFS
+		}
 		cur = next
 	}
 	return cur, parts[len(parts)-1], nil
@@ -256,6 +313,14 @@ func (w *Walker) UnlinkIfUnchanged(e Entry) error {
 		return err
 	}
 	if cur.Dev != w.rootDev {
+		return ErrCrossFS
+	}
+	if e.mountID != w.rootMountID {
+		return ErrChanged
+	}
+	if mountID, err := mountIDAt(parentFD, leaf); err != nil {
+		return err
+	} else if mountID != w.rootMountID {
 		return ErrCrossFS
 	}
 	if (cur.Mode&unix.S_IFMT) != unix.S_IFREG || cur.Nlink != 1 || cur.Ino != e.stat.Ino || cur.Dev != e.stat.Dev ||
@@ -284,6 +349,14 @@ func (w *Walker) RemoveEmptyDirIfMatch(e Entry) error {
 		return err
 	}
 	if cur.Dev != w.rootDev {
+		return ErrCrossFS
+	}
+	if e.mountID != w.rootMountID {
+		return ErrChanged
+	}
+	if mountID, err := mountIDAt(parentFD, leaf); err != nil {
+		return err
+	} else if mountID != w.rootMountID {
 		return ErrCrossFS
 	}
 	if (cur.Mode & unix.S_IFMT) != unix.S_IFDIR {
@@ -321,11 +394,25 @@ func OpenFileEntry(path string) (*Walker, Entry, error) {
 		_ = unix.Close(pfd)
 		return nil, Entry{}, err
 	}
+	mountID, err := mountIDAt(pfd, filepath.Base(abs))
+	if err != nil {
+		_ = unix.Close(pfd)
+		return nil, Entry{}, err
+	}
 	if (st.Mode & unix.S_IFMT) != unix.S_IFREG {
 		_ = unix.Close(pfd)
 		return nil, Entry{}, errors.New("not a regular file")
 	}
-	return &Walker{rootFD: pfd, rootDev: st.Dev, rootAbs: parent}, Entry{RelPath: filepath.Base(abs), stat: st}, nil
+	rootMountID, err := mountIDForFD(pfd)
+	if err != nil {
+		_ = unix.Close(pfd)
+		return nil, Entry{}, err
+	}
+	if mountID != rootMountID {
+		_ = unix.Close(pfd)
+		return nil, Entry{}, ErrCrossFS
+	}
+	return &Walker{rootFD: pfd, rootDev: uint64(st.Dev), rootMountID: rootMountID, rootAbs: parent}, Entry{RelPath: filepath.Base(abs), stat: st, mountID: mountID}, nil
 }
 
 func readdirnames(fd int) ([]string, error) {
@@ -356,6 +443,11 @@ func OpenAnchoredDirFD(safeRoot, target string) (int, error) {
 		_ = unix.Close(cur)
 		return -1, err
 	}
+	rootMountID, err := mountIDForFD(cur)
+	if err != nil {
+		_ = unix.Close(cur)
+		return -1, err
+	}
 	if target == safeRoot {
 		return cur, nil
 	}
@@ -376,6 +468,15 @@ func OpenAnchoredDirFD(safeRoot, target string) (int, error) {
 			return -1, ErrSymlink
 		}
 		if st.Dev != rootSt.Dev {
+			_ = unix.Close(cur)
+			return -1, ErrCrossFS
+		}
+		mountID, err := mountIDAt(cur, part)
+		if err != nil {
+			_ = unix.Close(cur)
+			return -1, err
+		}
+		if mountID != rootMountID {
 			_ = unix.Close(cur)
 			return -1, ErrCrossFS
 		}
@@ -412,6 +513,11 @@ func OpenAnchoredDirFDFromFD(rootFD int, safeRoot, target string) (int, error) {
 		_ = unix.Close(cur)
 		return -1, err
 	}
+	rootMountID, err := mountIDForFD(cur)
+	if err != nil {
+		_ = unix.Close(cur)
+		return -1, err
+	}
 	if (rootSt.Mode & unix.S_IFMT) != unix.S_IFDIR {
 		_ = unix.Close(cur)
 		return -1, ErrNotDir
@@ -435,6 +541,15 @@ func OpenAnchoredDirFDFromFD(rootFD int, safeRoot, target string) (int, error) {
 			return -1, ErrSymlink
 		}
 		if st.Dev != rootSt.Dev {
+			_ = unix.Close(cur)
+			return -1, ErrCrossFS
+		}
+		mountID, err := mountIDAt(cur, part)
+		if err != nil {
+			_ = unix.Close(cur)
+			return -1, err
+		}
+		if mountID != rootMountID {
 			_ = unix.Close(cur)
 			return -1, ErrCrossFS
 		}
@@ -466,6 +581,20 @@ func OpenAnchoredFile(safeRoot, target string) (*Walker, Entry, error) {
 		_ = unix.Close(parentFD)
 		return nil, Entry{}, err
 	}
+	mountID, err := mountIDAt(parentFD, leaf)
+	if err != nil {
+		_ = unix.Close(parentFD)
+		return nil, Entry{}, err
+	}
+	rootMountID, err := mountIDForFD(parentFD)
+	if err != nil {
+		_ = unix.Close(parentFD)
+		return nil, Entry{}, err
+	}
+	if mountID != rootMountID {
+		_ = unix.Close(parentFD)
+		return nil, Entry{}, ErrCrossFS
+	}
 	mode := st.Mode & unix.S_IFMT
 	if mode == unix.S_IFLNK {
 		_ = unix.Close(parentFD)
@@ -475,5 +604,5 @@ func OpenAnchoredFile(safeRoot, target string) (*Walker, Entry, error) {
 		_ = unix.Close(parentFD)
 		return nil, Entry{}, errors.New("not a regular file")
 	}
-	return &Walker{rootFD: parentFD, rootDev: st.Dev, rootAbs: parent}, Entry{RelPath: leaf, stat: st}, nil
+	return &Walker{rootFD: parentFD, rootDev: uint64(st.Dev), rootMountID: rootMountID, rootAbs: parent}, Entry{RelPath: leaf, stat: st, mountID: mountID}, nil
 }

@@ -16,6 +16,65 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+type managedTreeState map[string]managedIdentity
+
+func captureManagedTree(fd int, abs string, kind managedUnitKind, root managedIdentity) (managedTreeState, error) {
+	tree := managedTreeState{"": root}
+	if kind != managedUnitDirectory {
+		return tree, nil
+	}
+	dup, err := unix.Dup(fd)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := unix.Seek(dup, 0, io.SeekStart); err != nil {
+		_ = unix.Close(dup)
+		return nil, err
+	}
+	walker, err := safety.OpenWalkerFD(dup, abs)
+	if err != nil {
+		return nil, err
+	}
+	defer walker.Close()
+	if err := walker.Walk(func(entry safety.Entry) {
+		mode := uint32(unix.S_IFREG)
+		if entry.IsDir() {
+			mode = unix.S_IFDIR
+		}
+		mtime := entry.MtimeTime()
+		ctime := entry.CtimeTime()
+		tree[entry.RelPath] = managedIdentity{
+			Dev:       entry.Dev(),
+			Ino:       entry.Ino(),
+			MountID:   entry.MountID(),
+			UID:       entry.UID(),
+			Mode:      mode,
+			Nlink:     entry.Nlink(),
+			Size:      entry.Size(),
+			MtimeSec:  mtime.Unix(),
+			MtimeNsec: int64(mtime.Nanosecond()),
+			CtimeSec:  ctime.Unix(),
+			CtimeNsec: int64(ctime.Nanosecond()),
+		}
+	}); err != nil {
+		return nil, err
+	}
+	return tree, nil
+}
+
+func sameManagedTree(a, b managedTreeState) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for path, left := range a {
+		right, ok := b[path]
+		if !ok || !sameManagedState(left, right) {
+			return false
+		}
+	}
+	return true
+}
+
 func managedIdentityOldEnough(identity managedIdentity, minAge int, now time.Time) bool {
 	if minAge < managedCacheMinAgeDays || now.IsZero() {
 		return false
@@ -121,43 +180,54 @@ func readManagedDirNames(fd int) ([]string, error) {
 }
 
 func readManagedFDIdentity(fd int) (managedIdentity, error) {
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
+	st, err := managedStatx(fd, "", unix.AT_EMPTY_PATH)
+	if err != nil {
 		return managedIdentity{}, err
 	}
-	return managedIdentity{
-		Dev:       uint64(st.Dev),
-		Ino:       uint64(st.Ino),
-		UID:       st.Uid,
-		Mode:      uint32(st.Mode & unix.S_IFMT),
-		Size:      st.Size,
-		MtimeSec:  st.Mtim.Sec,
-		MtimeNsec: st.Mtim.Nsec,
-	}, nil
+	return managedIdentityFromStatx(st), nil
 }
 
 func managedStatAt(parentFD int, leaf string) (managedIdentity, error) {
-	var st unix.Stat_t
-	if err := unix.Fstatat(parentFD, leaf, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+	st, err := managedStatx(parentFD, leaf, unix.AT_SYMLINK_NOFOLLOW)
+	if err != nil {
 		return managedIdentity{}, err
 	}
+	return managedIdentityFromStatx(st), nil
+}
+
+func managedStatx(fd int, path string, flags int) (unix.Statx_t, error) {
+	var st unix.Statx_t
+	if err := unix.Statx(fd, path, flags, unix.STATX_BASIC_STATS|unix.STATX_MNT_ID, &st); err != nil {
+		return unix.Statx_t{}, err
+	}
+	if st.Mask&unix.STATX_MNT_ID == 0 || st.Mnt_id == 0 {
+		return unix.Statx_t{}, errManagedMountUnavailable
+	}
+	return st, nil
+}
+
+func managedIdentityFromStatx(st unix.Statx_t) managedIdentity {
 	return managedIdentity{
-		Dev:       uint64(st.Dev),
-		Ino:       uint64(st.Ino),
+		Dev:       unix.Mkdev(st.Dev_major, st.Dev_minor),
+		Ino:       st.Ino,
+		MountID:   st.Mnt_id,
 		UID:       st.Uid,
 		Mode:      uint32(st.Mode & unix.S_IFMT),
-		Size:      st.Size,
-		MtimeSec:  st.Mtim.Sec,
-		MtimeNsec: st.Mtim.Nsec,
-	}, nil
+		Nlink:     uint64(st.Nlink),
+		Size:      int64(st.Size),
+		MtimeSec:  st.Mtime.Sec,
+		MtimeNsec: int64(st.Mtime.Nsec),
+		CtimeSec:  st.Ctime.Sec,
+		CtimeNsec: int64(st.Ctime.Nsec),
+	}
 }
 
 func sameManagedIdentity(a, b managedIdentity) bool {
-	return a.Dev == b.Dev && a.Ino == b.Ino && a.UID == b.UID && a.Mode == b.Mode
+	return a.Dev == b.Dev && a.Ino == b.Ino && a.MountID == b.MountID && a.UID == b.UID && a.Mode == b.Mode
 }
 
 func sameManagedState(a, b managedIdentity) bool {
-	return sameManagedIdentity(a, b) && a.Size == b.Size && a.MtimeSec == b.MtimeSec && a.MtimeNsec == b.MtimeNsec
+	return sameManagedIdentity(a, b) && a.Nlink == b.Nlink && a.Size == b.Size && a.MtimeSec == b.MtimeSec && a.MtimeNsec == b.MtimeNsec && a.CtimeSec == b.CtimeSec && a.CtimeNsec == b.CtimeNsec
 }
 
 func managedKindMatches(mode uint32, kind managedUnitKind) bool {
@@ -185,7 +255,19 @@ func validManagedTombstone(leaf string) bool {
 	// Recovery may act only on names this executor can generate. Broader
 	// tombstone-looking names are skipped during enumeration but never become
 	// trusted through a forged journal record.
-	return safeManagedLeaf(leaf) && strings.HasPrefix(leaf, managedTombstonePrefix)
+	if !safeManagedLeaf(leaf) || !strings.HasPrefix(leaf, managedTombstonePrefix) {
+		return false
+	}
+	suffix := strings.TrimPrefix(leaf, managedTombstonePrefix)
+	if len(suffix) != hex.EncodedLen(16) {
+		return false
+	}
+	for _, ch := range suffix {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func randomManagedTombstone() (string, error) {

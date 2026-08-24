@@ -19,8 +19,9 @@ const managedCacheMinAgeDays = 30
 const managedTombstonePrefix = ".beav-managed-cache-"
 
 var (
-	errManagedRootUnavailable = errors.New("managed cache root unavailable")
-	errManagedRootChanged     = errors.New("managed cache root identity changed")
+	errManagedRootUnavailable  = errors.New("managed cache root unavailable")
+	errManagedRootChanged      = errors.New("managed cache root identity changed")
+	errManagedMountUnavailable = errors.New("managed cache mount identity unavailable")
 )
 
 type managedUnitKind uint8
@@ -41,11 +42,15 @@ type managedCacheProfile struct {
 type managedIdentity struct {
 	Dev       uint64
 	Ino       uint64
+	MountID   uint64
 	UID       uint32
 	Mode      uint32
+	Nlink     uint64
 	Size      int64
 	MtimeSec  int64
 	MtimeNsec int64
+	CtimeSec  int64
+	CtimeNsec int64
 }
 
 // ManagedCacheExecutor cleans only the closed, built-in managed-cache
@@ -63,6 +68,7 @@ type ManagedCacheExecutor struct {
 	beforeRename    func(int, string, string) error
 	fdIdentity      func(int) (managedIdentity, error)
 	openDescriptor  func(managedIdentity, string) (bool, error)
+	openDescriptors func([]managedIdentity, string, int) (bool, error)
 	renameat2       func(int, string, int, string, uint) error
 	randomTombstone func() (string, error)
 	deleteUnit      func(int, string) error
@@ -70,7 +76,8 @@ type ManagedCacheExecutor struct {
 
 	// journalPath is a test seam. The default is a fixed target-home state
 	// path; callers cannot supply it through cleaner YAML.
-	journalPath string
+	journalPath       string
+	journalParentSync func(int) error
 }
 
 // NewManagedCacheExecutor creates a closed managed-cache executor. The
@@ -94,15 +101,17 @@ func NewManagedCacheExecutor(home string, wl *safety.Whitelist, targetUID ...uin
 		now:             time.Now,
 	}
 	e.journalPath = filepath.Join(e.Home, ".local", "state", "beav", "managed-cache-recovery.jsonl")
+	e.journalParentSync = unix.Fsync
 	return e
 }
 
 type managedRunStats struct {
-	filesDeleted   int64
-	bytesFreed     int64
-	filesCandidate int64
-	bytesCandidate int64
-	errors         int
+	filesDeleted      int64
+	bytesFreed        int64
+	filesCandidate    int64
+	bytesCandidate    int64
+	metricsIncomplete bool
+	errors            int
 }
 
 // Run executes one closed managed-cache profile.
@@ -111,16 +120,17 @@ func (e *ManagedCacheExecutor) Run(ctx context.Context, c model.Cleaner, dryRun 
 	emit(model.Event{Event: model.EvStart, CleanerID: c.ID, Name: c.Name, Scope: c.Scope, Type: c.Type, DryRun: dryRun, TS: start})
 	finish := func(status string, stats managedRunStats) {
 		emit(model.Event{
-			Event:          model.EvFinish,
-			CleanerID:      c.ID,
-			Status:         status,
-			FilesDeleted:   stats.filesDeleted,
-			BytesFreed:     stats.bytesFreed,
-			FilesCandidate: stats.filesCandidate,
-			BytesCandidate: stats.bytesCandidate,
-			Errors:         stats.errors,
-			DurationMs:     e.now().Sub(start).Milliseconds(),
-			TS:             e.now(),
+			Event:             model.EvFinish,
+			CleanerID:         c.ID,
+			Status:            status,
+			FilesDeleted:      stats.filesDeleted,
+			BytesFreed:        stats.bytesFreed,
+			FilesCandidate:    stats.filesCandidate,
+			BytesCandidate:    stats.bytesCandidate,
+			MetricsIncomplete: stats.metricsIncomplete,
+			Errors:            stats.errors,
+			DurationMs:        e.now().Sub(start).Milliseconds(),
+			TS:                e.now(),
 		})
 	}
 	skip := func(reason, detail string) error {
@@ -312,7 +322,7 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "stat_failed", Detail: err.Error(), TS: e.now()})
 		return managedCandidateSkipped
 	}
-	if !sameManagedIdentity(identity, openedIdentity) || openedIdentity.Dev != rootIdentity.Dev || openedIdentity.UID != e.TargetUID {
+	if !sameManagedIdentity(identity, openedIdentity) || openedIdentity.Dev != rootIdentity.Dev || openedIdentity.MountID != rootIdentity.MountID || openedIdentity.UID != e.TargetUID {
 		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonToctouChanged), TS: e.now()})
 		return managedCandidateSkipped
 	}
@@ -326,10 +336,31 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 			return managedCandidateSkipped
 		}
 	}
+	tree, treeErr := captureManagedTree(unitFD, abs, profile.kind, openedIdentity)
+	if treeErr != nil {
+		reason := "subtree_unavailable"
+		if errors.Is(treeErr, safety.ErrCrossFS) {
+			reason = string(model.SkipReasonCrossFS)
+		}
+		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: reason, Detail: treeErr.Error(), TS: e.now()})
+		return managedCandidateSkipped
+	}
+	if open, checkErr := e.managedSubtreeDescriptorBusy(tree, unitFD); checkErr != nil {
+		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: checkErr.Error(), TS: e.now()})
+		return managedCandidateSkipped
+	} else if open {
+		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "open_file", TS: e.now()})
+		return managedCandidateSkipped
+	}
 	if dryRun {
-		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonDryRun), Size: identity.Size, TS: e.now()})
+		size := identity.Size
+		if profile.kind == managedUnitDirectory {
+			stats.metricsIncomplete = true
+			size = 0
+		}
+		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonDryRun), Size: size, TS: e.now()})
 		stats.filesCandidate++
-		stats.bytesCandidate += identity.Size
+		stats.bytesCandidate += size
 		return managedCandidateSkipped
 	}
 
@@ -351,13 +382,14 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 			UID:           e.TargetUID,
 			Dev:           identity.Dev,
 			Inode:         identity.Ino,
+			MountID:       identity.MountID,
 		}
 		if err := journal.append(*record); err != nil {
 			emit(model.Event{Event: model.EvError, CleanerID: c.ID, Path: abs, Reason: "journal_write_failed", Detail: err.Error(), TS: e.now()})
 			return managedCandidateError
 		}
 	}
-	if record.UID != e.TargetUID || record.Dev != openedIdentity.Dev || record.Inode != openedIdentity.Ino {
+	if record.UID != e.TargetUID || record.Dev != openedIdentity.Dev || record.Inode != openedIdentity.Ino || record.MountID != openedIdentity.MountID {
 		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonToctouChanged), TS: e.now()})
 		return managedCandidateSkipped
 	}
@@ -400,6 +432,21 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "open_file", TS: e.now()})
 			return managedCandidateSkipped
 		}
+		currentTree, treeErr := captureManagedTree(unitFD, abs, profile.kind, openedIdentity)
+		if treeErr != nil || !sameManagedTree(tree, currentTree) {
+			if treeErr == nil {
+				treeErr = errManagedRootChanged
+			}
+			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonToctouChanged), Detail: treeErr.Error(), TS: e.now()})
+			return managedCandidateSkipped
+		}
+		if open, checkErr := e.managedSubtreeDescriptorBusy(currentTree, unitFD); checkErr != nil {
+			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: checkErr.Error(), TS: e.now()})
+			return managedCandidateSkipped
+		} else if open {
+			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "open_file", TS: e.now()})
+			return managedCandidateSkipped
+		}
 		if err := e.renameat2(parentFD, record.OriginalLeaf, parentFD, record.TombstoneLeaf, unix.RENAME_NOREPLACE); err != nil {
 			e.emitManagedRenameFailure(c.ID, abs, err, emit)
 			return managedCandidateError
@@ -433,9 +480,14 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 		emit(model.Event{Event: model.EvError, CleanerID: c.ID, Path: abs, Reason: "journal_write_failed", Detail: err.Error(), TS: e.now()})
 		return managedCandidateError
 	}
-	emit(model.Event{Event: model.EvDeleted, CleanerID: c.ID, Path: abs, Size: identity.Size, TS: e.now()})
+	size := identity.Size
+	if profile.kind == managedUnitDirectory {
+		stats.metricsIncomplete = true
+		size = 0
+	}
+	emit(model.Event{Event: model.EvDeleted, CleanerID: c.ID, Path: abs, Size: size, TS: e.now()})
 	stats.filesDeleted++
-	stats.bytesFreed += identity.Size
+	stats.bytesFreed += size
 	return managedCandidateDeleted
 }
 
@@ -461,13 +513,13 @@ func (e *ManagedCacheExecutor) resumeManagedRecords(
 		if safeManagedLeaf(record.OriginalLeaf) {
 			handled[record.OriginalLeaf] = true
 		}
-		if record.UID != e.TargetUID || record.Dev == 0 || record.Inode == 0 || !safeManagedLeaf(record.OriginalLeaf) || !validManagedTombstone(record.TombstoneLeaf) {
+		if record.UID != e.TargetUID || record.Dev == 0 || record.Inode == 0 || record.MountID == 0 || !safeManagedLeaf(record.OriginalLeaf) || !validManagedTombstone(record.TombstoneLeaf) {
 			continue
 		}
 		original, originalErr := managedStatAt(parentFD, record.OriginalLeaf)
 		tombstone, tombstoneErr := managedStatAt(parentFD, record.TombstoneLeaf)
-		originalMatch := originalErr == nil && original.Dev == record.Dev && original.Ino == record.Inode && original.UID == record.UID
-		tombstoneMatch := tombstoneErr == nil && tombstone.Dev == record.Dev && tombstone.Ino == record.Inode && tombstone.UID == record.UID
+		originalMatch := originalErr == nil && original.Dev == record.Dev && original.Ino == record.Inode && original.MountID == record.MountID && original.UID == record.UID
+		tombstoneMatch := tombstoneErr == nil && tombstone.Dev == record.Dev && tombstone.Ino == record.Inode && tombstone.MountID == record.MountID && tombstone.UID == record.UID
 		if originalMatch && tombstoneErr != nil && errors.Is(tombstoneErr, unix.ENOENT) {
 			result := e.processManagedCandidate(ctx, c, profile, root, parentFD, rootIdentity, record.OriginalLeaf, original, &record, false, dryRun, journal, emit, stats)
 			if result == managedCandidateError {
@@ -504,6 +556,33 @@ func (e *ManagedCacheExecutor) managedDescriptorBusy(identity managedIdentity, h
 		return safety.OpenDescriptorMatchesExceptFD(e.procRoot, want, os.Getpid(), heldFD)
 	}
 	return safety.OpenDescriptorsMatch(e.procRoot, want)
+}
+
+func (e *ManagedCacheExecutor) managedSubtreeDescriptorBusy(tree managedTreeState, heldFD int) (bool, error) {
+	identities := make([]managedIdentity, 0, len(tree))
+	for _, identity := range tree {
+		identities = append(identities, identity)
+	}
+	if len(identities) == 0 {
+		return false, errManagedRootChanged
+	}
+	if e.openDescriptors != nil {
+		return e.openDescriptors(identities, e.procRoot, heldFD)
+	}
+	if e.openDescriptor != nil {
+		for _, identity := range identities {
+			busy, err := e.openDescriptor(identity, e.procRoot)
+			if err != nil || busy {
+				return busy, err
+			}
+		}
+		return false, nil
+	}
+	want := make([]safety.FileIdentity, 0, len(identities))
+	for _, identity := range identities {
+		want = append(want, safety.FileIdentity{Dev: identity.Dev, Ino: identity.Ino})
+	}
+	return safety.OpenDescriptorMatchesExceptFD(e.procRoot, want, os.Getpid(), heldFD)
 }
 
 func (e *ManagedCacheExecutor) emitManagedRenameFailure(cleanerID, path string, err error, emit func(model.Event)) {
@@ -562,7 +641,7 @@ func (e *ManagedCacheExecutor) openManagedRoot(root string) (int, int, managedId
 	if selected.UID != e.TargetUID {
 		return -1, -1, managedIdentity{}, fmt.Errorf("%w: selected root owner differs", errManagedRootUnavailable)
 	}
-	if selected.Dev != homeIdentity.Dev {
+	if selected.Dev != homeIdentity.Dev || selected.MountID != homeIdentity.MountID {
 		return -1, -1, managedIdentity{}, safety.ErrCrossFS
 	}
 	if e.beforeRootOpen != nil {
@@ -579,7 +658,7 @@ func (e *ManagedCacheExecutor) openManagedRoot(root string) (int, int, managedId
 		_ = unix.Close(rootFD)
 		return -1, -1, managedIdentity{}, fmt.Errorf("%w: opened root identity: %v", errManagedRootChanged, err)
 	}
-	if !sameManagedIdentity(selected, opened) || opened.Dev != homeIdentity.Dev || opened.UID != e.TargetUID {
+	if !sameManagedIdentity(selected, opened) || opened.Dev != homeIdentity.Dev || opened.MountID != homeIdentity.MountID || opened.UID != e.TargetUID {
 		_ = unix.Close(rootFD)
 		return -1, -1, managedIdentity{}, errManagedRootChanged
 	}

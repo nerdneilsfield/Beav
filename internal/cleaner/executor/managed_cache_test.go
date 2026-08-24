@@ -15,6 +15,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestManagedIdentityRejectsSameDeviceInodeAcrossMounts(t *testing.T) {
+	base := managedIdentity{Dev: 7, Ino: 11, UID: 1000, Mode: unix.S_IFREG, MountID: 42}
+	otherMount := base
+	otherMount.MountID = 43
+	if sameManagedIdentity(base, otherMount) {
+		t.Fatal("same dev/inode on different mount must not match")
+	}
+}
+
 func TestManagedCacheDeletesCompleteHuggingFaceArrowUnitAfterThirtyDays(t *testing.T) {
 	home := t.TempDir()
 	unit := filepath.Join(home, ".cache", "huggingface", "datasets", "dataset")
@@ -33,6 +42,31 @@ func TestManagedCacheDeletesCompleteHuggingFaceArrowUnitAfterThirtyDays(t *testi
 	}
 	if !hasDelete(events, unit) {
 		t.Fatalf("missing unit deletion event: %+v", events)
+	}
+}
+
+func TestManagedCacheDirectoryMetricsAreMarkedIncomplete(t *testing.T) {
+	home := t.TempDir()
+	unit := filepath.Join(home, ".cache", "huggingface", "datasets", "dataset")
+	writeManagedAged(t, filepath.Join(unit, "dataset.arrow"), -31*24*time.Hour)
+	setManagedDirAge(t, unit, -31*24*time.Hour)
+	exec := newManagedTestExecutor(t, home)
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := exec.Run(context.Background(), managedCleaner("ai-huggingface-datasets-arrow", 0), false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var finish model.Event
+	for _, event := range events {
+		if event.Event == model.EvFinish {
+			finish = event
+		}
+	}
+	if !finish.MetricsIncomplete {
+		t.Fatalf("directory deletion metrics claimed complete: %+v", finish)
+	}
+	if finish.BytesFreed != 0 {
+		t.Fatalf("directory st_size reported as freed bytes: %d", finish.BytesFreed)
 	}
 }
 
@@ -119,7 +153,7 @@ func TestManagedCacheRenameCollisionLeavesOriginalAndCollision(t *testing.T) {
 	home := t.TempDir()
 	unit := filepath.Join(home, ".cache", "torch", "hub", "checkpoints", "model.pt")
 	writeManagedAged(t, unit, -31*24*time.Hour)
-	collision := filepath.Join(filepath.Dir(unit), ".beav-managed-cache-fixed")
+	collision := filepath.Join(filepath.Dir(unit), ".beav-managed-cache-00000000000000000000000000000000")
 	writeManagedAged(t, collision, -31*24*time.Hour)
 
 	exec := newManagedTestExecutor(t, home)
@@ -226,7 +260,7 @@ func TestManagedCachePartialDeletionLeavesTrustedTombstoneForResume(t *testing.T
 	setManagedDirAge(t, unit, -31*24*time.Hour)
 
 	exec := newManagedTestExecutor(t, home)
-	const tombstone = ".beav-managed-cache-resume"
+	const tombstone = ".beav-managed-cache-11111111111111111111111111111111"
 	exec.randomTombstone = func() (string, error) { return tombstone, nil }
 	exec.deleteUnit = func(int, string) error { return errors.New("injected partial deletion") }
 	if err := exec.Run(context.Background(), managedCleaner("ai-huggingface-datasets-arrow", 0), false, func(model.Event) {}); err != nil {
@@ -320,6 +354,122 @@ func TestManagedCacheOpenDescriptorGuardLeavesUnit(t *testing.T) {
 	}
 	if _, err := os.Stat(unit); err != nil {
 		t.Fatalf("open unit was removed: %v", err)
+	}
+}
+
+func TestManagedCacheOpenDescriptorGuardCoversArrowDescendants(t *testing.T) {
+	home := t.TempDir()
+	unit := filepath.Join(home, ".cache", "huggingface", "datasets", "dataset")
+	child := filepath.Join(unit, "dataset.arrow")
+	writeManagedAged(t, child, -31*24*time.Hour)
+	setManagedDirAge(t, unit, -31*24*time.Hour)
+	exec := newManagedTestExecutor(t, home)
+	called := false
+	exec.openDescriptors = func(identities []managedIdentity, _ string, _ int) (bool, error) {
+		called = true
+		if len(identities) < 2 {
+			t.Fatalf("subtree descriptor scan identities = %d, want unit and descendant", len(identities))
+		}
+		return true, nil
+	}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := exec.Run(context.Background(), managedCleaner("ai-huggingface-datasets-arrow", 0), false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !called {
+		t.Fatal("subtree descriptor guard was not invoked")
+	}
+	if !hasManagedSkip(events, "open_file") {
+		t.Fatalf("descendant open descriptor was not rejected: %+v", events)
+	}
+	if _, err := os.Stat(unit); err != nil {
+		t.Fatalf("open descendant caused unit removal: %v", err)
+	}
+}
+
+func TestManagedCacheProcVisibilityFailureLeavesUnit(t *testing.T) {
+	home := t.TempDir()
+	unit := filepath.Join(home, ".cache", "torch", "hub", "checkpoints", "model.pt")
+	writeManagedAged(t, unit, -31*24*time.Hour)
+	exec := newManagedTestExecutor(t, home)
+	if err := os.WriteFile(filepath.Join(exec.procRoot, "mounts"), []byte("proc /proc proc rw,nosuid,hidepid=2 0 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := exec.Run(context.Background(), managedCleaner("ai-torch-hub", 0), false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !hasCleanerSkip(events, "proc_inspection_failed") {
+		t.Fatalf("hidepid proc visibility was not rejected: %+v", events)
+	}
+	if _, err := os.Stat(unit); err != nil {
+		t.Fatalf("hidepid inspection failure removed unit: %v", err)
+	}
+}
+
+func TestManagedCacheSkipsHardlinkedArrowChild(t *testing.T) {
+	home := t.TempDir()
+	unit := filepath.Join(home, ".cache", "huggingface", "datasets", "dataset")
+	child := filepath.Join(unit, "dataset.arrow")
+	outside := filepath.Join(home, "elsewhere.arrow")
+	writeManagedAged(t, child, -31*24*time.Hour)
+	if err := os.Link(child, outside); err != nil {
+		t.Fatal(err)
+	}
+	setManagedDirAge(t, unit, -31*24*time.Hour)
+	exec := newManagedTestExecutor(t, home)
+	if err := exec.Run(context.Background(), managedCleaner("ai-huggingface-datasets-arrow", 0), false, func(model.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(unit); err != nil {
+		t.Fatalf("hardlinked Arrow child allowed unit removal: %v", err)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("hardlink target changed: %v", err)
+	}
+}
+
+func TestManagedCacheRejectsTorchHardlinkAddedBeforeRename(t *testing.T) {
+	home := t.TempDir()
+	unit := filepath.Join(home, ".cache", "torch", "hub", "checkpoints", "model.pt")
+	outside := filepath.Join(home, "elsewhere.pt")
+	writeManagedAged(t, unit, -31*24*time.Hour)
+	exec := newManagedTestExecutor(t, home)
+	exec.beforeRename = func(parentFD int, original, _ string) error {
+		return unix.Linkat(parentFD, original, unix.AT_FDCWD, outside, 0)
+	}
+	if err := exec.Run(context.Background(), managedCleaner("ai-torch-hub", 0), false, func(model.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(unit); err != nil {
+		t.Fatalf("hardlink race removed original: %v", err)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("hardlink race target missing: %v", err)
+	}
+}
+
+func TestManagedCacheRejectsArrowHardlinkAddedBeforeRename(t *testing.T) {
+	home := t.TempDir()
+	unit := filepath.Join(home, ".cache", "huggingface", "datasets", "dataset")
+	child := filepath.Join(unit, "dataset.arrow")
+	outside := filepath.Join(home, "elsewhere.arrow")
+	writeManagedAged(t, child, -31*24*time.Hour)
+	setManagedDirAge(t, unit, -31*24*time.Hour)
+	exec := newManagedTestExecutor(t, home)
+	exec.beforeRename = func(parentFD int, original, _ string) error {
+		return unix.Linkat(parentFD, filepath.Join(original, "dataset.arrow"), unix.AT_FDCWD, outside, 0)
+	}
+	if err := exec.Run(context.Background(), managedCleaner("ai-huggingface-datasets-arrow", 0), false, func(model.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(unit); err != nil {
+		t.Fatalf("Arrow child hardlink race removed original: %v", err)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("Arrow hardlink race target missing: %v", err)
 	}
 }
 
@@ -446,6 +596,74 @@ func TestManagedCacheGenericTombstoneRecoveryNameIsUntrusted(t *testing.T) {
 	}
 	if _, err := os.Stat(tombstone); err != nil {
 		t.Fatalf("generic forged recovery tombstone was touched: %v", err)
+	}
+}
+
+func TestManagedCacheForgedManagedTombstoneShapeIsUntrusted(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".cache", "torch", "hub", "checkpoints")
+	tombstone := filepath.Join(root, ".beav-managed-cache-forged")
+	writeManagedAged(t, tombstone, -31*24*time.Hour)
+	var st unix.Statx_t
+	if err := unix.Statx(unix.AT_FDCWD, tombstone, unix.AT_SYMLINK_NOFOLLOW, unix.STATX_BASIC_STATS|unix.STATX_MNT_ID, &st); err != nil {
+		t.Fatal(err)
+	}
+	exec := newManagedTestExecutor(t, home)
+	if err := os.MkdirAll(filepath.Dir(exec.journalPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := fmt.Sprintf(`{"profile":"ai-torch-hub","root":%q,"original_leaf":"missing.pt","tombstone_leaf":".beav-managed-cache-forged","uid":%d,"dev":%d,"inode":%d,"mount_id":%d}`+"\n", root, os.Getuid(), unix.Mkdev(st.Dev_major, st.Dev_minor), st.Ino, st.Mnt_id)
+	if err := os.WriteFile(exec.journalPath, []byte(record), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Run(context.Background(), managedCleaner("ai-torch-hub", 0), false, func(model.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(tombstone); err != nil {
+		t.Fatalf("forged managed tombstone was touched: %v", err)
+	}
+}
+
+func TestManagedCacheJournalParentFsyncPrecedesRename(t *testing.T) {
+	home := t.TempDir()
+	unit := filepath.Join(home, ".cache", "torch", "hub", "checkpoints", "model.pt")
+	writeManagedAged(t, unit, -31*24*time.Hour)
+	exec := newManagedTestExecutor(t, home)
+	synced := false
+	exec.journalParentSync = func(fd int) error {
+		synced = true
+		return unix.Fsync(fd)
+	}
+	exec.renameat2 = func(oldDir int, old string, newDir int, new string, flags uint) error {
+		if !synced {
+			t.Fatal("rename started before journal containing directory fsync")
+		}
+		return unix.Renameat2(oldDir, old, newDir, new, flags)
+	}
+	if err := exec.Run(context.Background(), managedCleaner("ai-torch-hub", 0), false, func(model.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if !synced {
+		t.Fatal("journal containing directory was not fsynced")
+	}
+}
+
+func TestManagedCacheJournalParentFsyncFailureFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	unit := filepath.Join(home, ".cache", "torch", "hub", "checkpoints", "model.pt")
+	writeManagedAged(t, unit, -31*24*time.Hour)
+	exec := newManagedTestExecutor(t, home)
+	exec.journalParentSync = func(int) error { return errors.New("injected journal parent fsync failure") }
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := exec.Run(context.Background(), managedCleaner("ai-torch-hub", 0), false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !hasCleanerSkip(events, "journal_unavailable") {
+		t.Fatalf("journal fsync failure was not fail-closed: %+v", events)
+	}
+	if _, err := os.Stat(unit); err != nil {
+		t.Fatalf("journal fsync failure removed unit: %v", err)
 	}
 }
 

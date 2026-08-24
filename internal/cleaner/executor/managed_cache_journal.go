@@ -22,6 +22,7 @@ type managedJournalRecord struct {
 	UID           uint32 `json:"uid"`
 	Dev           uint64 `json:"dev"`
 	Inode         uint64 `json:"inode"`
+	MountID       uint64 `json:"mount_id"`
 	Complete      bool   `json:"complete"`
 }
 
@@ -68,8 +69,18 @@ func (e *ManagedCacheExecutor) openManagedJournal() (*managedJournal, error) {
 	}
 	leaf := filepath.Base(path)
 	fd, err := unix.Openat(parentFD, leaf, unix.O_RDWR|unix.O_APPEND|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err == nil {
+		if e.journalParentSync == nil {
+			err = errors.New("journal parent fsync unavailable")
+		} else {
+			err = e.journalParentSync(parentFD)
+		}
+	}
 	_ = unix.Close(parentFD)
 	if err != nil {
+		if fd >= 0 {
+			_ = unix.Close(fd)
+		}
 		return nil, err
 	}
 	var st unix.Stat_t
