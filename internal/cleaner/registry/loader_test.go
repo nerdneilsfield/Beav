@@ -205,6 +205,7 @@ func TestLoadUserDirReservedCargoDocumentScan(t *testing.T) {
 		name          string
 		yaml          string
 		wantMigration bool
+		wantLoad      bool
 	}{
 		{
 			name: "explicit id after merge",
@@ -243,6 +244,22 @@ paths: [~/.cache/cargo]
 			wantMigration: true,
 		},
 		{
+			name: "aliased ID in later document",
+			yaml: `---
+id: ordinary
+scope: user
+type: paths
+paths: [~/.cache/ordinary]
+---
+name: &cargo lang-cargo
+id: *cargo
+scope: user
+type: paths
+paths: [~/.cache/cargo]
+`,
+			wantMigration: true,
+		},
+		{
 			name: "anchor entry is still explicit",
 			yaml: `- &base
   id: lang-cargo
@@ -261,7 +278,27 @@ paths: [~/.cache/cargo]
   type: paths
   paths: [~/.cache/cargo]
 `,
-			wantMigration: false,
+			wantMigration: true,
+		},
+		{
+			name: "ordinary alias remains accepted",
+			yaml: `name: &ordinary ordinary
+id: *ordinary
+scope: user
+type: paths
+paths: [~/.cache/ordinary]
+`,
+			wantLoad: true,
+		},
+		{
+			name: "single mapping id value supplied by alias",
+			yaml: `name: &cargo lang-cargo
+id: *cargo
+scope: user
+type: paths
+paths: [~/.cache/cargo]
+`,
+			wantMigration: true,
 		},
 		{
 			name: "id supplied only by merge alias",
@@ -301,12 +338,18 @@ cleaners:
 			if err := os.WriteFile(filepath.Join(dir, "cleaner.yaml"), []byte(tc.yaml), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := LoadUserDir(dir)
+			loaded, err := LoadUserDir(dir)
 			if err == nil {
-				if tc.wantMigration {
-					t.Fatal("expected Cargo migration error")
+				if !tc.wantLoad {
+					t.Fatal("expected reserved or malformed cleaner rejection")
+				}
+				if len(loaded) != 1 || loaded[0].Cleaner.ID != "ordinary" {
+					t.Fatalf("ordinary alias loaded = %+v", loaded)
 				}
 				return
+			}
+			if tc.wantLoad {
+				t.Fatalf("ordinary alias rejected: %v", err)
 			}
 			gotMigration := strings.Contains(err.Error(), "Cargo native GC")
 			if gotMigration != tc.wantMigration {

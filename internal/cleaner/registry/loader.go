@@ -62,6 +62,9 @@ func loadFSWithReservedIDs(root fs.FS, base string, rejectReservedIDs bool) ([]L
 		if err := decodeYAML(data, &list); err == nil {
 			for _, c := range list {
 				if c.ID != "" {
+					if err := rejectReservedCleanerID(c.ID, p, rejectReservedIDs); err != nil {
+						return err
+					}
 					if err := normalizeAndValidate(&c); err != nil {
 						return fmt.Errorf("%s: %w", p, err)
 					}
@@ -78,6 +81,9 @@ func loadFSWithReservedIDs(root fs.FS, base string, rejectReservedIDs bool) ([]L
 		if c.ID == "" {
 			return nil
 		}
+		if err := rejectReservedCleanerID(c.ID, p, rejectReservedIDs); err != nil {
+			return err
+		}
 		if err := normalizeAndValidate(&c); err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
@@ -91,8 +97,9 @@ func loadFSWithReservedIDs(root fs.FS, base string, rejectReservedIDs bool) ([]L
 }
 
 // rejectReservedCargoDocument inspects original YAML nodes before strict
-// model decoding. Only a direct scalar id: lang-cargo is authoritative;
-// merged or aliased IDs remain subject to normal strict decoding errors.
+// model decoding. Direct scalar IDs and aliases that resolve directly to a
+// scalar lang-cargo are authoritative; merge-only or indirect aliases remain
+// subject to normal strict decoding errors and post-decode checks.
 func rejectReservedCargoDocument(data []byte, path string) error {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	found := false
@@ -143,15 +150,32 @@ func explicitCargoID(node *yaml.Node) bool {
 func mappingHasExplicitCargoID(node *yaml.Node) bool {
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		key, value := node.Content[i], node.Content[i+1]
-		if key.Kind == yaml.ScalarNode && key.Value == "id" && value.Kind == yaml.ScalarNode && value.Value == "lang-cargo" {
+		if key.Kind == yaml.ScalarNode && key.Value == "id" && reservedCargoIDNode(value) {
 			return true
 		}
 	}
 	return false
 }
 
+func reservedCargoIDNode(node *yaml.Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Kind == yaml.ScalarNode {
+		return node.Value == "lang-cargo"
+	}
+	return node.Kind == yaml.AliasNode && node.Alias != nil && node.Alias.Kind == yaml.ScalarNode && node.Alias.Value == "lang-cargo"
+}
+
 func cargoMigrationError(path string) error {
 	return fmt.Errorf("%s: cleaner %q is reserved; migration required: use Cargo native GC instead of a Beav Cargo cleaner", path, "lang-cargo")
+}
+
+func rejectReservedCleanerID(id, path string, enabled bool) error {
+	if enabled && id == "lang-cargo" {
+		return cargoMigrationError(path)
+	}
+	return nil
 }
 
 func decodeYAML(data []byte, out any) error {
