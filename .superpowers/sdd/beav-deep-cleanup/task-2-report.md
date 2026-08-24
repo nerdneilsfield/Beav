@@ -68,3 +68,5 @@ Observed: `3 passed`; Homebrew uses one resolved absolute binary with native dry
 - `rtk go test -race ./...` — 114 passed.
 - `rtk go vet ./...` — passed.
 - `rtk git diff --check` — passed.
+
+Post-commit self-review tightened root `SUDO_UID` home matching; `rtk go test ./...` remained 114 passed.

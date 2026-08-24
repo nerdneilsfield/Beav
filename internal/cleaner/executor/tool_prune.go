@@ -416,6 +416,9 @@ func (e *ToolPruneExecutor) identityFor(c model.Cleaner, profile toolProfile) (C
 		if parseErr != nil || parsed == 0 {
 			return CommandIdentity{}, errors.New("SUDO_UID invalid or zero")
 		}
+		if targetUser, lookupErr := user.LookupId(strconv.FormatUint(parsed, 10)); lookupErr != nil || filepath.Clean(targetUser.HomeDir) != filepath.Clean(e.Home) {
+			return CommandIdentity{}, errors.New("target home does not match SUDO target")
+		}
 		identity, lookupErr := lookupIdentity(uint32(parsed), sudoUser, e.Home)
 		if lookupErr != nil {
 			return CommandIdentity{}, lookupErr
