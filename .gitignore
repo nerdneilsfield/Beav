@@ -10,6 +10,7 @@
 
 # Local scratch
 /tmp/
+/.worktrees/
 
 # Editor and OS noise
 .DS_Store
