@@ -249,6 +249,8 @@ type drainResult struct {
 	err    error
 }
 
+var killSyscall = unix.Kill
+
 func commandTerminationError(commandErr, killErr error, drainErrors []error) error {
 	errs := make([]error, 0, 2+len(drainErrors))
 	if commandErr != nil {
@@ -301,14 +303,16 @@ func killProcessGroup(pid int) error {
 	if pid <= 0 {
 		return errors.New("invalid process group PID")
 	}
-	if err := unix.Kill(-pid, unix.SIGKILL); err == nil || errors.Is(err, unix.ESRCH) {
+	groupErr := killSyscall(-pid, unix.SIGKILL)
+	if groupErr == nil {
 		return nil
-	} else {
-		if fallbackErr := unix.Kill(pid, unix.SIGKILL); fallbackErr != nil && !errors.Is(fallbackErr, unix.ESRCH) {
-			return fmt.Errorf("group kill %v; process kill: %w", err, fallbackErr)
-		}
 	}
-	return nil
+	leaderErr := killSyscall(pid, unix.SIGKILL)
+	errs := []error{fmt.Errorf("process group kill: %w", groupErr)}
+	if leaderErr != nil {
+		errs = append(errs, fmt.Errorf("leader cleanup: %w", leaderErr))
+	}
+	return errors.Join(errs...)
 }
 
 // drain reads from a reader line by line, passing each line to the callback function.

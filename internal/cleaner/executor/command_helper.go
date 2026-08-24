@@ -43,10 +43,13 @@ func runCommandHelper() error {
 	if payloadFile == nil {
 		return errors.New("command helper payload fd unavailable")
 	}
-	defer payloadFile.Close()
 	payload, err := io.ReadAll(payloadFile)
 	if err != nil {
+		_ = payloadFile.Close()
 		return fmt.Errorf("read command helper payload: %w", err)
+	}
+	if err := payloadFile.Close(); err != nil {
+		return fmt.Errorf("close command helper payload: %w", err)
 	}
 	var command commandHelperPayload
 	if err := json.Unmarshal(payload, &command); err != nil {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -120,6 +121,35 @@ func TestRunCommandDrainsDescendantPipesAfterCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("RunCommand hung while descendant retained stdout/stderr")
 	}
+	if pid > 0 {
+		for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+			if err := unix.Kill(pid, 0); errors.Is(err, unix.ESRCH) {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("descendant process %d survived cancellation", pid)
+	}
+}
+
+func TestKillProcessGroupSurfacesGroupFailureAfterLeaderCleanup(t *testing.T) {
+	original := killSyscall
+	t.Cleanup(func() { killSyscall = original })
+	var calls []int
+	killSyscall = func(pid int, _ syscall.Signal) error {
+		calls = append(calls, pid)
+		if pid < 0 {
+			return unix.EPERM
+		}
+		return nil
+	}
+	err := killProcessGroup(12345)
+	if !errors.Is(err, unix.EPERM) {
+		t.Fatalf("error = %v, want process-group EPERM", err)
+	}
+	if len(calls) != 2 || calls[0] != -12345 || calls[1] != 12345 {
+		t.Fatalf("kill calls = %v, want group then leader cleanup", calls)
+	}
 }
 
 func TestRunCommandDisablesPrivilegeGainBeforeExec(t *testing.T) {
@@ -146,5 +176,28 @@ func TestRunCommandDisablesPrivilegeGainBeforeExec(t *testing.T) {
 	}
 	if !strings.Contains(status, "CapAmb=\t0000000000000000") {
 		t.Fatalf("status = %q, want empty ambient capability set", status)
+	}
+}
+
+func TestRunCommandDoesNotLeakHelperPayloadFD(t *testing.T) {
+	home := t.TempDir()
+	script := filepath.Join(t.TempDir(), "fd-check")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ -e /proc/self/fd/3 ]; then echo open > \"$HOME/fd3\"; else echo closed > \"$HOME/fd3\"; fi\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunCommand(context.Background(), CommandRun{
+		Executable: script,
+		Env:        []string{"HOME=" + home, "PATH=/bin:/usr/bin"},
+		Cwd:        home,
+		Timeout:    time.Second,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, "fd3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "closed" {
+		t.Fatalf("fd3 state = %q, want closed", data)
 	}
 }

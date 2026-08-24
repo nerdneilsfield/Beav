@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -33,7 +34,7 @@ func TestToolPruneHomebrewUsesResolvedBinaryAndNativeDryRun(t *testing.T) {
 		ToolPrune:  &model.ToolPruneCfg{Profile: "pkg-homebrew"},
 	}
 	evs := captureEvents(t, func(emit func(model.Event)) {
-		e := NewToolPruneExecutor(home, nil, WithToolSearchPath(binDir))
+		e := NewToolPruneExecutor(home, nil, WithToolSearchPath(binDir), tempToolIdentityOption(t, home))
 		if err := e.Run(context.Background(), c, true, emit); err != nil {
 			t.Fatal(err)
 		}
@@ -63,6 +64,22 @@ func TestToolPruneHomebrewUsesResolvedBinaryAndNativeDryRun(t *testing.T) {
 	t.Fatal("missing finish event")
 }
 
+func tempToolIdentityOption(t *testing.T, home string) ToolPruneOption {
+	t.Helper()
+	uid := uint32(os.Getuid())
+	canonical, err := ResolveToolIdentity(uid, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical.Home = home
+	return withToolIdentityResolverForTest(func(got uint32) (CommandIdentity, error) {
+		if got != uid {
+			return CommandIdentity{}, fmt.Errorf("resolver UID %d, want %d", got, uid)
+		}
+		return canonical, nil
+	})
+}
+
 func TestToolPruneUnsupportedDryRunNeverExecutes(t *testing.T) {
 	binDir := t.TempDir()
 	home := t.TempDir()
@@ -76,7 +93,7 @@ func TestToolPruneUnsupportedDryRunNeverExecutes(t *testing.T) {
 	}
 	c := model.Cleaner{ID: "uv", Scope: model.ScopeUser, Type: model.TypeToolPrune, ToolPrune: &model.ToolPruneCfg{Profile: "lang-uv"}}
 	evs := captureEvents(t, func(emit func(model.Event)) {
-		e := NewToolPruneExecutor(home, nil, WithToolSearchPath(binDir))
+		e := NewToolPruneExecutor(home, nil, WithToolSearchPath(binDir), tempToolIdentityOption(t, home))
 		if err := e.Run(context.Background(), c, true, emit); err != nil {
 			t.Fatal(err)
 		}
@@ -108,7 +125,7 @@ func TestToolPruneBlocksWholeCommandWhenKeepListIntersectsRoot(t *testing.T) {
 	keep := filepath.Join(root, "keep")
 	c := model.Cleaner{ID: "uv", Scope: model.ScopeUser, Type: model.TypeToolPrune, ToolPrune: &model.ToolPruneCfg{Profile: "lang-uv"}}
 	evs := captureEvents(t, func(emit func(model.Event)) {
-		e := NewToolPruneExecutor(home, safety.NewWhitelist([]string{keep}), WithToolSearchPath(binDir))
+		e := NewToolPruneExecutor(home, safety.NewWhitelist([]string{keep}), WithToolSearchPath(binDir), tempToolIdentityOption(t, home))
 		if err := e.Run(context.Background(), c, false, emit); err != nil {
 			t.Fatal(err)
 		}
@@ -133,7 +150,7 @@ func TestToolPruneCapabilityVersionMismatchSkipsBeforeCleanup(t *testing.T) {
 	}
 	c := model.Cleaner{ID: "brew", Scope: model.ScopeUser, Type: model.TypeToolPrune, ToolPrune: &model.ToolPruneCfg{Profile: "pkg-homebrew"}}
 	evs := captureEvents(t, func(emit func(model.Event)) {
-		e := NewToolPruneExecutor(home, nil, WithToolSearchPath(binDir))
+		e := NewToolPruneExecutor(home, nil, WithToolSearchPath(binDir), tempToolIdentityOption(t, home))
 		if err := e.Run(context.Background(), c, false, emit); err != nil {
 			t.Fatal(err)
 		}
@@ -159,7 +176,7 @@ func TestToolPruneCommandFailurePropagatesAfterSuccessfulProbe(t *testing.T) {
 	c := model.Cleaner{ID: "brew", Scope: model.ScopeUser, Type: model.TypeToolPrune, ToolPrune: &model.ToolPruneCfg{Profile: "pkg-homebrew"}}
 	var gotErr error
 	evs := captureEvents(t, func(emit func(model.Event)) {
-		e := NewToolPruneExecutor(home, nil, WithToolSearchPath(binDir))
+		e := NewToolPruneExecutor(home, nil, WithToolSearchPath(binDir), tempToolIdentityOption(t, home))
 		gotErr = e.Run(context.Background(), c, false, emit)
 	})
 	if gotErr == nil {
@@ -235,6 +252,52 @@ func TestWithToolIdentityRejectsZeroUID(t *testing.T) {
 	c := model.Cleaner{Scope: model.ScopeUser, Type: model.TypeToolPrune, ToolPrune: &model.ToolPruneCfg{Profile: "lang-uv"}}
 	if _, err := e.identityFor(c, toolProfiles["lang-uv"]); err == nil {
 		t.Fatal("UID 0 identity accepted")
+	}
+}
+
+func TestUserIdentityRejectsAlternateOwnedHome(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root user requires explicit sudo target")
+	}
+	account, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	alternate := t.TempDir()
+	if filepath.Clean(alternate) == filepath.Clean(account.HomeDir) {
+		t.Fatal("temporary home unexpectedly equals NSS home")
+	}
+	e := NewToolPruneExecutor(alternate, nil)
+	c := model.Cleaner{Scope: model.ScopeUser, Type: model.TypeToolPrune, ToolPrune: &model.ToolPruneCfg{Profile: "lang-uv"}}
+	if _, err := e.identityFor(c, toolProfiles["lang-uv"]); err == nil {
+		t.Fatal("alternate owned home accepted instead of authoritative NSS HOME")
+	}
+}
+
+func TestInjectedIdentityResolverIsExplicitTempHomeSeam(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root user requires explicit sudo target")
+	}
+	home := t.TempDir()
+	uid := uint32(os.Getuid())
+	canonical, err := ResolveToolIdentity(uid, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical.Home = home
+	e := NewToolPruneExecutor(home, nil, withToolIdentityResolverForTest(func(got uint32) (CommandIdentity, error) {
+		if got != uid {
+			t.Fatalf("resolver UID = %d, want %d", got, uid)
+		}
+		return canonical, nil
+	}))
+	c := model.Cleaner{Scope: model.ScopeUser, Type: model.TypeToolPrune, ToolPrune: &model.ToolPruneCfg{Profile: "lang-uv"}}
+	identity, err := e.identityFor(c, toolProfiles["lang-uv"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.Home != home || identity.UID != uid {
+		t.Fatalf("identity = %+v, want injected temp home", identity)
 	}
 }
 
@@ -326,7 +389,7 @@ func TestToolPruneRevalidatesBinaryAfterCapabilityProbe(t *testing.T) {
 	}
 	c := model.Cleaner{ID: "brew", Scope: model.ScopeUser, Type: model.TypeToolPrune, ToolPrune: &model.ToolPruneCfg{Profile: "pkg-homebrew"}}
 	var events []model.Event
-	e := NewToolPruneExecutor(home, nil, WithToolSearchPath(binDir))
+	e := NewToolPruneExecutor(home, nil, WithToolSearchPath(binDir), tempToolIdentityOption(t, home))
 	if err := e.Run(context.Background(), c, true, func(event model.Event) { events = append(events, event) }); err != nil {
 		t.Fatalf("err=%v events=%+v", err, events)
 	}
@@ -350,6 +413,23 @@ func TestHuggingFaceBusyInspectionFailsClosedOnProcReadError(t *testing.T) {
 	busy, err := inspectHuggingFaceBusy(root, procRoot)
 	if err == nil || busy {
 		t.Fatalf("busy=%v err=%v, want fail-closed inspection error", busy, err)
+	}
+}
+
+func TestHuggingFaceBusyInspectionTreatsDeletedCacheDescriptorAsBusy(t *testing.T) {
+	root := t.TempDir()
+	procRoot := t.TempDir()
+	fdRoot := filepath.Join(procRoot, "123", "fd")
+	if err := os.MkdirAll(fdRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	deletedTarget := filepath.Join(root, "blob") + " (deleted)"
+	if err := os.Symlink(deletedTarget, filepath.Join(fdRoot, "4")); err != nil {
+		t.Fatal(err)
+	}
+	busy, err := inspectHuggingFaceBusy(root, procRoot)
+	if err != nil || !busy {
+		t.Fatalf("busy=%v err=%v, want deleted cache descriptor to be busy", busy, err)
 	}
 }
 
