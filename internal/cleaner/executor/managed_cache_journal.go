@@ -63,7 +63,7 @@ func (e *ManagedCacheExecutor) openManagedJournal() (*managedJournal, error) {
 	if !filepath.IsAbs(path) || !managedPathWithin(path, filepath.Clean(e.Home)) {
 		return nil, fmt.Errorf("journal path outside target home")
 	}
-	parentFD, err := openManagedDirTree(filepath.Clean(e.Home), filepath.Dir(path), e.TargetUID)
+	parentFD, err := openManagedDirTree(filepath.Clean(e.Home), filepath.Dir(path), e.TargetUID, e.journalDirSync)
 	if err != nil {
 		return nil, err
 	}
@@ -115,6 +115,18 @@ func loadManagedJournal(fd int) ([]managedJournalRecord, error) {
 		}
 		read += n
 	}
+	// A record is trusted only after its newline delimiter was persisted. Drop
+	// a final unterminated line, preserving earlier complete records.
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		if last := bytes.LastIndexByte(data, '\n'); last >= 0 {
+			data = data[:last+1]
+		} else {
+			data = nil
+		}
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
 	var records []managedJournalRecord
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
@@ -151,7 +163,7 @@ func managedJournalKey(record managedJournalRecord) string {
 	return strings.Join([]string{record.Profile, record.Root, record.OriginalLeaf, record.TombstoneLeaf}, "\x00")
 }
 
-func openManagedDirTree(home, target string, uid uint32) (int, error) {
+func openManagedDirTree(home, target string, uid uint32, syncParent func(int) error) (int, error) {
 	home = filepath.Clean(home)
 	target = filepath.Clean(target)
 	if !managedPathWithin(target, home) {
@@ -174,9 +186,20 @@ func openManagedDirTree(home, target string, uid uint32) (int, error) {
 		var st unix.Stat_t
 		statErr := unix.Fstatat(cur, part, &st, unix.AT_SYMLINK_NOFOLLOW)
 		if errors.Is(statErr, unix.ENOENT) {
-			if err := unix.Mkdirat(cur, part, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+			mkdirErr := unix.Mkdirat(cur, part, 0o700)
+			if mkdirErr != nil && !errors.Is(mkdirErr, unix.EEXIST) {
 				_ = unix.Close(cur)
-				return -1, err
+				return -1, mkdirErr
+			}
+			if mkdirErr == nil {
+				if syncParent == nil {
+					_ = unix.Close(cur)
+					return -1, errors.New("journal directory fsync unavailable")
+				}
+				if err := syncParent(cur); err != nil {
+					_ = unix.Close(cur)
+					return -1, err
+				}
 			}
 			statErr = unix.Fstatat(cur, part, &st, unix.AT_SYMLINK_NOFOLLOW)
 		}

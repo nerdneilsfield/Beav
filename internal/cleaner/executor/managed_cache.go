@@ -78,6 +78,9 @@ type ManagedCacheExecutor struct {
 	// path; callers cannot supply it through cleaner YAML.
 	journalPath       string
 	journalParentSync func(int) error
+	journalDirSync    func(int) error
+	journalAppend     func(*managedJournal, managedJournalRecord) error
+	removeTombstone   func(int, int, string, managedIdentity, managedUnitKind) error
 }
 
 // NewManagedCacheExecutor creates a closed managed-cache executor. The
@@ -102,6 +105,9 @@ func NewManagedCacheExecutor(home string, wl *safety.Whitelist, targetUID ...uin
 	}
 	e.journalPath = filepath.Join(e.Home, ".local", "state", "beav", "managed-cache-recovery.jsonl")
 	e.journalParentSync = unix.Fsync
+	e.journalDirSync = unix.Fsync
+	e.journalAppend = func(journal *managedJournal, record managedJournalRecord) error { return journal.append(record) }
+	e.removeTombstone = removeManagedTombstone
 	return e
 }
 
@@ -384,7 +390,7 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 			Inode:         identity.Ino,
 			MountID:       identity.MountID,
 		}
-		if err := journal.append(*record); err != nil {
+		if err := e.appendManagedJournal(journal, *record); err != nil {
 			emit(model.Event{Event: model.EvError, CleanerID: c.ID, Path: abs, Reason: "journal_write_failed", Detail: err.Error(), TS: e.now()})
 			return managedCandidateError
 		}
@@ -456,6 +462,7 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 
 	tombstoneIdentity, err := managedStatAt(parentFD, record.TombstoneLeaf)
 	if err != nil || !sameManagedIdentity(tombstoneIdentity, openedIdentity) {
+		stats.metricsIncomplete = true
 		if err == nil {
 			err = errManagedRootChanged
 		}
@@ -468,16 +475,17 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 		err = deleteManagedDirectory(unitFD, filepath.Join(root, record.TombstoneLeaf))
 	}
 	if err != nil {
+		stats.metricsIncomplete = true
 		emit(model.Event{Event: model.EvError, CleanerID: c.ID, Path: abs, Reason: "partial_delete", Detail: err.Error(), TS: e.now()})
 		return managedCandidateError
 	}
-	if err := removeManagedTombstone(parentFD, unitFD, record.TombstoneLeaf, openedIdentity, profile.kind); err != nil {
-		emit(model.Event{Event: model.EvError, CleanerID: c.ID, Path: abs, Reason: "tombstone_remove_failed", Detail: err.Error(), TS: e.now()})
-		return managedCandidateError
+	removeTombstone := e.removeTombstone
+	if removeTombstone == nil {
+		removeTombstone = removeManagedTombstone
 	}
-	record.Complete = true
-	if err := journal.append(*record); err != nil {
-		emit(model.Event{Event: model.EvError, CleanerID: c.ID, Path: abs, Reason: "journal_write_failed", Detail: err.Error(), TS: e.now()})
+	if err := removeTombstone(parentFD, unitFD, record.TombstoneLeaf, openedIdentity, profile.kind); err != nil {
+		stats.metricsIncomplete = true
+		emit(model.Event{Event: model.EvError, CleanerID: c.ID, Path: abs, Reason: "tombstone_remove_failed", Detail: err.Error(), TS: e.now()})
 		return managedCandidateError
 	}
 	size := identity.Size
@@ -485,9 +493,15 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 		stats.metricsIncomplete = true
 		size = 0
 	}
-	emit(model.Event{Event: model.EvDeleted, CleanerID: c.ID, Path: abs, Size: size, TS: e.now()})
 	stats.filesDeleted++
 	stats.bytesFreed += size
+	emit(model.Event{Event: model.EvDeleted, CleanerID: c.ID, Path: abs, Size: size, TS: e.now()})
+	record.Complete = true
+	if err := e.appendManagedJournal(journal, *record); err != nil {
+		stats.metricsIncomplete = true
+		emit(model.Event{Event: model.EvError, CleanerID: c.ID, Path: abs, Reason: "journal_write_failed", Detail: err.Error(), TS: e.now()})
+		return managedCandidateError
+	}
 	return managedCandidateDeleted
 }
 
@@ -545,6 +559,13 @@ func (e *ManagedCacheExecutor) checkOwner(names []string) (bool, error) {
 		return false, nil
 	}
 	return e.processCheck(names, e.procRoot)
+}
+
+func (e *ManagedCacheExecutor) appendManagedJournal(journal *managedJournal, record managedJournalRecord) error {
+	if e.journalAppend != nil {
+		return e.journalAppend(journal, record)
+	}
+	return journal.append(record)
 }
 
 func (e *ManagedCacheExecutor) managedDescriptorBusy(identity managedIdentity, heldFD int) (bool, error) {

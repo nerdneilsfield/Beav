@@ -45,6 +45,22 @@ func TestManagedCacheDeletesCompleteHuggingFaceArrowUnitAfterThirtyDays(t *testi
 	}
 }
 
+func TestManagedCacheDeletesCompleteNestedHuggingFaceArrowUnit(t *testing.T) {
+	home := t.TempDir()
+	unit := filepath.Join(home, ".cache", "huggingface", "datasets", "nested-dataset")
+	writeManagedAged(t, filepath.Join(unit, "dataset.arrow"), -31*24*time.Hour)
+	writeManagedAged(t, filepath.Join(unit, "tables", "part.arrow"), -31*24*time.Hour)
+	setManagedDirAge(t, filepath.Join(unit, "tables"), -31*24*time.Hour)
+	setManagedDirAge(t, unit, -31*24*time.Hour)
+	exec := newManagedTestExecutor(t, home)
+	if err := exec.Run(context.Background(), managedCleaner("ai-huggingface-datasets-arrow", 0), false, func(model.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(unit); !os.IsNotExist(err) {
+		t.Fatalf("legal nested Arrow unit was not removed: %v", err)
+	}
+}
+
 func TestManagedCacheDirectoryMetricsAreMarkedIncomplete(t *testing.T) {
 	home := t.TempDir()
 	unit := filepath.Join(home, ".cache", "huggingface", "datasets", "dataset")
@@ -263,8 +279,15 @@ func TestManagedCachePartialDeletionLeavesTrustedTombstoneForResume(t *testing.T
 	const tombstone = ".beav-managed-cache-11111111111111111111111111111111"
 	exec.randomTombstone = func() (string, error) { return tombstone, nil }
 	exec.deleteUnit = func(int, string) error { return errors.New("injected partial deletion") }
-	if err := exec.Run(context.Background(), managedCleaner("ai-huggingface-datasets-arrow", 0), false, func(model.Event) {}); err != nil {
-		t.Fatal(err)
+	firstEvents := captureEvents(t, func(emit func(model.Event)) {
+		if err := exec.Run(context.Background(), managedCleaner("ai-huggingface-datasets-arrow", 0), false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, event := range firstEvents {
+		if event.Event == model.EvFinish && !event.MetricsIncomplete {
+			t.Fatalf("partial deletion reported complete metrics: %+v", event)
+		}
 	}
 	if _, err := os.Stat(unit); !os.IsNotExist(err) {
 		t.Fatalf("original path should remain absent after rename: %v", err)
@@ -280,6 +303,67 @@ func TestManagedCachePartialDeletionLeavesTrustedTombstoneForResume(t *testing.T
 	}
 	if _, err := os.Stat(resumed); !os.IsNotExist(err) {
 		t.Fatalf("trusted tombstone was not resumed: %v", err)
+	}
+}
+
+func TestManagedCacheRemoveTombstoneFailureMarksMetricsIncomplete(t *testing.T) {
+	home := t.TempDir()
+	unit := filepath.Join(home, ".cache", "torch", "hub", "checkpoints", "model.pt")
+	tombstone := ".beav-managed-cache-33333333333333333333333333333333"
+	writeManagedAged(t, unit, -31*24*time.Hour)
+	exec := newManagedTestExecutor(t, home)
+	exec.randomTombstone = func() (string, error) { return tombstone, nil }
+	exec.removeTombstone = func(int, int, string, managedIdentity, managedUnitKind) error {
+		return errors.New("injected tombstone removal failure")
+	}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := exec.Run(context.Background(), managedCleaner("ai-torch-hub", 0), false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, event := range events {
+		if event.Event == model.EvFinish && !event.MetricsIncomplete {
+			t.Fatalf("tombstone removal failure reported complete metrics: %+v", event)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(unit), tombstone)); err != nil {
+		t.Fatalf("failed tombstone was not left for recovery: %v", err)
+	}
+}
+
+func TestManagedCacheCompletionJournalFailureMarksKnownDeletionIncomplete(t *testing.T) {
+	home := t.TempDir()
+	unit := filepath.Join(home, ".cache", "torch", "hub", "checkpoints", "model.pt")
+	writeManagedAged(t, unit, -31*24*time.Hour)
+	info, err := os.Stat(unit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := newManagedTestExecutor(t, home)
+	appendCalls := 0
+	exec.journalAppend = func(journal *managedJournal, record managedJournalRecord) error {
+		appendCalls++
+		if appendCalls == 2 {
+			return errors.New("injected completion journal failure")
+		}
+		return journal.append(record)
+	}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := exec.Run(context.Background(), managedCleaner("ai-torch-hub", 0), false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var finish model.Event
+	for _, event := range events {
+		if event.Event == model.EvFinish {
+			finish = event
+		}
+	}
+	if !finish.MetricsIncomplete || finish.FilesDeleted != 1 || finish.BytesFreed != info.Size() {
+		t.Fatalf("completion journal failure metrics = %+v", finish)
+	}
+	if _, err := os.Stat(unit); !os.IsNotExist(err) {
+		t.Fatalf("known-deleted unit remains after completion journal failure: %v", err)
 	}
 }
 
@@ -664,6 +748,70 @@ func TestManagedCacheJournalParentFsyncFailureFailsClosed(t *testing.T) {
 	}
 	if _, err := os.Stat(unit); err != nil {
 		t.Fatalf("journal fsync failure removed unit: %v", err)
+	}
+}
+
+func TestManagedCacheJournalFsyncsEveryCreatedParent(t *testing.T) {
+	home := t.TempDir()
+	unit := filepath.Join(home, ".cache", "torch", "hub", "checkpoints", "model.pt")
+	writeManagedAged(t, unit, -31*24*time.Hour)
+	exec := newManagedTestExecutor(t, home)
+	exec.journalPath = filepath.Join(home, ".one", "two", "three", "recovery.jsonl")
+	syncs := 0
+	exec.journalDirSync = func(int) error {
+		syncs++
+		return nil
+	}
+	if err := exec.Run(context.Background(), managedCleaner("ai-torch-hub", 0), false, func(model.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if syncs != 3 {
+		t.Fatalf("created journal parent fsyncs = %d, want one per created level", syncs)
+	}
+}
+
+func TestManagedCacheJournalDirectoryFsyncFailureFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	unit := filepath.Join(home, ".cache", "torch", "hub", "checkpoints", "model.pt")
+	writeManagedAged(t, unit, -31*24*time.Hour)
+	exec := newManagedTestExecutor(t, home)
+	exec.journalPath = filepath.Join(home, ".one", "two", "recovery.jsonl")
+	exec.journalDirSync = func(int) error { return errors.New("injected parent directory fsync failure") }
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := exec.Run(context.Background(), managedCleaner("ai-torch-hub", 0), false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !hasCleanerSkip(events, "journal_unavailable") {
+		t.Fatalf("parent directory fsync failure was not fail-closed: %+v", events)
+	}
+	if _, err := os.Stat(unit); err != nil {
+		t.Fatalf("parent directory fsync failure removed unit: %v", err)
+	}
+}
+
+func TestManagedCacheTornJournalRecordDoesNotAuthorizeRecovery(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".cache", "torch", "hub", "checkpoints")
+	tombstone := filepath.Join(root, ".beav-managed-cache-22222222222222222222222222222222")
+	writeManagedAged(t, tombstone, -31*24*time.Hour)
+	var st unix.Statx_t
+	if err := unix.Statx(unix.AT_FDCWD, tombstone, unix.AT_SYMLINK_NOFOLLOW, unix.STATX_BASIC_STATS|unix.STATX_MNT_ID, &st); err != nil {
+		t.Fatal(err)
+	}
+	exec := newManagedTestExecutor(t, home)
+	if err := os.MkdirAll(filepath.Dir(exec.journalPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := fmt.Sprintf(`{"profile":"ai-torch-hub","root":%q,"original_leaf":"missing.pt","tombstone_leaf":".beav-managed-cache-22222222222222222222222222222222","uid":%d,"dev":%d,"inode":%d,"mount_id":%d}`, root, os.Getuid(), unix.Mkdev(st.Dev_major, st.Dev_minor), st.Ino, st.Mnt_id)
+	if err := os.WriteFile(exec.journalPath, []byte(record), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Run(context.Background(), managedCleaner("ai-torch-hub", 0), false, func(model.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(tombstone); err != nil {
+		t.Fatalf("torn journal record authorized cleanup: %v", err)
 	}
 }
 

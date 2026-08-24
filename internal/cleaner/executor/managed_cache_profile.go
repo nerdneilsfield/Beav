@@ -96,7 +96,7 @@ func completeManagedArrowUnit(fd int, leaf string) (bool, error) {
 		if identity.Mode == unix.S_IFLNK {
 			return false, nil
 		}
-		if identity.Nlink != 1 {
+		if identity.Mode == unix.S_IFREG && identity.Nlink != 1 {
 			return false, nil
 		}
 		lower := strings.ToLower(name)
