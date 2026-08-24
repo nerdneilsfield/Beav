@@ -70,3 +70,23 @@ Observed: `3 passed`; Homebrew uses one resolved absolute binary with native dry
 - `rtk git diff --check` — passed.
 
 Post-commit self-review tightened root `SUDO_UID` home matching; `rtk go test ./...` remained 114 passed.
+
+### RED 4 — expose exact target identity resolution
+
+Command:
+
+```text
+rtk go test ./internal/cleaner/executor -run '^TestResolveToolIdentityReturnsExactSupplementaryGroups$' -count=1
+```
+
+Observed: expected compile failure, `ResolveToolIdentity` undefined.
+
+### GREEN 4
+
+Command:
+
+```text
+rtk go test ./internal/cleaner/executor -run '^TestResolveToolIdentityReturnsExactSupplementaryGroups$' -count=1
+```
+
+Observed: `1 passed`; resolver returns target UID/name/home, primary GID, and supplementary groups with primary GID excluded.

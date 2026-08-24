@@ -3,7 +3,9 @@ package executor
 import (
 	"context"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -174,4 +176,24 @@ func hasCleanerError(events []model.Event, reason string) bool {
 		}
 	}
 	return false
+}
+
+func TestResolveToolIdentityReturnsExactSupplementaryGroups(t *testing.T) {
+	uid := uint32(os.Getuid())
+	account, err := user.LookupId(strconv.FormatUint(uint64(uid), 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := ResolveToolIdentity(uid, account.HomeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.UID != uid || identity.Name != account.Username || identity.Home != account.HomeDir {
+		t.Fatalf("identity = %+v", identity)
+	}
+	for _, gid := range identity.Groups {
+		if gid == identity.GID {
+			t.Fatalf("primary GID %d leaked into supplementary groups %+v", identity.GID, identity.Groups)
+		}
+	}
 }

@@ -106,6 +106,17 @@ func NewToolPruneExecutorForTarget(home string, whitelist *safety.Whitelist, tar
 	return NewToolPruneExecutor(home, whitelist, options...)
 }
 
+// ResolveToolIdentity resolves account name, primary GID, and exact
+// supplementary groups for a target home. Callers using sudo --all should
+// pass the UID/home resolved from the sudo environment.
+// ResolveToolIdentity 解析目标账户名、主 GID 及确切附加组；sudo --all 调用方应传入已验证 UID/主目录。
+func ResolveToolIdentity(uid uint32, home string) (CommandIdentity, error) {
+	if uid == 0 {
+		return CommandIdentity{}, errors.New("target UID must be non-zero")
+	}
+	return lookupIdentity(uid, "", home)
+}
+
 type toolProfile struct {
 	Binary       string
 	NativeDryRun bool
