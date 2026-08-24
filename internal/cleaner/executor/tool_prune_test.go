@@ -433,6 +433,44 @@ func TestHuggingFaceBusyInspectionTreatsDeletedCacheDescriptorAsBusy(t *testing.
 	}
 }
 
+// TestHuggingFaceBusyInspectionTreatsSymlinkLockMarkerAsBusy verifies lock
+// names are inspected without following symlinks, even though the walker
+// deliberately skips symlink entries.
+func TestHuggingFaceBusyInspectionTreatsSymlinkLockMarkerAsBusy(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "lock-target")
+	if err := os.Symlink(outside, filepath.Join(root, "model.lock")); err != nil {
+		t.Fatal(err)
+	}
+	busy, err := inspectHuggingFaceBusy(root, t.TempDir())
+	if err != nil || !busy {
+		t.Fatalf("busy=%v err=%v, want symlink lock marker to be busy", busy, err)
+	}
+}
+
+// TestHuggingFaceBusyInspectionTreatsOpenRootDirectoryAsBusy verifies an FD
+// to the cache root itself blocks cleanup, not only FDs to descendants.
+func TestHuggingFaceBusyInspectionTreatsOpenRootDirectoryAsBusy(t *testing.T) {
+	root := t.TempDir()
+	opened, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	procRoot := t.TempDir()
+	fdRoot := filepath.Join(procRoot, "123", "fd")
+	if err := os.MkdirAll(fdRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(root, filepath.Join(fdRoot, "4")); err != nil {
+		t.Fatal(err)
+	}
+	busy, err := inspectHuggingFaceBusy(root, procRoot)
+	if err != nil || !busy {
+		t.Fatalf("busy=%v err=%v, want open root directory to be busy", busy, err)
+	}
+}
+
 func TestHuggingFaceBusyInspectionFailsClosedOnWalkError(t *testing.T) {
 	busy, err := inspectHuggingFaceBusy(filepath.Join(t.TempDir(), "missing"), t.TempDir())
 	if err == nil || busy {

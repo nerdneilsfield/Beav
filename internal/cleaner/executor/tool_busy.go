@@ -31,6 +31,28 @@ func inspectHuggingFaceBusy(root, procRoot string) (bool, error) {
 // inspectHuggingFaceBusyFD enumerates cache through held root fd and compares
 // process descriptors by device/inode identity.
 func inspectHuggingFaceBusyFD(rootFD int, root, procRoot string) (bool, error) {
+	var rootStat unix.Stat_t
+	if err := unix.Fstat(rootFD, &rootStat); err != nil {
+		return false, err
+	}
+	if rootStat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return false, fmt.Errorf("cache root fd is not a directory")
+	}
+	identities := []safety.FileIdentity{{Dev: uint64(rootStat.Dev), Ino: uint64(rootStat.Ino)}}
+	lockFD, err := unix.Openat(rootFD, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false, err
+	}
+	unix.CloseOnExec(lockFD)
+	lockBusy, lockErr := scanHuggingFaceLockMarkers(lockFD, "")
+	_ = unix.Close(lockFD)
+	if lockErr != nil {
+		return false, fmt.Errorf("scan cache locks: %w", lockErr)
+	}
+	if lockBusy {
+		return true, nil
+	}
+
 	// Open a fresh file description beneath the held root. A plain dup shares
 	// directory offsets with rootFD, which could make the later cleanup walk
 	// miss entries after this guard scan.
@@ -44,20 +66,8 @@ func inspectHuggingFaceBusyFD(rootFD int, root, procRoot string) (bool, error) {
 		return false, err
 	}
 	defer w.Close()
-	identities := make([]safety.FileIdentity, 0)
-	lockBusy := false
 	walkErr := w.Walk(func(entry safety.Entry) {
 		identities = append(identities, safety.FileIdentity{Dev: entry.Dev(), Ino: entry.Ino()})
-		name := strings.ToLower(filepath.Base(entry.RelPath))
-		if strings.HasSuffix(name, ".lock") || name == "lock" {
-			lockBusy = true
-		}
-		parts := strings.Split(filepath.Clean(entry.RelPath), string(filepath.Separator))
-		for _, part := range parts[:len(parts)-1] {
-			if strings.EqualFold(part, ".locks") || strings.EqualFold(part, "locks") {
-				lockBusy = true
-			}
-		}
 	})
 	if walkErr != nil {
 		return false, fmt.Errorf("walk cache root: %w", walkErr)
@@ -80,6 +90,63 @@ func inspectHuggingFaceBusyFD(rootFD int, root, procRoot string) (bool, error) {
 		return true, nil
 	}
 	return false, nil
+}
+
+// scanHuggingFaceLockMarkers enumerates every directory entry through a held
+// descriptor. fstatat with AT_SYMLINK_NOFOLLOW is deliberate: lock marker
+// symlinks are busy and must never be followed into another tree.
+func scanHuggingFaceLockMarkers(dirFD int, rel string) (bool, error) {
+	dupFD, err := unix.Dup(dirFD)
+	if err != nil {
+		return false, err
+	}
+	dir := os.NewFile(uintptr(dupFD), "<hf-locks>")
+	names, readErr := dir.Readdirnames(-1)
+	closeErr := dir.Close()
+	if readErr != nil {
+		return false, readErr
+	}
+	if closeErr != nil {
+		return false, closeErr
+	}
+	for _, name := range names {
+		var st unix.Stat_t
+		if err := unix.Fstatat(dirFD, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			return false, err
+		}
+		entryRel := filepath.Join(rel, name)
+		if huggingFaceLockMarker(entryRel) {
+			return true, nil
+		}
+		if st.Mode&unix.S_IFMT != unix.S_IFDIR {
+			continue
+		}
+		childFD, err := unix.Openat(dirFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return false, err
+		}
+		unix.CloseOnExec(childFD)
+		busy, walkErr := scanHuggingFaceLockMarkers(childFD, entryRel)
+		_ = unix.Close(childFD)
+		if walkErr != nil || busy {
+			return busy, walkErr
+		}
+	}
+	return false, nil
+}
+
+func huggingFaceLockMarker(rel string) bool {
+	parts := strings.Split(filepath.Clean(rel), string(filepath.Separator))
+	for i, part := range parts {
+		name := strings.ToLower(part)
+		if name == ".locks" || name == "locks" {
+			return true
+		}
+		if i == len(parts)-1 && (strings.HasSuffix(name, ".lock") || name == "lock") {
+			return true
+		}
+	}
+	return false
 }
 
 func inspectOpenDescriptorUnder(root, procRoot string) (bool, error) {
