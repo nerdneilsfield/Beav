@@ -35,3 +35,24 @@ func (w *Whitelist) Match(path string) bool {
 	}
 	return false
 }
+
+// Intersects reports whether path and any keep-list prefix overlap in either
+// direction. A keep entry inside an affected root blocks the whole operation,
+// even when the root itself is not a keep entry.
+// Intersects 报告路径与任一保留前缀是否双向相交；保留项在受影响根内时同样阻断整项操作。
+func (w *Whitelist) Intersects(path string) bool {
+	if w == nil {
+		return false
+	}
+	clean := filepath.Clean(path)
+	for _, p := range w.prefixes {
+		if pathPrefix(clean, p) || pathPrefix(p, clean) {
+			return true
+		}
+	}
+	return false
+}
+
+func pathPrefix(path, prefix string) bool {
+	return path == prefix || strings.HasPrefix(path, prefix+string(filepath.Separator))
+}

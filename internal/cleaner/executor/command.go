@@ -6,18 +6,70 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/dengqi/beav/internal/cleaner/model"
+	"golang.org/x/sys/unix"
 )
+
+// CommandIdentity describes the exact credentials a child process must use.
+// CommandIdentity 描述子进程必须使用的确切凭据。
+//
+// Groups contains supplementary groups only; GID is always the primary group.
+// Groups 只含附加组；GID 始终是主组。
+type CommandIdentity struct {
+	UID    uint32
+	GID    uint32
+	Groups []uint32
+	Name   string
+	Home   string
+}
+
+// TargetIdentity is a compatibility alias for CommandIdentity.
+// TargetIdentity 是 CommandIdentity 的兼容别名。
+type TargetIdentity = CommandIdentity
 
 // CommandRun holds the configuration for running an external command.
 // CommandRun 保存运行外部命令的配置。
 type CommandRun struct {
+	// Executable is the resolved absolute executable path. When set, it is
+	// used for both argv[0] and exec, and Args are passed unchanged.
+	// Executable 是已解析的绝对可执行文件路径；设置后同时用于 argv[0] 和 exec，Args 原样传递。
+	Executable string
+	// Args are arguments following Executable.
+	// Args 是 Executable 后的参数。
+	Args []string
 	// Argv is the command and its arguments.
 	// Argv 是命令及其参数。
 	Argv []string
+	// Env is the complete child environment. A non-nil value is never merged
+	// with the parent environment.
+	// Env 是子进程完整环境；非 nil 时绝不与父环境合并。
+	Env []string
+	// Environment is an alternate spelling retained for callers that prefer
+	// the longer name.
+	// Environment 是保留给偏好长名称调用方的别名。
+	Environment []string
+	// Cwd is the child working directory.
+	// Cwd 是子进程工作目录。
+	Cwd string
+	// Identity, when non-nil, applies exact UID/GID/supplementary groups.
+	// Identity 非 nil 时应用确切 UID/GID/附加组。
+	Identity *CommandIdentity
+	// TargetIdentity is an alternate spelling for Identity.
+	// TargetIdentity 是 Identity 的别名字段。
+	TargetIdentity *CommandIdentity
+	// DryRun marks a native dry-run invocation. RunCommand does not infer or
+	// alter argv from this flag; profile executors decide whether to invoke.
+	// DryRun 标记原生试运行调用；RunCommand 不据此推断或修改 argv，由 profile executor 决定是否调用。
+	DryRun bool
+	// AffectedRoots are safety-checked by profile executors before invocation.
+	// AffectedRoots 由 profile executor 在调用前执行安全检查。
+	AffectedRoots []string
 	// Timeout is the maximum duration for the command to run.
 	// Timeout 是命令运行的最大持续时间。
 	Timeout time.Duration
@@ -32,16 +84,48 @@ type CommandRun struct {
 // RunCommand executes a command with the given configuration and streams output to callbacks.
 // RunCommand 使用给定配置执行命令，并将输出流式传输到回调函数。
 func RunCommand(ctx context.Context, r CommandRun) error {
-	if len(r.Argv) == 0 {
+	argv, executable, err := commandArgv(r)
+	if err != nil {
+		return err
+	}
+	if len(argv) == 0 || executable == "" {
 		return errors.New("empty argv")
 	}
 	if r.Timeout == 0 {
 		r.Timeout = 60 * time.Second
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, r.Argv[0], r.Argv[1:]...) // #nosec G204 -- argv is selected by built-in executors, not shell-expanded user input.
+	cmd := exec.Command(executable, argv[1:]...) // #nosec G204 -- executable and argv come from closed built-in profiles.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if identity := commandIdentity(r); identity != nil {
+		cmd.SysProcAttr.Credential = &syscall.Credential{
+			Uid:    identity.UID,
+			Gid:    identity.GID,
+			Groups: append([]uint32(nil), identity.Groups...),
+		}
+	}
+	if r.Cwd != "" {
+		cmd.Dir = r.Cwd
+	}
+	env := r.Env
+	if env == nil {
+		env = r.Environment
+	}
+	if env != nil {
+		cmd.Env = append([]string(nil), env...)
+	}
+	devNull, err := os.OpenFile("/dev/null", os.O_RDONLY, 0)
+	if err != nil {
+		return fmt.Errorf("open /dev/null: %w", err)
+	}
+	defer devNull.Close()
+	cmd.Stdin = devNull
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -62,13 +146,70 @@ func RunCommand(ctx context.Context, r CommandRun) error {
 		drain(stderr, r.OnStderr)
 		done <- struct{}{}
 	}()
-	err = cmd.Wait()
+	wait := make(chan error, 1)
+	go func() { wait <- cmd.Wait() }()
+	var timedOut bool
+	select {
+	case err = <-wait:
+	case <-ctx.Done():
+		timedOut = errors.Is(ctx.Err(), context.DeadlineExceeded)
+		killProcessGroup(cmd.Process.Pid)
+		err = <-wait
+	}
 	<-done
 	<-done
-	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("timeout after %s", r.Timeout)
+	if timedOut {
+		return fmt.Errorf("timeout after %s: %w", r.Timeout, context.DeadlineExceeded)
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 	return err
+}
+
+func commandArgv(r CommandRun) ([]string, string, error) {
+	if r.Executable != "" {
+		if !filepath.IsAbs(r.Executable) {
+			return nil, "", errors.New("executable must be absolute")
+		}
+		args := append([]string(nil), r.Args...)
+		if len(args) == 0 && len(r.Argv) > 0 {
+			if r.Argv[0] == r.Executable {
+				args = append(args, r.Argv[1:]...)
+			} else {
+				args = append(args, r.Argv...)
+			}
+		}
+		return append([]string{r.Executable}, args...), r.Executable, nil
+	}
+	if len(r.Argv) == 0 {
+		return nil, "", errors.New("empty argv")
+	}
+	if filepath.IsAbs(r.Argv[0]) {
+		return append([]string(nil), r.Argv...), r.Argv[0], nil
+	}
+	resolved, err := exec.LookPath(r.Argv[0])
+	if err != nil {
+		return nil, "", err
+	}
+	argv := append([]string{resolved}, r.Argv[1:]...)
+	return argv, resolved, nil
+}
+
+func commandIdentity(r CommandRun) *CommandIdentity {
+	if r.Identity != nil {
+		return r.Identity
+	}
+	return r.TargetIdentity
+}
+
+func killProcessGroup(pid int) {
+	if pid <= 0 {
+		return
+	}
+	if err := unix.Kill(-pid, unix.SIGKILL); err != nil && !errors.Is(err, unix.ESRCH) {
+		_ = unix.Kill(pid, unix.SIGKILL)
+	}
 }
 
 // drain reads from a reader line by line, passing each line to the callback function.
