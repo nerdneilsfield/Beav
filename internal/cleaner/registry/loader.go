@@ -3,6 +3,7 @@ package registry
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"strings"
@@ -51,14 +52,16 @@ func loadFSWithReservedIDs(root fs.FS, base string, rejectReservedIDs bool) ([]L
 		if len(strings.TrimSpace(string(data))) == 0 {
 			return nil
 		}
+		if rejectReservedIDs {
+			if err := rejectReservedCargoDocument(data, p); err != nil {
+				return err
+			}
+		}
 
 		var list []model.Cleaner
 		if err := decodeYAML(data, &list); err == nil {
 			for _, c := range list {
 				if c.ID != "" {
-					if err := rejectReservedCleanerID(c.ID, p, rejectReservedIDs); err != nil {
-						return err
-					}
 					if err := normalizeAndValidate(&c); err != nil {
 						return fmt.Errorf("%s: %w", p, err)
 					}
@@ -75,9 +78,6 @@ func loadFSWithReservedIDs(root fs.FS, base string, rejectReservedIDs bool) ([]L
 		if c.ID == "" {
 			return nil
 		}
-		if err := rejectReservedCleanerID(c.ID, p, rejectReservedIDs); err != nil {
-			return err
-		}
 		if err := normalizeAndValidate(&c); err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
@@ -90,11 +90,68 @@ func loadFSWithReservedIDs(root fs.FS, base string, rejectReservedIDs bool) ([]L
 	return out, nil
 }
 
-func rejectReservedCleanerID(id, path string, enabled bool) error {
-	if enabled && id == "lang-cargo" {
-		return fmt.Errorf("%s: cleaner %q is reserved; migration required: use Cargo native GC instead of a Beav Cargo cleaner", path, id)
+// rejectReservedCargoDocument inspects original YAML nodes before strict
+// model decoding. Only a direct scalar id: lang-cargo is authoritative;
+// merged or aliased IDs remain subject to normal strict decoding errors.
+func rejectReservedCargoDocument(data []byte, path string) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	found := false
+	for {
+		var document yaml.Node
+		err := decoder.Decode(&document)
+		if err == io.EOF {
+			if found {
+				return cargoMigrationError(path)
+			}
+			return nil
+		}
+		if err != nil {
+			// Let strict decode report malformed YAML; do not misclassify it as
+			// a Cargo migration when the document cannot be trusted.
+			return nil
+		}
+		if explicitCargoID(documentNode(document)) {
+			found = true
+		}
 	}
-	return nil
+}
+
+func documentNode(document yaml.Node) *yaml.Node {
+	if document.Kind != yaml.DocumentNode || len(document.Content) != 1 {
+		return nil
+	}
+	return document.Content[0]
+}
+
+func explicitCargoID(node *yaml.Node) bool {
+	if node == nil {
+		return false
+	}
+	switch node.Kind {
+	case yaml.SequenceNode:
+		for _, item := range node.Content {
+			if item.Kind == yaml.MappingNode && mappingHasExplicitCargoID(item) {
+				return true
+			}
+		}
+	case yaml.MappingNode:
+		return mappingHasExplicitCargoID(node)
+	}
+	return false
+}
+
+func mappingHasExplicitCargoID(node *yaml.Node) bool {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if key.Kind == yaml.ScalarNode && key.Value == "id" && value.Kind == yaml.ScalarNode && value.Value == "lang-cargo" {
+			return true
+		}
+	}
+	return false
+}
+
+func cargoMigrationError(path string) error {
+	return fmt.Errorf("%s: cleaner %q is reserved; migration required: use Cargo native GC instead of a Beav Cargo cleaner", path, "lang-cargo")
 }
 
 func decodeYAML(data []byte, out any) error {

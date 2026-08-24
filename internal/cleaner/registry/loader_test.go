@@ -200,6 +200,129 @@ paths: [~/.cargo/registry/cache]
 	}
 }
 
+func TestLoadUserDirReservedCargoDocumentScan(t *testing.T) {
+	cases := []struct {
+		name          string
+		yaml          string
+		wantMigration bool
+	}{
+		{
+			name: "explicit id after merge",
+			yaml: `- &base
+  scope: user
+  type: paths
+  paths: [~/.cache/cargo]
+- <<: *base
+  id: lang-cargo
+`,
+			wantMigration: true,
+		},
+		{
+			name: "explicit id before merge",
+			yaml: `- id: lang-cargo
+  <<: &base
+    scope: user
+    type: paths
+    paths: [~/.cache/cargo]
+`,
+			wantMigration: true,
+		},
+		{
+			name: "second document",
+			yaml: `---
+id: ordinary
+scope: user
+type: paths
+paths: [~/.cache/ordinary]
+---
+id: lang-cargo
+scope: user
+type: paths
+paths: [~/.cache/cargo]
+`,
+			wantMigration: true,
+		},
+		{
+			name: "anchor entry is still explicit",
+			yaml: `- &base
+  id: lang-cargo
+  scope: user
+  type: paths
+  paths: [~/.cache/cargo]
+- <<: *base
+`,
+			wantMigration: true,
+		},
+		{
+			name: "id value supplied by alias",
+			yaml: `- &cargo_id lang-cargo
+- id: *cargo_id
+  scope: user
+  type: paths
+  paths: [~/.cache/cargo]
+`,
+			wantMigration: false,
+		},
+		{
+			name: "id supplied only by merge alias",
+			yaml: `base: &base
+  id: lang-cargo
+  scope: user
+  type: paths
+  paths: [~/.cache/cargo]
+cleaners:
+- <<: *base
+`,
+			wantMigration: false,
+		},
+		{
+			name: "nested sequence is not cleaner entry",
+			yaml: `- - id: lang-cargo
+    scope: user
+    type: paths
+    paths: [~/.cache/cargo]
+`,
+			wantMigration: false,
+		},
+		{
+			name: "duplicate explicit id",
+			yaml: `- id: ordinary
+  id: lang-cargo
+  scope: user
+  type: paths
+  paths: [~/.cache/cargo]
+`,
+			wantMigration: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "cleaner.yaml"), []byte(tc.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadUserDir(dir)
+			if err == nil {
+				if tc.wantMigration {
+					t.Fatal("expected Cargo migration error")
+				}
+				return
+			}
+			gotMigration := strings.Contains(err.Error(), "Cargo native GC")
+			if gotMigration != tc.wantMigration {
+				t.Fatalf("error = %q, migration=%v want %v", err, gotMigration, tc.wantMigration)
+			}
+			if tc.wantMigration {
+				for _, want := range []string{"cleaner.yaml", "lang-cargo"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("migration error %q missing %q", err, want)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestValidateAcceptsClosedProfileExecutors(t *testing.T) {
 	cases := []model.Cleaner{
 		{ID: "tool", Scope: model.ScopeUser, Type: model.TypeToolPrune, ToolPrune: &model.ToolPruneCfg{Profile: "lang-uv"}},

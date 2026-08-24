@@ -86,7 +86,7 @@ func (e *Engine) Run(ctx context.Context, cleaners []model.Cleaner, opt Options)
 				now := time.Now()
 				opt.Emitter(model.Event{Event: model.EvStart, CleanerID: c.ID, Name: c.Name, Scope: c.Scope, Type: c.Type, DryRun: opt.DryRun, TS: now})
 				opt.Emitter(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: string(model.SkipReasonHeavyNotAuthorized), TS: time.Now()})
-				opt.Emitter(model.Event{Event: model.EvFinish, CleanerID: c.ID, Status: "skipped", TS: time.Now()})
+				opt.Emitter(model.Event{Event: model.EvFinish, CleanerID: c.ID, Status: "skipped", DryRun: opt.DryRun, TS: time.Now()})
 			}
 			res.CleanersSkipped++
 			continue

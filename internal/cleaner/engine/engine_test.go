@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/dengqi/beav/internal/cleaner/model"
@@ -136,6 +138,40 @@ func TestEngineHeavyAuthorizationTable(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestEngineUnauthorizedHeavyDryRunFinishCarriesDryRun(t *testing.T) {
+	cleaner := model.Cleaner{
+		ID:        "heavy",
+		Scope:     model.ScopeUser,
+		Type:      model.TypeToolPrune,
+		Impact:    model.ImpactHeavy,
+		ToolPrune: &model.ToolPruneCfg{Profile: "dev-mise"},
+	}
+	var finish model.Event
+	e := New(WithExecutor(model.TypeToolPrune, &stubExecutor{}))
+	_, err := e.Run(context.Background(), []model.Cleaner{cleaner}, Options{
+		Scope:  model.ScopeUser,
+		DryRun: true,
+		Emitter: func(event model.Event) {
+			if event.Event == model.EvFinish {
+				finish = event
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finish.Status != "skipped" || !finish.DryRun {
+		t.Fatalf("finish = %+v, want skipped dry_run=true", finish)
+	}
+	encoded, err := json.Marshal(finish)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"dry_run":true`) {
+		t.Fatalf("finish JSON = %s, want dry_run=true", encoded)
 	}
 }
 
