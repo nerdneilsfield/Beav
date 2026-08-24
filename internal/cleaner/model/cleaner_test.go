@@ -123,6 +123,20 @@ func TestYAMLProfileAliasAcceptsKnownFields(t *testing.T) {
 	}
 }
 
+func TestYAMLNestedAliasKeyCannotInjectProfileField(t *testing.T) {
+	src := "" +
+		"id: uv\n" +
+		"scope: user\n" +
+		"type: tool_prune\n" +
+		"tool_prune:\n" +
+		"  profile: &profile lang-uv\n" +
+		"  *profile: injected\n"
+	var c Cleaner
+	if err := yaml.Unmarshal([]byte(src), &c); err == nil {
+		t.Fatal("expected aliased nested key to be rejected")
+	}
+}
+
 func cleanerYAMLMapping(fields ...any) *yaml.Node {
 	node := &yaml.Node{Kind: yaml.MappingNode}
 	for i := 0; i < len(fields); i += 2 {

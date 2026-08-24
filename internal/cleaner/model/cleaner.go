@@ -309,8 +309,15 @@ func validateCleanerYAMLFields(value *yaml.Node) error {
 		}
 		if nestedAllowed != nil && nested.Kind == yaml.MappingNode {
 			for j := 0; j+1 < len(nested.Content); j += 2 {
-				if _, ok := nestedAllowed[nested.Content[j].Value]; !ok {
-					return fmt.Errorf("field %s not found in nested cleaner profile", nested.Content[j].Value)
+				nestedKey, err := resolveYAMLAlias(nested.Content[j], map[*yaml.Node]bool{})
+				if err != nil {
+					return err
+				}
+				if nestedKey.Kind != yaml.ScalarNode {
+					return fmt.Errorf("nested cleaner profile key must be scalar")
+				}
+				if _, ok := nestedAllowed[nestedKey.Value]; !ok {
+					return fmt.Errorf("field %s not found in nested cleaner profile", nestedKey.Value)
 				}
 			}
 		}
