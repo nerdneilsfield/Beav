@@ -41,13 +41,13 @@ func NewCleanCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&f.System, "system", false, "clean system-scope cleaners")
 	cmd.Flags().BoolVar(&f.All, "all", false, "clean both user and system scopes")
 	cmd.Flags().BoolVar(&f.DryRun, "dry-run", false, "show what would be removed")
-	cmd.Flags().StringSliceVar(&f.Only, "only", nil, "run only matching cleaner IDs, tags, or ID prefixes")
-	cmd.Flags().BoolVar(&f.IncludeHeavy, "include-heavy", false, "authorize heavy-impact cleaners")
+	cmd.Flags().StringSliceVar(&f.Only, "only", nil, "run matching cleaner IDs, tags, or ID prefixes; heavy requires an exact full ID")
+	cmd.Flags().BoolVar(&f.IncludeHeavy, "include-heavy", false, "explicitly authorize heavy cleaners; --yes, --all, tags, and prefixes do not")
 	cmd.Flags().StringSliceVar(&f.Skip, "skip", nil, "skip matching cleaner IDs, tags, or ID prefixes")
 	cmd.Flags().StringVar(&f.MinAge, "min-age", "", "override min age, for example 14d or tag=3d")
 	cmd.Flags().BoolVar(&f.ForceNoAge, "force-no-age", false, "allow cleaners that explicitly have no age filter")
 	cmd.Flags().StringVar(&f.Output, "output", "", "output mode: spinner, plain, or json")
-	cmd.Flags().BoolVar(&f.Yes, "yes", false, "skip interactive confirmations")
+	cmd.Flags().BoolVar(&f.Yes, "yes", false, "skip interactive confirmations; does not authorize heavy cleaners")
 	cmd.Flags().BoolVar(&f.AllowRootHome, "allow-root-home", false, "allow cleaning /root")
 	cmd.Flags().StringVar(&f.UserOverride, "user", "", "target user for --all")
 	cmd.Flags().StringVar(&f.ConfigDir, "config-dir", "", "override config directory")
@@ -118,12 +118,7 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 		}
 	}
 
-	eng := engine.New(
-		engine.WithExecutor(model.TypePaths, executor.NewPathsExecutor(home, safety.NewWhitelist(cfg.MergedWhitelist()))),
-		engine.WithExecutor(model.TypeJournalVacuum, executor.NewJournalExecutor()),
-		engine.WithExecutor(model.TypePkgCache, executor.NewPkgCacheExecutor()),
-		engine.WithExecutor(model.TypeContainerPrune, executor.NewContainerExecutor(executor.ContainerTarget{UID: targetUID, Home: home})),
-	)
+	eng := newCleanEngine(home, targetUID, safety.NewWhitelist(cfg.MergedWhitelist()))
 	emit := func(ev model.Event) {
 		if log != nil && ev.Event == model.EvDeleted {
 			_ = log.Write("delete", ev.Path, ev.Size, ev.CleanerID)
@@ -149,6 +144,24 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 	}
 	_ = stderr
 	return nil
+}
+
+// newCleanEngine wires all built-in executor types and binds target account
+// identity for profile-backed cleaners. Closed executors never receive YAML
+// command, root, or identity data.
+func newCleanEngine(home string, targetUID int, whitelist *safety.Whitelist) *engine.Engine {
+	toolOptions := []executor.ToolPruneOption{
+		executor.WithToolIdentity(executor.CommandIdentity{UID: uint32(targetUID)}),
+	}
+	return engine.New(
+		engine.WithExecutor(model.TypePaths, executor.NewPathsExecutor(home, whitelist)),
+		engine.WithExecutor(model.TypeJournalVacuum, executor.NewJournalExecutor()),
+		engine.WithExecutor(model.TypePkgCache, executor.NewPkgCacheExecutor()),
+		engine.WithExecutor(model.TypeContainerPrune, executor.NewContainerExecutor(executor.ContainerTarget{UID: targetUID, Home: home})),
+		engine.WithExecutor(model.TypeToolPrune, executor.NewToolPruneExecutor(home, whitelist, toolOptions...)),
+		engine.WithExecutor(model.TypeDebris, executor.NewDebrisExecutor(home, whitelist, uint32(targetUID))),
+		engine.WithExecutor(model.TypeManagedCache, executor.NewManagedCacheExecutor(home, whitelist, uint32(targetUID))),
+	)
 }
 
 // validateCleanersForRun validates cleaners for the given scope and flags before execution.

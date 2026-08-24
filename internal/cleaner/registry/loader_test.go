@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -175,6 +176,27 @@ tool_prune:
 	_, err := loadFS(fs, ".")
 	if err == nil || !strings.Contains(err.Error(), "field command not found") {
 		t.Fatalf("err = %v, want unknown profile field rejection", err)
+	}
+}
+
+func TestLoadUserDirRejectsReservedCargoWithMigrationError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cargo.yaml"), []byte(`
+id: lang-cargo
+scope: user
+type: paths
+paths: [~/.cargo/registry/cache]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadUserDir(dir)
+	if err == nil {
+		t.Fatal("expected reserved Cargo cleaner migration error")
+	}
+	for _, want := range []string{"lang-cargo", "Cargo native GC", "migration"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err, want)
+		}
 	}
 }
 

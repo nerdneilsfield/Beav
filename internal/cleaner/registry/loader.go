@@ -26,12 +26,16 @@ func LoadUserDir(dir string) ([]Loaded, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	return loadFS(os.DirFS(dir), ".")
+	return loadFSWithReservedIDs(os.DirFS(dir), ".", true)
 }
 
 // loadFS walks the filesystem and parses YAML files into Loaded cleaner definitions.
 // loadFS 遍历文件系统并将 YAML 文件解析为 Loaded 清理器定义。
 func loadFS(root fs.FS, base string) ([]Loaded, error) {
+	return loadFSWithReservedIDs(root, base, false)
+}
+
+func loadFSWithReservedIDs(root fs.FS, base string, rejectReservedIDs bool) ([]Loaded, error) {
 	var out []Loaded
 	err := fs.WalkDir(root, base, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -52,6 +56,9 @@ func loadFS(root fs.FS, base string) ([]Loaded, error) {
 		if err := decodeYAML(data, &list); err == nil {
 			for _, c := range list {
 				if c.ID != "" {
+					if err := rejectReservedCleanerID(c.ID, p, rejectReservedIDs); err != nil {
+						return err
+					}
 					if err := normalizeAndValidate(&c); err != nil {
 						return fmt.Errorf("%s: %w", p, err)
 					}
@@ -68,6 +75,9 @@ func loadFS(root fs.FS, base string) ([]Loaded, error) {
 		if c.ID == "" {
 			return nil
 		}
+		if err := rejectReservedCleanerID(c.ID, p, rejectReservedIDs); err != nil {
+			return err
+		}
 		if err := normalizeAndValidate(&c); err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
@@ -78,6 +88,13 @@ func loadFS(root fs.FS, base string) ([]Loaded, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func rejectReservedCleanerID(id, path string, enabled bool) error {
+	if enabled && id == "lang-cargo" {
+		return fmt.Errorf("%s: cleaner %q is reserved; migration required: use Cargo native GC instead of a Beav Cargo cleaner", path, id)
+	}
+	return nil
 }
 
 func decodeYAML(data []byte, out any) error {

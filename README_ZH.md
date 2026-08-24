@@ -23,7 +23,8 @@
 - 🦫 **默认按"年龄"删除。** 文件只有在指定天数内未被触碰才会被清理。明天打开 IDE，缓存自然重建；这周还在跑的工作完全不动。
 - 🛡️ **安全是契约，不是直觉。** 每次删除都要穿过一整套 `openat` 锚定关卡：白名单边界、硬黑名单、禁止跟随符号链接越界、禁止跨文件系统、`.git` 工作树保护、删前重 `stat` 防 TOCTOU。
 - 🧰 **一切皆数据。** 清理项是 YAML，内置项随二进制嵌入；想加一条只需把 YAML 丢进 `~/.config/beav/cleaners.d/`。
-- 🐙 **开箱即覆盖宽生态。** VS Code、JetBrains 全家桶、Neovim、Firefox、Chrome 系、npm/pnpm/yarn/bun、pip、cargo、Go build cache、Gradle、Maven、apt/dnf/pacman/zypper、journald、Docker、Podman、helm、k9s、kubectl、minikube。
+- 🐙 **开箱覆盖 Linux 生态。** VS Code、JetBrains、Neovim、Firefox、Chrome 系、npm/pnpm/yarn/bun、pip、uv、Conda、pre-commit、ccache、Cypress、Homebrew、Flatpak、Hugging Face、Torch、gcloud、Azure、apt/dnf/pacman/zypper、journald、Docker、Podman、helm、k9s、kubectl、minikube。
+- 🧱 **执行器闭集。** 外部工具用 tool_prune，杂项产物用 debris，托管缓存用 managed_cache。YAML 只能选择已知 profile，不得提供 command、argv、environment 或任意 root。
 - 🚦 **两种作用域，一个二进制。** `beav clean` 清家目录；`sudo beav clean --system` 清系统；`sudo beav clean --all` 一并清理，带多重校验的 `SUDO_USER` 解析。
 - 🎨 **三种界面。** 终端里带 spinner，管道里走 plain，脚本/监控走 JSONL 事件流。
 - 🚫 **绝不越界。** Beav 永不偷偷调用 `sudo`，不跟随 symlink 跑出安全区，不动 `~/.ssh`、`~/.gnupg`、`~/.kube/config`、`~/.docker/config.json`、`/var/lib/{docker,containerd,kubelet}`、`/etc`、`/boot`、`/usr`。
@@ -71,13 +72,14 @@ beav clean                           # 用户作用域清理
 beav clean --system                  # 系统作用域（非 root 拒绝）
 beav clean --all                     # 用户 + 系统（root + 合法 SUDO_USER）
 beav clean --dry-run                 # 仅预览，不删除
-beav clean --only vscode,langs       # 按 ID 前缀或 tag 筛选
+beav clean --only vscode,langs       # 按 ID 前缀或 tag 筛选；heavy 须完整 ID
 beav clean --skip browsers           # 反向筛选
 beav clean --min-age=14d             # 全局年龄阈值覆盖
 beav clean --min-age=langs=3d,logs=30d   # 按 tag 单独覆盖
 beav clean --force-no-age            # 启用主动声明无年龄过滤的 cleaner
 beav clean --output json             # stdout 输出 JSONL 事件
-beav clean --yes                     # 跳过首次运行的 dry-run 提示
+beav clean --include-heavy           # 授权已启用的 heavy profile
+beav clean --yes                     # 跳过确认；绝不授权 heavy
 beav clean --user=alice --all        # 显式指定 SUDO_USER
 
 beav analyze [PATH]                  # 交互式磁盘浏览 TUI（gdu）
@@ -106,7 +108,9 @@ beav version
 | **桌面** | 回收站、缩略图缓存 |
 | **编辑器** | VS Code（含 server / cpptools）、JetBrains 全家、Neovim 状态目录 |
 | **浏览器** | Firefox、Chrome、Chromium、Edge ——只清 `Cache` / `Code Cache` / `GPUCache` 子目录（**绝不动 Profiles、cookies、登录态**） |
-| **语言工具链** | npm、pnpm、yarn、bun、pip、cargo、Go build cache、Gradle、Maven |
+| **语言与工具链** | npm、pnpm、yarn、bun、pip、uv、Conda、pre-commit、ccache、Cypress、Go build cache、Gradle、Maven |
+| **托管缓存** | Hugging Face Datasets Arrow、Torch Hub checkpoints（heavy、原子、按年龄） |
+| **AI/云端杂项** | Hugging Face incomplete、NVIDIA/Triton/TorchInductor cache、gcloud/Azure logs |
 | **Shell** | `~/.cache/zsh`、zcompdump |
 | **Kubernetes** | minikube 镜像缓存、helm、k9s、kubectl 缓存（**绝不动 `~/.kube/config`**） |
 | **容器（rootless）** | Docker / Podman 的 builder + image prune |
@@ -122,11 +126,13 @@ beav version
 |------|---|---|
 | 浏览器 / IDE 缓存 | 7 | 一周没碰，说明不在活跃流里 |
 | 包管理器下载（apt/npm/pip/yarn/bun） | 14 | 中等保守；重下载成本低 |
-| 构建产物（cargo、go、gradle、maven） | 30 | 重建成本不容忽视 |
+| 构建产物（go、gradle、maven、ccache） | 30 | 重建成本不容忽视 |
 | systemd journal | 14 | 走 `journalctl --vacuum-time=14d` |
 | `/tmp`、`/var/tmp` | 10 | 与 systemd-tmpfiles 默认对齐 |
 | `~/.local/share/Trash` | 30 | 留出后悔时间 |
 | 容器 builder / image（rootful） | 14 / 30 | builder cache 激进、image 谨慎 |
+
+闭集 profile 自带最低年龄：Downloads/Hugging Face incomplete 至少 24 小时，GPU 杂项至少 7 日，云日志与 managed cache 至少 30 日；`--min-age` 不得降低这些下限。
 
 可用 `--min-age=Nd` 全局覆盖、`--min-age=langs=3d,logs=30d` 按 tag 覆盖、或在 `~/.config/beav/config.yaml` 里按 cleaner ID 单独配置。
 
@@ -147,6 +153,8 @@ Beav 把删除当成手术——每一刀都要复核两遍。
 6. **逐文件年龄过滤** — `now - mtime ≥ min_age_days` 是按**单个文件**判定，不是按父目录。空目录在子项删完后再自底向上删。
 7. **TOCTOU 重新 stat** — 调用 `unlinkat` 之前再 stat 一次，`(ino, dev, size, mtim)` 任一字段漂移就放弃删除。
 8. **进程守卫** — Beav 扫描 `/proc`，看到 `code`、`chromium`、`firefox`、`idea` 等正在运行就跳过对应 cleaner。
+9. **Heavy 授权** — heavy profile 虽启用，仍须 `--include-heavy`，或 `--only` 中出现一次完整 cleaner ID；`--yes`、`--all`、tag、ID 前缀均不得授权，`--skip`、disabled、作用域不符优先。
+10. **Root 闭合** — 闭集 profile 只解析固定且位于目标 home 的 root（`/nix`、`/var/lib/flatpak` 等固定 system root 除外）；用户提供的越界 cache root 一律不采纳。
 
 </details>
 
@@ -199,6 +207,20 @@ whitelist:
   - ~/.cache/keep-this
 ```
 
+内置闭集 profile 按 profile 名称选择，例如：
+
+```yaml
+- id: lang-uv
+  scope: user
+  type: tool_prune
+  impact: safe
+  enabled: true
+  min_age_days: 14
+  tool_prune: { profile: lang-uv }
+```
+
+`type: command` 不是任意 shell 入口，现已拒绝。旧 builtin `lang-cargo` 已移除，请改用 Cargo native GC。项目不附带 `cargo-cache` 或任何 plugin dependency。
+
 自定义 cleaner 放在 `~/.config/beav/cleaners.d/` 下，YAML 文件即可：
 
 <details>
@@ -233,11 +255,11 @@ beav clean --output json | jq -c 'select(.event=="finish")'
 {"event":"start","cleaner_id":"editor-vscode","name":"VS Code Cache","scope":"user","type":"paths","ts":"2026-04-27T10:00:00Z"}
 {"event":"deleted","cleaner_id":"editor-vscode","path":"/home/dq/.config/Code/Cache/x","size":4096,"ts":"..."}
 {"event":"skipped","cleaner_id":"editor-vscode","path":"/home/dq/.config/Code/Cache/y","reason":"age_too_recent","ts":"..."}
-{"event":"finish","cleaner_id":"editor-vscode","status":"ok","files_deleted":42,"bytes_freed":12345678,"duration_ms":83,"ts":"..."}
-{"event":"summary","cleaners_run":12,"bytes_freed":987654321,"duration_ms":4200,"ts":"..."}
+{"event":"finish","cleaner_id":"editor-vscode","status":"ok","files_deleted":42,"bytes_freed":12345678,"files_candidate":0,"bytes_candidate":0,"duration_ms":83,"ts":"..."}
+{"event":"summary","cleaners_run":12,"bytes_freed":987654321,"files_candidate":0,"bytes_candidate":0,"metrics_incomplete":false,"unmeasured_cleaners":[],"duration_ms":4200,"ts":"..."}
 ```
 
-每种事件类型只输出该类型相关的字段——无填充、schema 稳定、消费方友好。
+实跑时 files_deleted/bytes_freed 只计实际删除。dry-run 输出 dry_run: true，实际删除字段仍为零；候选写入 files_candidate/bytes_candidate。外部工具或目录大小无法精确测量时，置 metrics_incomplete 并列出 unmeasured_cleaners。每种事件只输出自身字段，schema 稳定。
 
 </details>
 
@@ -248,12 +270,17 @@ Beav v1 故意保持窄。下面这些已记入 v1.x 路线：
 - **`beav prune-kernels`** — 清旧内核会动 `/boot` 和包数据库，需要专门的强确认流程。
 - **`beav prune-volumes`** — Docker / Podman volume 是持久化数据，不是缓存；而且 `docker volume prune` 不支持 `--filter until=`，需要基于 inspect 的专用 executor。
 - **`beav prune-recents`** — 重写 `~/.local/share/recently-used.xbel` 需要 `transform` executor 类型，含备份 + 原子替换。
-- **Flatpak / Snap / AppImage** — 沙箱语义需要单独打磨。
+- **GitHub Actions cache** — 属远端状态，绝不触碰。
+- **全量 Downloads** — 仅支持专用单层 partial-download profile，generic paths 不得指向 Downloads。
+- **Nix generations** — `sys-nix-gc` 只走 native GC，不传 generation-deletion 参数。
+- **Conda package 目录 / `force-pkgs-dirs`** — Conda profile 仅清 index cache、tarballs、logfiles。
+- **Ollama、ModelScope、macOS 行为、目标 home 外的用户 cache root** — 明确不支持。
+- **Snap / AppImage** — 沙箱语义待独立设计；Flatpak 仅有固定 user/system profile。
 - **`beav status` / `beav optimize`** — 用 `btop`、`htop`、`systemctl` 即可，不重复造轮子。
 
 ## 🤝 贡献
 
-加新清理项很容易——把 YAML 丢进 `cleaners/user/`（或 `cleaners/system/`）开 PR 即可。schema 见 [docs/superpowers/specs/2026-04-26-beav-design.md §5.1](docs/superpowers/specs/2026-04-26-beav-design.md)。提交前请确保 `go test ./...` 与 `golangci-lint run ./...` 通过。新增 executor 类型（`paths / command / journal_vacuum / pkg_cache / container_prune` 之外）需先经过设计讨论。
+加新清理项很容易——把 YAML 放进 `~/.config/beav/cleaners.d/`。可用 `paths`、`journal_vacuum`、`pkg_cache`、`container_prune`；`command` 已拒绝，`tool_prune`、`debris`、`managed_cache` 仅接受已知内置 profile。schema 见 [docs/superpowers/specs/2026-04-26-beav-design.md §5.1](docs/superpowers/specs/2026-04-26-beav-design.md)。提交前请确保 `go test ./...` 与 `golangci-lint run ./...` 通过。
 
 ## 📖 文档
 

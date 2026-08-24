@@ -1,0 +1,100 @@
+- id: desktop-download-partials
+  name: Incomplete Downloads files
+  description: Remove only old, single-link interrupted download sidecars
+  scope: user
+  type: debris
+  impact: safe
+  enabled: true
+  min_age_days: 1
+  debris: { profile: desktop-download-partials }
+  tags: [desktop, debris]
+- id: ai-huggingface-incomplete
+  name: Incomplete Hugging Face artifacts
+  description: Remove old incomplete artifacts after lock and open-file checks
+  scope: user
+  type: debris
+  impact: safe
+  enabled: true
+  min_age_days: 1
+  debris: { profile: ai-huggingface-incomplete }
+  tags: [ai, debris]
+- id: python-ruff-cache
+  name: Ruff cache debris
+  description: Clean only an explicit RUFF_CACHE_DIR beneath target home
+  scope: user
+  type: debris
+  impact: safe
+  enabled: true
+  min_age_days: 14
+  debris: { profile: python-ruff-cache }
+  tags: [python, debris]
+- id: python-mypy-cache
+  name: mypy cache debris
+  description: Clean only an explicit MYPY_CACHE_DIR beneath target home
+  scope: user
+  type: debris
+  impact: safe
+  enabled: true
+  min_age_days: 14
+  debris: { profile: python-mypy-cache }
+  tags: [python, debris]
+- id: python-pyinstaller-cache
+  name: PyInstaller cache debris
+  description: Clean PyInstaller's fixed XDG cache root
+  scope: user
+  type: debris
+  impact: safe
+  enabled: true
+  min_age_days: 14
+  debris: { profile: python-pyinstaller-cache }
+  tags: [python, debris]
+- id: gpu-nvidia-compute-cache
+  name: NVIDIA compute cache debris
+  description: Clean old NVIDIA compute cache entries with process guards
+  scope: user
+  type: debris
+  impact: safe
+  enabled: true
+  min_age_days: 7
+  debris: { profile: gpu-nvidia-compute-cache }
+  tags: [gpu, debris]
+- id: gpu-triton-cache
+  name: Triton cache debris
+  description: Clean old Triton cache entries with process guards
+  scope: user
+  type: debris
+  impact: safe
+  enabled: true
+  min_age_days: 7
+  debris: { profile: gpu-triton-cache }
+  tags: [gpu, debris]
+- id: gpu-torch-inductor-cache
+  name: TorchInductor cache debris
+  description: Clean old TorchInductor cache entries with process guards
+  scope: user
+  type: debris
+  impact: safe
+  enabled: true
+  min_age_days: 7
+  debris: { profile: gpu-torch-inductor-cache }
+  tags: [gpu, debris]
+- id: cloud-gcloud-logs
+  name: gcloud log debris
+  description: Clean old gcloud logs at the fixed target-home root
+  scope: user
+  type: debris
+  impact: safe
+  enabled: true
+  min_age_days: 30
+  debris: { profile: cloud-gcloud-logs }
+  tags: [cloud, logs, debris]
+- id: cloud-azure-logs
+  name: Azure log debris
+  description: Clean old Azure logs at the fixed target-home root
+  scope: user
+  type: debris
+  impact: safe
+  enabled: true
+  min_age_days: 30
+  debris: { profile: cloud-azure-logs }
+  tags: [cloud, logs, debris]

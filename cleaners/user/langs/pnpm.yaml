@@ -1,7 +1,10 @@
 - id: lang-pnpm
-  name: pnpm store
+  name: pnpm store prune
+  description: Native pnpm store garbage collection with a closed profile
   scope: user
-  type: paths
+  type: tool_prune
+  impact: safe
+  enabled: true
   min_age_days: 14
-  path_resolvers: [{ resolver: pnpm_store }]
-  tags: [langs, js]
+  tool_prune: { profile: lang-pnpm }
+  tags: [langs, js, tools]

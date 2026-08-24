@@ -4,9 +4,12 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/dengqi/beav/internal/cleaner/engine"
 	"github.com/dengqi/beav/internal/cleaner/model"
 	uicli "github.com/dengqi/beav/internal/ui/cli"
 )
@@ -64,6 +67,15 @@ func TestCleanCommandExposesIncludeHeavyFlag(t *testing.T) {
 	if cmd.Flags().Lookup("include-heavy") == nil {
 		t.Fatal("missing --include-heavy flag")
 	}
+	if usage := cmd.Flags().Lookup("include-heavy").Usage; !strings.Contains(usage, "explicit") {
+		t.Fatalf("heavy help must explain explicit authorization: %q", usage)
+	}
+	if usage := cmd.Flags().Lookup("only").Usage; !strings.Contains(usage, "exact full") {
+		t.Fatalf("--only help must explain exact full-ID heavy authorization: %q", usage)
+	}
+	if usage := cmd.Flags().Lookup("yes").Usage; !strings.Contains(usage, "does not authorize heavy") {
+		t.Fatalf("--yes help must state that it does not authorize heavy: %q", usage)
+	}
 }
 
 func TestValidateCleanersForRunRejectsInvalidUnselectedCleaner(t *testing.T) {
@@ -74,5 +86,51 @@ func TestValidateCleanersForRunRejectsInvalidUnselectedCleaner(t *testing.T) {
 	err := validateCleanersForRun(cleaners, model.ScopeUser, t.TempDir(), CleanFlags{Only: []string{"valid"}})
 	if err == nil || !strings.Contains(err.Error(), "bad-command") {
 		t.Fatalf("err = %v, want invalid unselected cleaner error", err)
+	}
+}
+
+func TestCleanEngineRegistersClosedExecutors(t *testing.T) {
+	home := t.TempDir()
+	eng := newCleanEngine(home, os.Getuid(), nil)
+	cases := []model.Cleaner{
+		{ID: "tool", Scope: model.ScopeUser, Type: model.TypeToolPrune, ToolPrune: &model.ToolPruneCfg{Profile: "lang-uv"}},
+		{ID: "debris", Scope: model.ScopeUser, Type: model.TypeDebris, Debris: &model.DebrisCfg{Profile: "python-ruff-cache"}},
+		{ID: "managed", Scope: model.ScopeUser, Type: model.TypeManagedCache, ManagedCache: &model.ManagedCacheCfg{Profile: "ai-torch-hub"}},
+	}
+	for _, cleaner := range cases {
+		t.Run(string(cleaner.Type), func(t *testing.T) {
+			var events []model.Event
+			result, err := eng.Run(context.Background(), []model.Cleaner{cleaner}, engine.Options{
+				Scope:   model.ScopeUser,
+				Emitter: func(event model.Event) { events = append(events, event) },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.CleanersErrored != 0 {
+				t.Fatalf("registered executor errored: %+v events=%+v", result, events)
+			}
+			for _, event := range events {
+				if event.Event == model.EvError && event.Reason == "internal" {
+					t.Fatalf("executor missing for %q: %+v", cleaner.Type, events)
+				}
+			}
+		})
+	}
+}
+
+func TestConfigShowListsClosedExecutorTypes(t *testing.T) {
+	var out bytes.Buffer
+	cmd := NewRootCmd("test", "test", "test")
+	cmd.SetArgs([]string{"config", "show", "--config-dir", t.TempDir()})
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, typ := range []string{"tool_prune", "debris", "managed_cache"} {
+		if !strings.Contains(out.String(), typ) {
+			t.Fatalf("cleaner listing missing %q", typ)
+		}
 	}
 }

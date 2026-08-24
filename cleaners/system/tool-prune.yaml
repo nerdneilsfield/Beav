@@ -1,0 +1,22 @@
+- id: sys-nix-gc
+  name: Nix store garbage collection
+  description: Heavy native Nix garbage collection without generation deletion
+  scope: system
+  type: tool_prune
+  impact: heavy
+  enabled: true
+  min_age_days: 30
+  needs_root: true
+  tool_prune: { profile: sys-nix-gc }
+  tags: [system, tools]
+- id: desktop-flatpak-system
+  name: System Flatpak unused refs
+  description: Heavy system-scope Flatpak unused reference cleanup
+  scope: system
+  type: tool_prune
+  impact: heavy
+  enabled: true
+  min_age_days: 30
+  needs_root: true
+  tool_prune: { profile: desktop-flatpak-system }
+  tags: [desktop, system, tools]

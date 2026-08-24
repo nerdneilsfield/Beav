@@ -23,7 +23,8 @@
 - 🦫 **Age-aware by default.** Files are deleted only after they've been untouched for *N* days. Reopen your IDE tomorrow and the cache rebuilds itself; this week's work is never at risk.
 - 🛡️ **Safety as a contract, not a vibe.** Every deletion goes through a stack of openat-anchored gates: allow-list bounds, hard-deny blacklist, no-symlink-cross, no-cross-filesystem, `.git`-tree guard, and a pre-unlink TOCTOU re-stat.
 - 🧰 **Everything is data.** Cleaners are YAML files. Built-ins are embedded in the binary; drop your own into `~/.config/beav/cleaners.d/` to extend.
-- 🐙 **Wide ecosystem coverage.** VS Code, JetBrains, Neovim, Firefox, Chromium-family, npm/pnpm/yarn/bun, pip, cargo, Go build cache, Gradle, Maven, apt/dnf/pacman/zypper, journald, Docker, Podman, helm, k9s, kubectl, minikube. Out of the box.
+- 🐙 **Wide Linux coverage.** VS Code, JetBrains, Neovim, Firefox, Chromium-family, npm/pnpm/yarn/bun, pip, uv, Conda, pre-commit, ccache, Cypress, Homebrew, Flatpak, Hugging Face, Torch, gcloud, Azure, apt/dnf/pacman/zypper, journald, Docker, Podman, helm, k9s, kubectl, minikube. Out of the box.
+- 🧱 **Closed executors.** External tools use tool_prune, artifact cleanup uses debris, and atomic managed caches use managed_cache. YAML selects a known profile; it cannot provide a command, argv, environment, or arbitrary root.
 - 🚦 **Two scopes, one binary.** `beav clean` for your home; `sudo beav clean --system` for the box; `sudo beav clean --all` for both, with bullet-proof `SUDO_USER` resolution.
 - 🎨 **Three faces.** A spinner UI in your terminal, plain text on a pipe, and JSONL events for scripts and dashboards.
 - 🚫 **No surprises.** Beav never silently calls `sudo`, never follows symlinks out of bounds, never touches `~/.ssh`, `~/.gnupg`, `~/.kube/config`, `~/.docker/config.json`, `/var/lib/{docker,containerd,kubelet}`, `/etc`, `/boot`, or `/usr`.
@@ -73,13 +74,14 @@ beav clean                           # user-scope clean
 beav clean --system                  # system-scope (refuses without root)
 beav clean --all                     # user + system (root + valid SUDO_USER)
 beav clean --dry-run                 # plan only; no deletions
-beav clean --only vscode,langs       # filter by ID prefix or tag
+beav clean --only vscode,langs       # filter by ID prefix or tag; heavy needs exact full ID
 beav clean --skip browsers           # inverse filter
 beav clean --min-age=14d             # global age override
 beav clean --min-age=langs=3d,logs=30d   # per-tag override
 beav clean --force-no-age            # enable cleaners that opt out of age filtering
 beav clean --output json             # JSONL events on stdout
-beav clean --yes                     # skip first-run dry-run hint
+beav clean --include-heavy           # authorize enabled heavy profiles
+beav clean --yes                     # skip confirmations; never authorizes heavy
 beav clean --user=alice --all        # explicit SUDO_USER override
 
 beav analyze [PATH]                  # interactive TUI disk explorer (gdu)
@@ -108,7 +110,9 @@ beav version
 | **Desktop** | Trash, thumbnail cache |
 | **Editors** | VS Code (incl. server / cpptools), JetBrains family, Neovim state |
 | **Browsers** | Firefox, Chrome, Chromium, Edge — `Cache`, `Code Cache`, `GPUCache` only (never profiles, cookies, or logins) |
-| **Languages** | npm, pnpm, yarn, bun, pip, cargo, Go build cache, Gradle, Maven |
+| **Languages & tools** | npm, pnpm, yarn, bun, pip, uv, Conda, pre-commit, ccache, Cypress, Go build cache, Gradle, Maven |
+| **Managed caches** | Hugging Face Datasets Arrow and Torch Hub checkpoints (heavy, atomic, age-gated) |
+| **AI/cloud debris** | Hugging Face incomplete artifacts, NVIDIA/Triton/TorchInductor caches, gcloud/Azure logs |
 | **Shells** | `~/.cache/zsh`, zcompdump |
 | **Kubernetes** | minikube image cache, helm, k9s, `kubectl` cache (never `~/.kube/config`) |
 | **Containers (rootless)** | Docker / Podman builder + image prune |
@@ -124,13 +128,15 @@ beav version
 |----------|---|---|
 | Browser & IDE caches | 7 | A week without a click means it's not in your active loop |
 | Package manager downloads (apt/npm/pip/yarn/bun) | 14 | Mid-conservative; cheap to redownload |
-| Build artifacts (cargo, go, gradle, maven) | 30 | Rebuild cost is real |
+| Build artifacts (go, gradle, maven, ccache) | 30 | Rebuild cost is real |
 | systemd journal | 14 | `journalctl --vacuum-time=14d` |
 | `/tmp`, `/var/tmp` | 10 | Matches systemd-tmpfiles defaults |
 | `~/.local/share/Trash` | 30 | Give yourself time to undo |
 | Container builder/image (rootful) | 14 / 30 | Aggressive on builder cache, careful with images |
 
 Override globally with `--min-age=Nd`, per tag with `--min-age=langs=3d,logs=30d`, or per cleaner ID via `~/.config/beav/config.yaml`.
+
+Closed profiles enforce their own floors: interrupted Downloads and Hugging Face artifacts are at least 24 hours old, GPU debris at least 7 days old, cloud logs and managed cache units at least 30 days old. `--min-age` cannot lower these floors.
 
 </details>
 
@@ -149,6 +155,8 @@ Beav treats deletion the way a surgeon treats incisions — every cut is checked
 6. **Per-file age filter** — `now - mtime ≥ min_age_days` is checked on **each individual file**, not the parent directory. Empty parents are removed bottom-up afterwards.
 7. **TOCTOU re-stat** — immediately before `unlinkat`, the entry is re-stat'd; any drift in `(ino, dev, size, mtim)` aborts the delete.
 8. **Process guard** — Beav scans `/proc` for `code`, `chromium`, `firefox`, `idea`, etc. — running editors and browsers stay untouched.
+9. **Heavy authorization** — heavy profiles are enabled but skipped unless `--include-heavy` is set or one `--only` selector is an exact full cleaner ID. `--yes`, `--all`, tags, and ID prefixes never authorize heavy work; `--skip` and disabled/wrong-scope state still win.
+10. **Root closure** — closed profiles resolve only fixed, target-home-bound roots (except fixed system roots such as `/nix` and `/var/lib/flatpak`); user-provided external cache roots are ignored.
 
 </details>
 
@@ -201,6 +209,20 @@ whitelist:
   - ~/.cache/keep-this
 ```
 
+Built-in closed profiles are selected by profile name, for example:
+
+```yaml
+- id: lang-uv
+  scope: user
+  type: tool_prune
+  impact: safe
+  enabled: true
+  min_age_days: 14
+  tool_prune: { profile: lang-uv }
+```
+
+`type: command` is not an arbitrary shell hook and is rejected. The old builtin `lang-cargo` cleaner was removed; define it no longer — use Cargo native garbage collection instead. No `cargo-cache` or plugin dependency is shipped.
+
 Custom cleaners live as YAML in `~/.config/beav/cleaners.d/`:
 
 <details>
@@ -235,11 +257,11 @@ beav clean --output json | jq -c 'select(.event=="finish")'
 {"event":"start","cleaner_id":"editor-vscode","name":"VS Code Cache","scope":"user","type":"paths","ts":"2026-04-27T10:00:00Z"}
 {"event":"deleted","cleaner_id":"editor-vscode","path":"/home/dq/.config/Code/Cache/x","size":4096,"ts":"..."}
 {"event":"skipped","cleaner_id":"editor-vscode","path":"/home/dq/.config/Code/Cache/y","reason":"age_too_recent","ts":"..."}
-{"event":"finish","cleaner_id":"editor-vscode","status":"ok","files_deleted":42,"bytes_freed":12345678,"duration_ms":83,"ts":"..."}
-{"event":"summary","cleaners_run":12,"bytes_freed":987654321,"duration_ms":4200,"ts":"..."}
+{"event":"finish","cleaner_id":"editor-vscode","status":"ok","files_deleted":42,"bytes_freed":12345678,"files_candidate":0,"bytes_candidate":0,"duration_ms":83,"ts":"..."}
+{"event":"summary","cleaners_run":12,"bytes_freed":987654321,"files_candidate":0,"bytes_candidate":0,"metrics_incomplete":false,"unmeasured_cleaners":[],"duration_ms":4200,"ts":"..."}
 ```
 
-Each event type emits only the fields it owns — no padding, stable schema, easy to consume.
+For a real run, files_deleted/bytes_freed count actual deletion only. In dry-run output, dry_run is true and actual deletion fields remain zero; candidates appear in files_candidate/bytes_candidate. Native-tool or directory-size gaps set metrics_incomplete and list cleaner IDs in unmeasured_cleaners. Each event type emits only the fields it owns — stable schema, easy to consume.
 
 </details>
 
@@ -250,12 +272,17 @@ Beav v1 is intentionally narrow. The following are filed as v1.x:
 - **`beav prune-kernels`** — old-kernel removal touches `/boot` and the package DB; needs its own confirmation UX.
 - **`beav prune-volumes`** — Docker/Podman volumes are persistent state, not cache. `docker volume prune` doesn't even support `--filter until=`, so a proper inspect-based executor is required.
 - **`beav prune-recents`** — rewriting `~/.local/share/recently-used.xbel` would need a `transform` executor type with backup + atomic-replace.
-- **Flatpak / Snap / AppImage** — sandboxed semantics need careful design.
+- **GitHub Actions cache** — remote state is never touched.
+- **Full Downloads cleanup** — only the dedicated one-level partial-download profile exists; generic paths cleaners cannot target Downloads.
+- **Nix generations** — `sys-nix-gc` runs native garbage collection without generation-deletion flags.
+- **Conda package directories / `force-pkgs-dirs`** — Conda profile is limited to index cache, tarballs, and logfiles.
+- **Ollama, ModelScope, macOS behavior, and user cache roots outside target home** — intentionally unsupported.
+- **Snap / AppImage** — sandboxed semantics need separate design; Flatpak has fixed user/system profiles only.
 - **`beav status` / `beav optimize`** — out of scope; use `btop`, `htop`, `systemctl`.
 
 ## 🤝 Contributing
 
-Custom cleaners are easy to add — drop a YAML in `cleaners/user/` (or `cleaners/system/`) and open a PR. The schema lives in [docs/superpowers/specs/2026-04-26-beav-design.md §5.1](docs/superpowers/specs/2026-04-26-beav-design.md). Make sure `go test ./...` and `golangci-lint run ./...` are green. New executor types (anything beyond `paths / command / journal_vacuum / pkg_cache / container_prune`) require a design discussion first.
+Custom cleaners are easy to add — drop a YAML in `~/.config/beav/cleaners.d/`. Use `paths`, `journal_vacuum`, `pkg_cache`, or `container_prune`; `command` is rejected, and `tool_prune`, `debris`, and `managed_cache` accept only known built-in profiles. The schema lives in [docs/superpowers/specs/2026-04-26-beav-design.md §5.1](docs/superpowers/specs/2026-04-26-beav-design.md). Make sure `go test ./...` and `golangci-lint run ./...` are green.
 
 ## 📖 Docs
 

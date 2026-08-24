@@ -1,0 +1,120 @@
+- id: pkg-homebrew
+  name: Homebrew cache cleanup
+  description: Native brew cleanup for stale package downloads and formula cache
+  scope: user
+  type: tool_prune
+  impact: safe
+  enabled: true
+  min_age_days: 14
+  tool_prune: { profile: pkg-homebrew }
+  tags: [pkg, tools]
+- id: lang-uv
+  name: uv cache prune
+  description: Native uv cache garbage collection
+  scope: user
+  type: tool_prune
+  impact: safe
+  enabled: true
+  min_age_days: 14
+  tool_prune: { profile: lang-uv }
+  tags: [langs, python, tools]
+- id: dev-pre-commit
+  name: pre-commit cache garbage collection
+  description: Native pre-commit repository garbage collection
+  scope: user
+  type: tool_prune
+  impact: safe
+  enabled: true
+  min_age_days: 30
+  tool_prune: { profile: dev-pre-commit }
+  tags: [dev, tools]
+- id: lang-conda
+  name: Conda index and archive cleanup
+  description: Native Conda cleanup limited to index cache, tarballs, and logfiles
+  scope: user
+  type: tool_prune
+  impact: safe
+  enabled: true
+  min_age_days: 14
+  tool_prune: { profile: lang-conda }
+  tags: [langs, python, tools]
+- id: test-cypress
+  name: Cypress cache prune
+  description: Native Cypress cache pruning
+  scope: user
+  type: tool_prune
+  impact: safe
+  enabled: true
+  min_age_days: 7
+  tool_prune: { profile: test-cypress }
+  tags: [test, tools]
+- id: build-ccache
+  name: ccache cleanup
+  description: Native ccache cleanup
+  scope: user
+  type: tool_prune
+  impact: safe
+  enabled: true
+  min_age_days: 30
+  tool_prune: { profile: build-ccache }
+  tags: [build, tools]
+- id: ai-huggingface-prune
+  name: Hugging Face cache prune
+  description: Heavy native Hugging Face cache pruning with explicit target cache
+  scope: user
+  type: tool_prune
+  impact: heavy
+  enabled: true
+  min_age_days: 30
+  tool_prune: { profile: ai-huggingface-prune }
+  tags: [ai, tools]
+- id: dev-mise
+  name: mise cache prune
+  description: Heavy native mise cache pruning
+  scope: user
+  type: tool_prune
+  impact: heavy
+  enabled: true
+  min_age_days: 30
+  tool_prune: { profile: dev-mise }
+  tags: [dev, tools]
+- id: lang-corepack
+  name: Corepack cache cleanup
+  description: Heavy native Corepack cache cleanup
+  scope: user
+  type: tool_prune
+  impact: heavy
+  enabled: true
+  min_age_days: 30
+  tool_prune: { profile: lang-corepack }
+  tags: [langs, js, tools]
+- id: desktop-flatpak-user
+  name: User Flatpak unused refs
+  description: Heavy user-scope Flatpak unused reference cleanup
+  scope: user
+  type: tool_prune
+  impact: heavy
+  enabled: true
+  min_age_days: 30
+  tool_prune: { profile: desktop-flatpak-user }
+  tags: [desktop, tools]
+- id: lang-poetry-cache
+  name: Poetry cache cleanup
+  description: Heavy native Poetry cache cleanup
+  scope: user
+  type: tool_prune
+  impact: heavy
+  enabled: true
+  min_age_days: 30
+  tool_prune: { profile: lang-poetry-cache }
+  tags: [langs, python, tools]
+- id: test-playwright-browsers
+  name: Playwright browser cleanup
+  description: Heavy cleanup through the installed Playwright binary only
+  scope: user
+  type: tool_prune
+  impact: heavy
+  enabled: true
+  min_age_days: 30
+  tool_prune: { profile: test-playwright-browsers }
+  tags: [test, tools]
