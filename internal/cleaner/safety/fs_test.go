@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // TestWalkSkipsSymlinks verifies that the walker does not follow symbolic links.
@@ -66,6 +68,121 @@ func TestReStatBeforeUnlinkDetectsChange(t *testing.T) {
 	}
 	if w.UnlinkIfUnchanged(got) == nil {
 		t.Fatal("expected ErrChanged after content modification")
+	}
+}
+
+// TestReStatBeforeUnlinkDetectsCtimeChange verifies that metadata changes are
+// detected even when size and mtime remain unchanged.
+func TestReStatBeforeUnlinkDetectsCtimeChange(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "f")
+	if err := os.WriteFile(p, []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w, err := OpenWalker(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	var captured Entry
+	if err := w.Walk(func(e Entry) {
+		if e.IsRegular() {
+			captured = e
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.UnlinkIfUnchanged(captured); !errors.Is(err, ErrChanged) {
+		t.Fatalf("want ErrChanged after ctime change, got %v", err)
+	}
+	if _, err := os.Stat(p); err != nil {
+		t.Fatalf("file should remain after ctime race: %v", err)
+	}
+}
+
+// TestReStatBeforeUnlinkRejectsHardlinks verifies that a candidate with more
+// than one link is never removed.
+func TestReStatBeforeUnlinkRejectsHardlinks(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "f")
+	link := filepath.Join(root, "f.link")
+	if err := os.WriteFile(p, []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w, err := OpenWalker(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	var captured Entry
+	if err := w.Walk(func(e Entry) {
+		if e.RelPath == "f" {
+			captured = e
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(p, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.UnlinkIfUnchanged(captured); !errors.Is(err, ErrChanged) {
+		t.Fatalf("want ErrChanged after nlink change, got %v", err)
+	}
+	if _, err := os.Stat(p); err != nil {
+		t.Fatalf("hardlinked file should remain: %v", err)
+	}
+}
+
+// TestOpenDescriptorMatchesUsesDeviceAndInode verifies that an open descriptor
+// is detected even when its pathname is outside the inspected root.
+func TestOpenDescriptorMatchesUsesDeviceAndInode(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "f")
+	if err := os.WriteFile(p, []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var st unix.Stat_t
+	if err := unix.Fstat(int(f.Fd()), &st); err != nil {
+		t.Fatal(err)
+	}
+	procRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(procRoot, "123", "fd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(p, filepath.Join(procRoot, "123", "fd", "7")); err != nil {
+		t.Fatal(err)
+	}
+	busy, err := OpenDescriptorMatches(root, uint64(st.Dev), uint64(st.Ino), procRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !busy {
+		t.Fatal("open descriptor should be detected")
+	}
+}
+
+// TestOpenDescriptorMatchesFailsClosedOnProcReadError verifies that an
+// unreadable proc tree returns an error for conservative callers.
+func TestOpenDescriptorMatchesFailsClosedOnProcReadError(t *testing.T) {
+	root := t.TempDir()
+	procRoot := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(procRoot, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	busy, err := OpenDescriptorMatches(root, 1, 1, procRoot)
+	if err == nil {
+		t.Fatal("expected proc read error")
+	}
+	if busy {
+		t.Fatal("error result should not claim a confirmed descriptor")
 	}
 }
 

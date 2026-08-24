@@ -32,7 +32,7 @@ func TestBlacklisted(t *testing.T) {
 		"/", "/etc", "/boot", "/usr", "/usr/lib",
 		"/home/other/.cache",
 		"/home/u",
-		"/home/u/Documents", "/home/u/.ssh", "/home/u/.gnupg",
+		"/home/u/Documents", "/home/u/Downloads", "/home/u/.ssh", "/home/u/.gnupg",
 		"/home/u/.docker/config.json", "/home/u/.kube/config",
 		"/var/lib/docker", "/var/lib/containerd", "/var/lib/kubelet",
 	} {

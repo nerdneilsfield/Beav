@@ -62,7 +62,7 @@ func (e Entry) IsRegular() bool { return (e.stat.Mode & unix.S_IFMT) == unix.S_I
 
 // IsDir returns true if the entry is a directory.
 // IsDir 如果条目是目录则返回 true。
-func (e Entry) IsDir() bool     { return (e.stat.Mode & unix.S_IFMT) == unix.S_IFDIR }
+func (e Entry) IsDir() bool { return (e.stat.Mode & unix.S_IFMT) == unix.S_IFDIR }
 
 // IsSymlink returns true if the entry is a symbolic link.
 // IsSymlink 如果条目是符号链接则返回 true。
@@ -70,15 +70,27 @@ func (e Entry) IsSymlink() bool { return (e.stat.Mode & unix.S_IFMT) == unix.S_I
 
 // Size returns the size of the entry in bytes.
 // Size 返回条目的大小（以字节为单位）。
-func (e Entry) Size() int64     { return e.stat.Size }
+func (e Entry) Size() int64 { return e.stat.Size }
 
 // Mtime returns the modification time of the entry as a Unix timestamp.
 // Mtime 返回条目的修改时间（Unix 时间戳）。
-func (e Entry) Mtime() int64    { return int64(e.stat.Mtim.Sec) }
+func (e Entry) Mtime() int64 { return int64(e.stat.Mtim.Sec) }
 
 // Ctime returns the change time of the entry as a Unix timestamp.
 // Ctime 返回条目的状态变更时间（Unix 时间戳）。
-func (e Entry) Ctime() int64    { return int64(e.stat.Ctim.Sec) }
+func (e Entry) Ctime() int64 { return int64(e.stat.Ctim.Sec) }
+
+// Dev returns the device number captured for the entry.
+func (e Entry) Dev() uint64 { return uint64(e.stat.Dev) }
+
+// Ino returns the inode number captured for the entry.
+func (e Entry) Ino() uint64 { return uint64(e.stat.Ino) }
+
+// Nlink returns the captured hard-link count.
+func (e Entry) Nlink() uint64 { return uint64(e.stat.Nlink) }
+
+// UID returns the captured owner user ID.
+func (e Entry) UID() uint32 { return e.stat.Uid }
 
 // Walker provides safe filesystem traversal anchored at a root directory.
 // Walker 提供以根目录为锚点的安全文件系统遍历功能。
@@ -229,8 +241,10 @@ func (w *Walker) UnlinkIfUnchanged(e Entry) error {
 	if cur.Dev != w.rootDev {
 		return ErrCrossFS
 	}
-	if cur.Ino != e.stat.Ino || cur.Dev != e.stat.Dev || cur.Size != e.stat.Size ||
-		cur.Mtim.Sec != e.stat.Mtim.Sec || cur.Mtim.Nsec != e.stat.Mtim.Nsec {
+	if (cur.Mode&unix.S_IFMT) != unix.S_IFREG || cur.Nlink != 1 || cur.Ino != e.stat.Ino || cur.Dev != e.stat.Dev ||
+		cur.Size != e.stat.Size || cur.Nlink != e.stat.Nlink ||
+		cur.Mtim.Sec != e.stat.Mtim.Sec || cur.Mtim.Nsec != e.stat.Mtim.Nsec ||
+		cur.Ctim.Sec != e.stat.Ctim.Sec || cur.Ctim.Nsec != e.stat.Ctim.Nsec {
 		return ErrChanged
 	}
 	return unix.Unlinkat(parentFD, leaf, 0)
