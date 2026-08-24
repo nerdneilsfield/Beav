@@ -54,5 +54,8 @@ func (w *Whitelist) Intersects(path string) bool {
 }
 
 func pathPrefix(path, prefix string) bool {
+	if prefix == string(filepath.Separator) {
+		return filepath.IsAbs(path)
+	}
 	return path == prefix || strings.HasPrefix(path, prefix+string(filepath.Separator))
 }

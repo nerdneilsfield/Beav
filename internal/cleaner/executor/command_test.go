@@ -82,3 +82,69 @@ func TestRunCommandKillsCompleteProcessGroupOnTimeout(t *testing.T) {
 	}
 	t.Fatalf("child process %d survived process-group kill", pid)
 }
+
+func TestRunCommandDrainsDescendantPipesAfterCancellation(t *testing.T) {
+	home := t.TempDir()
+	script := filepath.Join(t.TempDir(), "orphan-pipes")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 30 &\necho $! > \"$HOME/child.pid\"\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		result <- RunCommand(context.Background(), CommandRun{
+			Executable: script,
+			Env:        []string{"HOME=" + home, "PATH=/bin:/usr/bin"},
+			Cwd:        home,
+			Timeout:    50 * time.Millisecond,
+		})
+	}()
+	var pid int
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+		data, err := os.ReadFile(filepath.Join(home, "child.pid"))
+		if err == nil {
+			if _, scanErr := fmt.Sscanf(string(data), "%d", &pid); scanErr != nil {
+				t.Fatal(scanErr)
+			}
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if pid > 0 {
+		defer unix.Kill(pid, unix.SIGKILL)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("error = %v, want deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RunCommand hung while descendant retained stdout/stderr")
+	}
+}
+
+func TestRunCommandDisablesPrivilegeGainBeforeExec(t *testing.T) {
+	home := t.TempDir()
+	script := filepath.Join(t.TempDir(), "status")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nwhile IFS=: read -r key value; do case \"$key\" in NoNewPrivs|CapAmb) printf '%s=%s\\n' \"$key\" \"$value\" >> \"$HOME/status\";; esac; done < /proc/self/status\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunCommand(context.Background(), CommandRun{
+		Executable: script,
+		Env:        []string{"HOME=" + home, "PATH=/bin:/usr/bin"},
+		Cwd:        home,
+		Timeout:    time.Second,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, "status"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := string(data)
+	if !strings.Contains(status, "NoNewPrivs=\t1") {
+		t.Fatalf("status = %q, want NoNewPrivs=1", status)
+	}
+	if !strings.Contains(status, "CapAmb=\t0000000000000000") {
+		t.Fatalf("status = %q, want empty ambient capability set", status)
+	}
+}

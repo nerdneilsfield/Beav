@@ -3,12 +3,14 @@ package executor
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -100,71 +102,163 @@ func RunCommand(ctx context.Context, r CommandRun) error {
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 
-	cmd := exec.Command(executable, argv[1:]...) // #nosec G204 -- executable and argv come from closed built-in profiles.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if identity := commandIdentity(r); identity != nil {
-		cmd.SysProcAttr.Credential = &syscall.Credential{
-			Uid:    identity.UID,
-			Gid:    identity.GID,
-			Groups: append([]uint32(nil), identity.Groups...),
-		}
-	}
-	if r.Cwd != "" {
-		cmd.Dir = r.Cwd
-	}
 	env := r.Env
 	if env == nil {
 		env = r.Environment
 	}
 	if env != nil {
-		cmd.Env = append([]string(nil), env...)
+		env = append([]string(nil), env...)
+	} else {
+		env = os.Environ()
 	}
 	devNull, err := os.OpenFile("/dev/null", os.O_RDONLY, 0)
 	if err != nil {
 		return fmt.Errorf("open /dev/null: %w", err)
 	}
 	defer devNull.Close()
+	stdout, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	stderr, stderrWriter, err := os.Pipe()
+	if err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		return err
+	}
+	payload := commandHelperPayload{
+		Executable: executable,
+		Argv:       append([]string(nil), argv...),
+		Env:        env,
+		Cwd:        r.Cwd,
+		Identity:   commandIdentity(r),
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
+		return fmt.Errorf("encode command helper payload: %w", err)
+	}
+	payloadReader, payloadWriter, err := os.Pipe()
+	if err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
+		return err
+	}
+	if _, err := payloadWriter.Write(payloadBytes); err != nil {
+		_ = payloadReader.Close()
+		_ = payloadWriter.Close()
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
+		return fmt.Errorf("write command helper payload: %w", err)
+	}
+	if err := payloadWriter.Close(); err != nil {
+		_ = payloadReader.Close()
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
+		return fmt.Errorf("close command helper payload: %w", err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		_ = payloadReader.Close()
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
+		return fmt.Errorf("resolve command helper: %w", err)
+	}
+	cmd := exec.Command(self, "--beav-command-helper") // #nosec G204 -- self executable enters private helper mode.
+	cmd.Env = []string{commandHelperEnv + "=1"}
+	cmd.ExtraFiles = []*os.File{payloadReader}
 	cmd.Stdin = devNull
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
+		_ = payloadReader.Close()
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
 		return err
 	}
-	done := make(chan struct{}, 2)
+	_ = payloadReader.Close()
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
+	drainResults := make(chan drainResult, 2)
 	go func() {
-		drain(stdout, r.OnStdout)
-		done <- struct{}{}
+		drainResults <- drainResult{stream: "stdout", err: drain(stdout, r.OnStdout)}
 	}()
 	go func() {
-		drain(stderr, r.OnStderr)
-		done <- struct{}{}
+		drainResults <- drainResult{stream: "stderr", err: drain(stderr, r.OnStderr)}
 	}()
 	wait := make(chan error, 1)
 	go func() { wait <- cmd.Wait() }()
 	var timedOut bool
-	select {
-	case err = <-wait:
-	case <-ctx.Done():
-		timedOut = errors.Is(ctx.Err(), context.DeadlineExceeded)
-		killProcessGroup(cmd.Process.Pid)
-		err = <-wait
+	var canceled bool
+	var waitErr error
+	var waitReceived bool
+	var drainErrors []error
+	var drainsReceived int
+	ctxDone := ctx.Done()
+	var killErr error
+	var closeOnce sync.Once
+	closePipes := func() {
+		closeOnce.Do(func() {
+			_ = stdout.Close()
+			_ = stderr.Close()
+		})
 	}
-	<-done
-	<-done
+	for !waitReceived || drainsReceived < 2 {
+		select {
+		case waitErr = <-wait:
+			waitReceived = true
+		case result := <-drainResults:
+			drainsReceived++
+			if result.err != nil {
+				drainErrors = append(drainErrors, fmt.Errorf("%s drain: %w", result.stream, result.err))
+			}
+		case <-ctxDone:
+			canceled = true
+			timedOut = errors.Is(ctx.Err(), context.DeadlineExceeded)
+			ctxDone = nil
+			killErr = killProcessGroup(cmd.Process.Pid)
+			closePipes()
+		}
+	}
+	closePipes()
 	if timedOut {
-		return fmt.Errorf("timeout after %s: %w", r.Timeout, context.DeadlineExceeded)
+		return commandTerminationError(fmt.Errorf("timeout after %s: %w", r.Timeout, context.DeadlineExceeded), killErr, drainErrors)
 	}
-	if ctx.Err() != nil {
-		return ctx.Err()
+	if canceled {
+		return commandTerminationError(ctx.Err(), killErr, drainErrors)
 	}
-	return err
+	return commandTerminationError(waitErr, nil, drainErrors)
+}
+
+type drainResult struct {
+	stream string
+	err    error
+}
+
+func commandTerminationError(commandErr, killErr error, drainErrors []error) error {
+	errs := make([]error, 0, 2+len(drainErrors))
+	if commandErr != nil {
+		errs = append(errs, commandErr)
+	}
+	if killErr != nil {
+		errs = append(errs, fmt.Errorf("kill process group: %w", killErr))
+	}
+	errs = append(errs, drainErrors...)
+	return errors.Join(errs...)
 }
 
 func commandArgv(r CommandRun) ([]string, string, error) {
@@ -203,26 +297,32 @@ func commandIdentity(r CommandRun) *CommandIdentity {
 	return r.TargetIdentity
 }
 
-func killProcessGroup(pid int) {
+func killProcessGroup(pid int) error {
 	if pid <= 0 {
-		return
+		return errors.New("invalid process group PID")
 	}
-	if err := unix.Kill(-pid, unix.SIGKILL); err != nil && !errors.Is(err, unix.ESRCH) {
-		_ = unix.Kill(pid, unix.SIGKILL)
+	if err := unix.Kill(-pid, unix.SIGKILL); err == nil || errors.Is(err, unix.ESRCH) {
+		return nil
+	} else {
+		if fallbackErr := unix.Kill(pid, unix.SIGKILL); fallbackErr != nil && !errors.Is(fallbackErr, unix.ESRCH) {
+			return fmt.Errorf("group kill %v; process kill: %w", err, fallbackErr)
+		}
 	}
+	return nil
 }
 
 // drain reads from a reader line by line, passing each line to the callback function.
 // drain 逐行从读取器读取，将每一行传递给回调函数。
-func drain(r io.Reader, fn func(string)) {
+func drain(r io.Reader, fn func(string)) error {
 	if fn == nil {
-		_, _ = io.Copy(io.Discard, r)
-		return
+		_, err := io.Copy(io.Discard, r)
+		return err
 	}
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		fn(scanner.Text())
 	}
+	return scanner.Err()
 }
 
 // emitFinish emits a finish event with the given status and error count.

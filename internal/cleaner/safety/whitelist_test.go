@@ -16,3 +16,12 @@ func TestWhitelistMatches(t *testing.T) {
 		t.Error()
 	}
 }
+
+func TestWhitelistIntersectsRootPrefix(t *testing.T) {
+	w := NewWhitelist([]string{"/"})
+	for _, path := range []string{"/", "/tmp", "/home/u/cache"} {
+		if !w.Intersects(path) {
+			t.Fatalf("Intersects(%q) = false, root keep prefix must intersect", path)
+		}
+	}
+}
