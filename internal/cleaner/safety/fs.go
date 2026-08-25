@@ -105,14 +105,18 @@ func (e Entry) Size() int64 { return e.stat.Size }
 func (e Entry) Mtime() int64 { return int64(e.stat.Mtim.Sec) }
 
 // MtimeTime returns the full-precision modification time of the entry.
-func (e Entry) MtimeTime() time.Time { return time.Unix(e.stat.Mtim.Sec, e.stat.Mtim.Nsec) }
+func (e Entry) MtimeTime() time.Time {
+	return time.Unix(int64(e.stat.Mtim.Sec), int64(e.stat.Mtim.Nsec))
+}
 
 // Ctime returns the change time of the entry as a Unix timestamp.
 // Ctime 返回条目的状态变更时间（Unix 时间戳）。
 func (e Entry) Ctime() int64 { return int64(e.stat.Ctim.Sec) }
 
 // CtimeTime returns the full-precision change time of the entry.
-func (e Entry) CtimeTime() time.Time { return time.Unix(e.stat.Ctim.Sec, e.stat.Ctim.Nsec) }
+func (e Entry) CtimeTime() time.Time {
+	return time.Unix(int64(e.stat.Ctim.Sec), int64(e.stat.Ctim.Nsec))
+}
 
 // Dev returns the device number captured for the entry.
 func (e Entry) Dev() uint64 { return uint64(e.stat.Dev) }
