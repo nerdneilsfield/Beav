@@ -39,6 +39,15 @@ func TestChooseRendererAutoUsesPlainForNonTTY(t *testing.T) {
 	}
 }
 
+func TestOperationLogOnlyWritesForEffectiveTarget(t *testing.T) {
+	if !shouldWriteOperationLog(os.Geteuid()) {
+		t.Fatal("same-UID cleanup should keep operation logging")
+	}
+	if shouldWriteOperationLog(os.Geteuid() + 1) {
+		t.Fatal("cross-UID cleanup must not create root-owned state in target home")
+	}
+}
+
 // TestValidateCleanersForRunSkipsWrongScopeBeforePathValidation verifies scope-based filtering.
 // TestValidateCleanersForRunSkipsWrongScopeBeforePathValidation 验证基于范围的过滤。
 func TestValidateCleanersForRunSkipsWrongScopeBeforePathValidation(t *testing.T) {

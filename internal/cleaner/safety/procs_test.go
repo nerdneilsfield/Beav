@@ -185,3 +185,21 @@ func TestOpenDescriptorMatchesExceptFDStillFindsOtherSamePIDDescriptor(t *testin
 		t.Fatal("other same-process descriptor should remain visible")
 	}
 }
+
+func TestOpenDescriptorsMatchForUIDSkipsForeignProcessFDs(t *testing.T) {
+	procRoot := t.TempDir()
+	processRoot := filepath.Join(procRoot, "123")
+	if err := os.MkdirAll(processRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(processRoot, "fd"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	foreignUID := uint32(os.Geteuid()) + 1
+	if _, err := openDescriptorsMatchForUID(procRoot, nil, -1, -1, foreignUID); err != nil {
+		t.Fatalf("foreign process descriptors should be skipped: %v", err)
+	}
+	if _, err := openDescriptorsMatchForUID(procRoot, nil, -1, -1, uint32(os.Geteuid())); err == nil {
+		t.Fatal("target-user descriptor error must remain fail-closed")
+	}
+}

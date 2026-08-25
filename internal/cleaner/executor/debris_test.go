@@ -278,6 +278,32 @@ func TestRuffCacheDeletesOnlyWithinExplicitEnvironmentRoot(t *testing.T) {
 	}
 }
 
+func TestDebrisRejectsBlacklistedEnvironmentRoot(t *testing.T) {
+	home := t.TempDir()
+	key := filepath.Join(home, ".ssh", "id_rsa")
+	writeDebrisAged(t, key, -48*time.Hour)
+	e := NewDebrisExecutor(home, nil)
+	e.procRoot = t.TempDir()
+	e.env = func(name string) string {
+		if name == "RUFF_CACHE_DIR" {
+			return filepath.Dir(key)
+		}
+		return ""
+	}
+	c := model.Cleaner{ID: "ruff", Scope: model.ScopeUser, Type: model.TypeDebris, Debris: &model.DebrisCfg{Profile: "python-ruff-cache"}}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := e.Run(context.Background(), c, false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := os.Stat(key); err != nil {
+		t.Fatalf("blacklisted file was removed: %v", err)
+	}
+	if !hasCleanerSkip(events, "boundary_violation") {
+		t.Fatalf("blacklisted root was not rejected: %+v", events)
+	}
+}
+
 // TestGPUCacheEnforcesSevenDayFloor verifies that a CLI age lower than the
 // profile floor cannot remove recent GPU artifacts.
 func TestGPUCacheEnforcesSevenDayFloor(t *testing.T) {
@@ -325,6 +351,36 @@ func TestGPUCacheSkipsWhenOwnerProcessRuns(t *testing.T) {
 	}
 	if _, err := os.Stat(candidate); err != nil {
 		t.Fatalf("candidate should remain while owner runs: %v", err)
+	}
+}
+
+func TestGPUCacheDoesNotTreatGenericPythonAsOwner(t *testing.T) {
+	home := t.TempDir()
+	candidate := filepath.Join(home, ".triton", "cache", "kernel.bin")
+	writeDebrisAged(t, candidate, -8*24*time.Hour)
+	procRoot := t.TempDir()
+	processRoot := filepath.Join(procRoot, "123")
+	if err := os.MkdirAll(filepath.Join(processRoot, "fd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(processRoot, "comm"), []byte("python3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(processRoot, "cmdline"), []byte("python3\x00worker.py\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e := NewDebrisExecutor(home, nil)
+	e.procRoot = procRoot
+	e.env = func(string) string { return "" }
+	minAge := 0
+	c := model.Cleaner{ID: "triton", Scope: model.ScopeUser, Type: model.TypeDebris, MinAgeDays: &minAge, Debris: &model.DebrisCfg{Profile: "gpu-triton-cache"}}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := e.Run(context.Background(), c, false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := os.Stat(candidate); !os.IsNotExist(err) {
+		t.Fatalf("unrelated python process blocked GPU cache cleanup: %v, events=%+v", err, events)
 	}
 }
 

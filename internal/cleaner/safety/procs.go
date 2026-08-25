@@ -74,7 +74,7 @@ func OpenDescriptorMatches(_ string, dev, ino uint64, procRoot string) (bool, er
 // fstat device/inode identities against candidates. It never uses descriptor
 // symlink pathnames to decide whether an object is open.
 func OpenDescriptorsMatch(procRoot string, identities []FileIdentity) (bool, error) {
-	return openDescriptorsMatch(procRoot, identities, -1)
+	return openDescriptorsMatchForUID(procRoot, identities, -1, -1, uint32(os.Geteuid()))
 }
 
 // OpenDescriptorMatchesExceptPID scans visible process descriptors while
@@ -82,14 +82,18 @@ func OpenDescriptorsMatch(procRoot string, identities []FileIdentity) (bool, err
 // across rename; excluding its own PID keeps that deliberate hold distinct
 // from an owner descriptor discovered through proc.
 func OpenDescriptorMatchesExceptPID(procRoot string, identities []FileIdentity, excludePID int) (bool, error) {
-	return openDescriptorsMatch(procRoot, identities, excludePID)
+	return openDescriptorsMatchForUID(procRoot, identities, excludePID, -1, uint32(os.Geteuid()))
 }
 
 // OpenDescriptorMatchesExceptFD scans visible descriptors while excluding one
 // deliberate descriptor held by the caller. Other descriptors from same PID
 // remain visible, so an owner descriptor cannot hide behind process identity.
 func OpenDescriptorMatchesExceptFD(procRoot string, identities []FileIdentity, excludePID, excludeFD int) (bool, error) {
-	if err := VerifyProcVisibility(procRoot, 0); err != nil {
+	return openDescriptorsMatchForUID(procRoot, identities, excludePID, excludeFD, uint32(os.Geteuid()))
+}
+
+func openDescriptorsMatchForUID(procRoot string, identities []FileIdentity, excludePID, excludeFD int, effectiveUID uint32) (bool, error) {
+	if err := VerifyProcVisibility(procRoot, effectiveUID); err != nil {
 		return false, err
 	}
 	want := make(map[FileIdentity]struct{}, len(identities))
@@ -104,11 +108,23 @@ func OpenDescriptorMatchesExceptFD(procRoot string, identities []FileIdentity, e
 		if !process.IsDir() {
 			continue
 		}
-		pid, parseErr := strconv.ParseUint(process.Name(), 10, 32)
-		if parseErr != nil {
+		pid, err := strconv.ParseUint(process.Name(), 10, 32)
+		if err != nil {
 			continue
 		}
-		fds, err := os.ReadDir(filepath.Join(procRoot, process.Name(), "fd"))
+		if excludePID >= 0 && int(pid) == excludePID && excludeFD < 0 {
+			continue
+		}
+		processRoot := filepath.Join(procRoot, process.Name())
+		inspect, err := ShouldInspectProcessFDs(processRoot, effectiveUID)
+		if err != nil {
+			return false, err
+		}
+		if !inspect {
+			continue
+		}
+		fdRoot := filepath.Join(processRoot, "fd")
+		fds, err := os.ReadDir(fdRoot)
 		if err != nil {
 			return false, err
 		}
@@ -117,46 +133,6 @@ func OpenDescriptorMatchesExceptFD(procRoot string, identities []FileIdentity, e
 			if parseErr == nil && int(pid) == excludePID && fdNumber == excludeFD {
 				continue
 			}
-			identity, err := statProcFD(filepath.Join(procRoot, process.Name(), "fd", fd.Name()))
-			if err != nil {
-				return false, err
-			}
-			if _, ok := want[identity]; ok {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}
-
-func openDescriptorsMatch(procRoot string, identities []FileIdentity, excludePID int) (bool, error) {
-	if err := VerifyProcVisibility(procRoot, 0); err != nil {
-		return false, err
-	}
-	want := make(map[FileIdentity]struct{}, len(identities))
-	for _, identity := range identities {
-		want[identity] = struct{}{}
-	}
-	processes, err := os.ReadDir(procRoot)
-	if err != nil {
-		return false, err
-	}
-	for _, process := range processes {
-		if !process.IsDir() {
-			continue
-		}
-		if _, err := strconv.ParseUint(process.Name(), 10, 32); err != nil {
-			continue
-		}
-		if excludePID >= 0 && process.Name() == strconv.Itoa(excludePID) {
-			continue
-		}
-		fdRoot := filepath.Join(procRoot, process.Name(), "fd")
-		fds, err := os.ReadDir(fdRoot)
-		if err != nil {
-			return false, err
-		}
-		for _, fd := range fds {
 			identity, err := statProcFD(filepath.Join(fdRoot, fd.Name()))
 			if err != nil {
 				return false, err
@@ -167,6 +143,22 @@ func openDescriptorsMatch(procRoot string, identities []FileIdentity, excludePID
 		}
 	}
 	return false, nil
+}
+
+// ShouldInspectProcessFDs reports whether a proc process directory belongs to
+// the effective user whose descriptors can be inspected. Root inspects all.
+func ShouldInspectProcessFDs(processRoot string, effectiveUID uint32) (bool, error) {
+	if effectiveUID == 0 {
+		return true, nil
+	}
+	var st unix.Stat_t
+	if err := unix.Stat(processRoot, &st); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return false, nil
+		}
+		return false, err
+	}
+	return st.Uid == effectiveUID, nil
 }
 
 // statProcFD opens a visible proc descriptor link and fstats the resulting

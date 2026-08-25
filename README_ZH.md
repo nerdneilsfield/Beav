@@ -146,7 +146,7 @@ Beav 把删除当成手术——每一刀都要复核两遍。
 <summary><strong>每个文件穿越的八道关卡</strong></summary>
 
 1. **加载期白名单** — 每条静态路径与 resolver fallback 都必须落在 `$HOME`、`/var/cache`、`/var/log`、`/tmp`、`/var/tmp` 之内。指向其他位置的 YAML cleaner **加载时就被拒**，而非运行时。
-2. **硬黑名单** — `/`、`/etc`、`/boot`、`/usr`、`/proc`、`/sys`、`/dev`、`/run`、`~/.ssh`、`~/.gnupg`、`~/.password-store`、`~/.docker/config.json`、`~/.kube/config`、`/var/lib/{docker,containerd,kubelet}`，以及 `~/{Documents,Desktop,Downloads,Pictures,Videos,Music}`，YAML 怎么写都不会动。
+2. **硬黑名单** — `/`、`/etc`、`/boot`、`/usr`、`/proc`、`/sys`、`/dev`、`/run`、`~/.ssh`、`~/.gnupg`、`~/.password-store`、`~/.docker/config.json`、`~/.kube/config`、`/var/lib/{docker,containerd,kubelet}`，以及 `~/{Documents,Desktop,Downloads,Pictures,Videos,Music}`，generic cleaner 即使由 YAML 指定也不会触碰。唯一例外是专用单层 Downloads profile，且只删除过期的 partial-download 后缀文件。
 3. **锚定下行** — 每条路径都从安全根（safe root）出发，逐分量 `openat` + `O_NOFOLLOW`。任何中间分量是 symlink 即拒绝。
 4. **跨文件系统守卫** — 在 root 抓取 `st_dev`，每个 entry 重新比对；挂载点直接跳过。
 5. **`.git` 守卫** — 任何含 `.git` 子项的目录视为 git 工作树，整棵子树跳过。

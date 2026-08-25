@@ -104,7 +104,7 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 	defer func() { _ = renderer.Close() }()
 
 	var log *oplog.Logger
-	if os.Getenv("BEAV_NO_OPLOG") == "" && !f.DryRun {
+	if os.Getenv("BEAV_NO_OPLOG") == "" && !f.DryRun && shouldWriteOperationLog(targetUID) {
 		logHome := home
 		if logHome == "" {
 			logHome, _ = os.UserHomeDir()
@@ -144,6 +144,10 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 	}
 	_ = stderr
 	return nil
+}
+
+func shouldWriteOperationLog(targetUID int) bool {
+	return targetUID == os.Geteuid()
 }
 
 // newCleanEngine wires all built-in executor types and binds target account

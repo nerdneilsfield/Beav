@@ -148,7 +148,7 @@ Beav treats deletion the way a surgeon treats incisions — every cut is checked
 <summary><strong>The eight gates every entry passes through</strong></summary>
 
 1. **Load-time allow-list** — every static path and every resolver fallback must lie under `$HOME`, `/var/cache`, `/var/log`, `/tmp`, or `/var/tmp`. A YAML cleaner pointing anywhere else is *refused at load*, not at runtime.
-2. **Hard blacklist** — `/`, `/etc`, `/boot`, `/usr`, `/proc`, `/sys`, `/dev`, `/run`, `~/.ssh`, `~/.gnupg`, `~/.password-store`, `~/.docker/config.json`, `~/.kube/config`, `/var/lib/{docker,containerd,kubelet}`, plus `~/{Documents,Desktop,Downloads,Pictures,Videos,Music}` are never touched, even if a YAML asks.
+2. **Hard blacklist** — `/`, `/etc`, `/boot`, `/usr`, `/proc`, `/sys`, `/dev`, `/run`, `~/.ssh`, `~/.gnupg`, `~/.password-store`, `~/.docker/config.json`, `~/.kube/config`, `/var/lib/{docker,containerd,kubelet}`, plus `~/{Documents,Desktop,Downloads,Pictures,Videos,Music}` are never touched by generic cleaners, even if YAML asks. The sole exception is the dedicated one-level Downloads profile, which removes only old partial-download suffixes.
 3. **Anchored descent** — every path is opened by walking from the safe-root with `openat` + `O_NOFOLLOW` at every component. A symlink anywhere in the path → refused.
 4. **Cross-filesystem guard** — `st_dev` is captured at the root and re-checked on every entry; mounted volumes are skipped.
 5. **`.git` guard** — any directory containing a `.git` child is treated as a working tree and skipped wholesale, including the directory itself.

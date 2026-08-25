@@ -433,6 +433,25 @@ func TestHuggingFaceBusyInspectionTreatsDeletedCacheDescriptorAsBusy(t *testing.
 	}
 }
 
+func TestDeletedDescriptorInspectionSkipsForeignProcessFDs(t *testing.T) {
+	root := t.TempDir()
+	procRoot := t.TempDir()
+	processRoot := filepath.Join(procRoot, "123")
+	if err := os.MkdirAll(processRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(processRoot, "fd"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	foreignUID := uint32(os.Geteuid()) + 1
+	if _, err := inspectDeletedDescriptorUnder(root, procRoot, foreignUID); err != nil {
+		t.Fatalf("foreign process descriptors should be skipped: %v", err)
+	}
+	if _, err := inspectDeletedDescriptorUnder(root, procRoot, uint32(os.Geteuid())); err == nil {
+		t.Fatal("target-user descriptor error must remain fail-closed")
+	}
+}
+
 // TestHuggingFaceBusyInspectionTreatsSymlinkLockMarkerAsBusy verifies lock
 // names are inspected without following symlinks, even though the walker
 // deliberately skips symlink entries.
@@ -445,6 +464,20 @@ func TestHuggingFaceBusyInspectionTreatsSymlinkLockMarkerAsBusy(t *testing.T) {
 	busy, err := inspectHuggingFaceBusy(root, t.TempDir())
 	if err != nil || !busy {
 		t.Fatalf("busy=%v err=%v, want symlink lock marker to be busy", busy, err)
+	}
+}
+
+func TestHuggingFaceBusyInspectionAllowsEmptyLocksDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".locks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	busy, err := inspectHuggingFaceBusy(root, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if busy {
+		t.Fatal("empty .locks directory should not mark cache busy")
 	}
 }
 

@@ -106,19 +106,19 @@ var debrisProfileRegistry = map[string]debrisProfile{
 		minAgeDays:  debrisGPUAgeDays,
 		resolveRoot: (*DebrisExecutor).resolveNVIDIARoot,
 		match:       anyDebrisName,
-		processes:   []string{"nvidia-persistenced", "nvidia-cuda-mps-server", "python", "python3"},
+		processes:   []string{"nvidia-persistenced", "nvidia-cuda-mps-server"},
 	},
 	"gpu-triton-cache": {
 		minAgeDays:  debrisGPUAgeDays,
 		resolveRoot: (*DebrisExecutor).resolveTritonRoot,
 		match:       anyDebrisName,
-		processes:   []string{"triton", "tritonserver", "python", "python3"},
+		processes:   []string{"triton", "tritonserver"},
 	},
 	"gpu-torch-inductor-cache": {
 		minAgeDays:  debrisGPUAgeDays,
 		resolveRoot: (*DebrisExecutor).resolveTorchInductorRoot,
 		match:       anyDebrisName,
-		processes:   []string{"torchrun", "torch_shm_manager", "python", "python3"},
+		processes:   []string{"torchrun", "torch_shm_manager"},
 	},
 	"cloud-gcloud-logs": {
 		minAgeDays:  debrisCloudAgeDays,
@@ -146,6 +146,9 @@ func (e *DebrisExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 	root, err := profile.resolveRoot(e)
 	if err != nil {
 		return e.finishDebrisSkip(emit, c, start, "root_unavailable", err.Error())
+	}
+	if c.Profile() != "desktop-download-partials" && safety.Blacklisted(root, e.Home) {
+		return e.finishDebrisSkip(emit, c, start, "boundary_violation", "debris root is blacklisted")
 	}
 	rootFD, err := e.openDebrisRoot(root)
 	if err != nil {

@@ -59,9 +59,7 @@ func TestEmbeddedRegistryContainsClosedProfiles(t *testing.T) {
 		"cloud-gcloud-logs":             {model.TypeDebris, model.ImpactSafe},
 		"cloud-azure-logs":              {model.TypeDebris, model.ImpactSafe},
 		"ai-huggingface-datasets-arrow": {model.TypeManagedCache, model.ImpactHeavy},
-		"ai-huggingface-datasets":       {model.TypeManagedCache, model.ImpactHeavy},
 		"ai-torch-hub":                  {model.TypeManagedCache, model.ImpactHeavy},
-		"ai-torch-hub-checkpoints":      {model.TypeManagedCache, model.ImpactHeavy},
 	}
 	loaded, err := registry.LoadBuiltin(cleaners.Builtin)
 	if err != nil {

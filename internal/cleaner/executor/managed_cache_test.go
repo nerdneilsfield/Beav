@@ -61,6 +61,32 @@ func TestManagedCacheDeletesCompleteNestedHuggingFaceArrowUnit(t *testing.T) {
 	}
 }
 
+func TestManagedCacheRejectsBlacklistedEnvironmentRoot(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".ssh")
+	unit := filepath.Join(root, "dataset")
+	writeManagedAged(t, filepath.Join(unit, "dataset.arrow"), -31*24*time.Hour)
+	setManagedDirAge(t, unit, -31*24*time.Hour)
+	exec := newManagedTestExecutor(t, home)
+	exec.env = func(name string) string {
+		if name == "HF_DATASETS_CACHE" {
+			return root
+		}
+		return ""
+	}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := exec.Run(context.Background(), managedCleaner("ai-huggingface-datasets-arrow", 0), false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := os.Stat(unit); err != nil {
+		t.Fatalf("blacklisted managed-cache unit was removed: %v", err)
+	}
+	if !hasCleanerSkip(events, "root_unavailable") {
+		t.Fatalf("blacklisted managed-cache root was not rejected: %+v", events)
+	}
+}
+
 func TestManagedCacheDirectoryMetricsAreMarkedIncomplete(t *testing.T) {
 	home := t.TempDir()
 	unit := filepath.Join(home, ".cache", "huggingface", "datasets", "dataset")
@@ -108,7 +134,7 @@ func TestManagedCacheEnforcesThirtyDayFloor(t *testing.T) {
 	writeManagedAged(t, unit, -29*24*time.Hour)
 
 	exec := newManagedTestExecutor(t, home)
-	c := managedCleaner("ai-torch-hub-checkpoints", 0)
+	c := managedCleaner("ai-torch-hub", 0)
 	if err := exec.Run(context.Background(), c, false, func(model.Event) {}); err != nil {
 		t.Fatal(err)
 	}
@@ -390,6 +416,31 @@ func TestManagedCacheRechecksOwnerImmediatelyBeforeRename(t *testing.T) {
 	}
 	if _, err := os.Stat(unit); err != nil {
 		t.Fatalf("owner recheck removed unit: %v", err)
+	}
+}
+
+func TestManagedCacheDoesNotTreatGenericPythonAsOwner(t *testing.T) {
+	home := t.TempDir()
+	unit := filepath.Join(home, ".cache", "torch", "hub", "checkpoints", "model.pt")
+	writeManagedAged(t, unit, -31*24*time.Hour)
+	procRoot := t.TempDir()
+	processRoot := filepath.Join(procRoot, "123")
+	if err := os.MkdirAll(filepath.Join(processRoot, "fd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(processRoot, "comm"), []byte("python3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(processRoot, "cmdline"), []byte("python3\x00worker.py\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exec := newManagedTestExecutor(t, home)
+	exec.procRoot = procRoot
+	if err := exec.Run(context.Background(), managedCleaner("ai-torch-hub", 0), false, func(model.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(unit); !os.IsNotExist(err) {
+		t.Fatalf("unrelated python process blocked managed-cache cleanup: %v", err)
 	}
 }
 
@@ -729,6 +780,23 @@ func TestManagedCacheJournalParentFsyncPrecedesRename(t *testing.T) {
 	}
 	if !synced {
 		t.Fatal("journal containing directory was not fsynced")
+	}
+}
+
+func TestEnsureManagedOwnerRepairsMismatchedOwner(t *testing.T) {
+	called := false
+	err := ensureManagedOwner(12, 0, 1000, func(fd, uid, gid int) error {
+		called = true
+		if fd != 12 || uid != 1000 || gid != -1 {
+			t.Fatalf("fchown args = (%d, %d, %d)", fd, uid, gid)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("mismatched journal owner was not repaired")
 	}
 }
 

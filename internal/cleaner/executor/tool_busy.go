@@ -10,10 +10,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func huggingFaceRootBusy(root string) (bool, error) {
-	return inspectHuggingFaceBusy(root, "/proc")
-}
-
 func inspectHuggingFaceBusy(root, procRoot string) (bool, error) {
 	w, err := safety.OpenWalker(root)
 	if err != nil {
@@ -75,7 +71,7 @@ func inspectHuggingFaceBusyFD(rootFD int, root, procRoot string) (bool, error) {
 	if closeErr != nil {
 		return false, fmt.Errorf("close cache walk: %w", closeErr)
 	}
-	deletedBusy, err := inspectDeletedDescriptorUnder(root, procRoot)
+	deletedBusy, err := inspectDeletedDescriptorUnder(root, procRoot, uint32(os.Geteuid()))
 	if err != nil {
 		return false, err
 	}
@@ -115,7 +111,7 @@ func scanHuggingFaceLockMarkers(dirFD int, rel string) (bool, error) {
 			return false, err
 		}
 		entryRel := filepath.Join(rel, name)
-		if huggingFaceLockMarker(entryRel) {
+		if st.Mode&unix.S_IFMT != unix.S_IFDIR && huggingFaceLockMarker(entryRel) {
 			return true, nil
 		}
 		if st.Mode&unix.S_IFMT != unix.S_IFDIR {
@@ -139,31 +135,14 @@ func huggingFaceLockMarker(rel string) bool {
 	parts := strings.Split(filepath.Clean(rel), string(filepath.Separator))
 	for i, part := range parts {
 		name := strings.ToLower(part)
-		if name == ".locks" || name == "locks" {
-			return true
-		}
-		if i == len(parts)-1 && (strings.HasSuffix(name, ".lock") || name == "lock") {
+		if i == len(parts)-1 && (name == ".locks" || name == "locks" || strings.HasSuffix(name, ".lock") || name == "lock") {
 			return true
 		}
 	}
 	return false
 }
 
-func inspectOpenDescriptorUnder(root, procRoot string) (bool, error) {
-	w, err := safety.OpenWalker(root)
-	if err != nil {
-		return false, err
-	}
-	fd, err := w.DupRootFD()
-	_ = w.Close()
-	if err != nil {
-		return false, err
-	}
-	defer unix.Close(fd)
-	return inspectHuggingFaceBusyFD(fd, filepath.Clean(root), procRoot)
-}
-
-func inspectDeletedDescriptorUnder(root, procRoot string) (bool, error) {
+func inspectDeletedDescriptorUnder(root, procRoot string, effectiveUID uint32) (bool, error) {
 	root = filepath.Clean(root)
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
@@ -173,7 +152,15 @@ func inspectDeletedDescriptorUnder(root, procRoot string) (bool, error) {
 		if !process.IsDir() || process.Name() == "" || process.Name()[0] < '0' || process.Name()[0] > '9' {
 			continue
 		}
-		fdRoot := filepath.Join(procRoot, process.Name(), "fd")
+		processRoot := filepath.Join(procRoot, process.Name())
+		inspect, err := safety.ShouldInspectProcessFDs(processRoot, effectiveUID)
+		if err != nil {
+			return false, err
+		}
+		if !inspect {
+			continue
+		}
+		fdRoot := filepath.Join(processRoot, "fd")
 		fds, err := os.ReadDir(fdRoot)
 		if err != nil {
 			return false, fmt.Errorf("read %s: %w", fdRoot, err)
@@ -192,11 +179,4 @@ func inspectDeletedDescriptorUnder(root, procRoot string) (bool, error) {
 		}
 	}
 	return false, nil
-}
-
-// openDescriptorUnder preserves the historical boolean helper for callers in
-// this package; any inspection error is conservatively treated as busy.
-func openDescriptorUnder(root string) bool {
-	busy, err := inspectOpenDescriptorUnder(root, "/proc")
-	return busy || err != nil
 }

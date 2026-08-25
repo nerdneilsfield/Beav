@@ -8,16 +8,6 @@
   min_age_days: 30
   managed_cache: { profile: ai-huggingface-datasets-arrow }
   tags: [ai, managed-cache]
-- id: ai-huggingface-datasets
-  name: Hugging Face Datasets cache
-  description: Heavy atomic cleanup of complete, cold Datasets cache units
-  scope: user
-  type: managed_cache
-  impact: heavy
-  enabled: true
-  min_age_days: 30
-  managed_cache: { profile: ai-huggingface-datasets }
-  tags: [ai, managed-cache]
 - id: ai-torch-hub
   name: Torch Hub checkpoints
   description: Heavy atomic cleanup of complete, cold Torch Hub checkpoints
@@ -27,14 +17,4 @@
   enabled: true
   min_age_days: 30
   managed_cache: { profile: ai-torch-hub }
-  tags: [ai, managed-cache]
-- id: ai-torch-hub-checkpoints
-  name: Torch Hub checkpoint cache
-  description: Heavy atomic cleanup of complete, cold checkpoint units
-  scope: user
-  type: managed_cache
-  impact: heavy
-  enabled: true
-  min_age_days: 30
-  managed_cache: { profile: ai-torch-hub-checkpoints }
   tags: [ai, managed-cache]

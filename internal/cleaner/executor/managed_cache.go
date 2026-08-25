@@ -79,6 +79,7 @@ type ManagedCacheExecutor struct {
 	journalPath       string
 	journalParentSync func(int) error
 	journalDirSync    func(int) error
+	journalChown      func(int, int, int) error
 	journalAppend     func(*managedJournal, managedJournalRecord) error
 	removeTombstone   func(int, int, string, managedIdentity, managedUnitKind) error
 }
@@ -106,6 +107,7 @@ func NewManagedCacheExecutor(home string, wl *safety.Whitelist, targetUID ...uin
 	e.journalPath = filepath.Join(e.Home, ".local", "state", "beav", "managed-cache-recovery.jsonl")
 	e.journalParentSync = unix.Fsync
 	e.journalDirSync = unix.Fsync
+	e.journalChown = unix.Fchown
 	e.journalAppend = func(journal *managedJournal, record managedJournalRecord) error { return journal.append(record) }
 	e.removeTombstone = removeManagedTombstone
 	return e
@@ -163,6 +165,9 @@ func (e *ManagedCacheExecutor) Run(ctx context.Context, c model.Cleaner, dryRun 
 	root, err := profile.resolveRoot(e)
 	if err != nil {
 		return skip("root_unavailable", err.Error())
+	}
+	if safety.Blacklisted(root, e.Home) {
+		return skip("root_unavailable", "managed-cache root is blacklisted")
 	}
 	parentFD, rootFD, rootIdentity, err := e.openManagedRoot(root)
 	if err != nil {

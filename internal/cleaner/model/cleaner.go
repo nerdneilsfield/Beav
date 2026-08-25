@@ -497,7 +497,5 @@ var debrisProfiles = map[string]struct{}{
 
 var managedCacheProfiles = map[string]struct{}{
 	"ai-huggingface-datasets-arrow": {},
-	"ai-huggingface-datasets":       {},
 	"ai-torch-hub":                  {},
-	"ai-torch-hub-checkpoints":      {},
 }
