@@ -98,9 +98,7 @@ var toolProfiles = map[string]toolProfile{
 			}
 			return args
 		},
-		Busy: func(root, procRoot string) (bool, error) {
-			return inspectHuggingFaceBusy(root, procRoot)
-		},
+		Busy:           inspectHuggingFaceBusy,
 		ProbeArgs:      []string{"cache", "prune", "--help"},
 		Required:       []string{"--cache-dir", "--yes"},
 		DryRunRequired: []string{"--dry-run"},

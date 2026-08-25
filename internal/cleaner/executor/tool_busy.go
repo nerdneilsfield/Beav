@@ -71,7 +71,7 @@ func inspectHuggingFaceBusyFD(rootFD int, root, procRoot string) (bool, error) {
 	if closeErr != nil {
 		return false, fmt.Errorf("close cache walk: %w", closeErr)
 	}
-	deletedBusy, err := inspectDeletedDescriptorUnder(root, procRoot, uint32(os.Geteuid()))
+	deletedBusy, err := inspectDeletedDescriptorUnder(root, procRoot, systemID(os.Geteuid()))
 	if err != nil {
 		return false, err
 	}

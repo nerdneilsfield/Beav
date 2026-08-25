@@ -25,7 +25,7 @@ func (e *ToolPruneExecutor) resolveAndCheckRoots(c model.Cleaner, profile toolPr
 	return roots, nil
 }
 
-func (e *ToolPruneExecutor) resolveCheckedRoots(c model.Cleaner, profile toolProfile, identity CommandIdentity) ([]checkedRoot, error) {
+func (e *ToolPruneExecutor) resolveCheckedRoots(_ model.Cleaner, profile toolProfile, identity CommandIdentity) ([]checkedRoot, error) {
 	roots := profile.RootResolver(identity.Home)
 	if len(roots) == 0 {
 		return nil, errRootUnavailable

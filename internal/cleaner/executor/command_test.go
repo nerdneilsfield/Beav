@@ -111,7 +111,7 @@ func TestRunCommandDrainsDescendantPipesAfterCancellation(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if pid > 0 {
-		defer unix.Kill(pid, unix.SIGKILL)
+		defer func() { _ = unix.Kill(pid, unix.SIGKILL) }()
 	}
 	select {
 	case err := <-result:

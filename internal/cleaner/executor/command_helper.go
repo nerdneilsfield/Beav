@@ -31,10 +31,7 @@ func init() {
 	if os.Getenv(commandHelperEnv) != "1" {
 		return
 	}
-	if err := runCommandHelper(); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(127)
-	}
+	_, _ = fmt.Fprintln(os.Stderr, runCommandHelper())
 	os.Exit(127)
 }
 

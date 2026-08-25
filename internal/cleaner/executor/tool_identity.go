@@ -28,7 +28,7 @@ func (e *ToolPruneExecutor) identityFor(c model.Cleaner, profile toolProfile) (C
 		if e.Target.UID == 0 {
 			return CommandIdentity{}, errors.New("target UID must be non-zero")
 		}
-		if os.Geteuid() != 0 && e.Target.UID != uint32(os.Getuid()) {
+		if os.Geteuid() != 0 && e.Target.UID != systemID(os.Getuid()) {
 			return CommandIdentity{}, errors.New("non-root process cannot target another UID")
 		}
 		// Target GID, groups, name, and home are mutable caller input. Resolve
@@ -39,7 +39,7 @@ func (e *ToolPruneExecutor) identityFor(c model.Cleaner, profile toolProfile) (C
 		}
 		return identity, nil
 	}
-	uid := uint32(os.Getuid())
+	uid := systemID(os.Getuid())
 	if uid == 0 {
 		// A root process cleaning --all must carry an explicitly resolved target
 		// identity. Falling back to root here would violate the sudo boundary.
@@ -119,7 +119,7 @@ func ensureCurrentIdentity(identity CommandIdentity) error {
 	if os.Geteuid() == 0 {
 		return nil
 	}
-	if uint32(os.Getuid()) != identity.UID || uint32(os.Getgid()) != identity.GID {
+	if systemID(os.Getuid()) != identity.UID || systemID(os.Getgid()) != identity.GID {
 		return errors.New("current process credentials do not match target identity")
 	}
 	groups, err := unix.Getgroups()
@@ -132,8 +132,8 @@ func ensureCurrentIdentity(identity CommandIdentity) error {
 		if gid < 0 {
 			return errors.New("current supplementary GID is invalid")
 		}
-		if uint32(gid) != identity.GID {
-			actual = append(actual, uint32(gid))
+		if systemID(gid) != identity.GID {
+			actual = append(actual, systemID(gid))
 		}
 	}
 	sort.Slice(actual, func(i, j int) bool { return actual[i] < actual[j] })
@@ -148,6 +148,10 @@ func ensureCurrentIdentity(identity CommandIdentity) error {
 		}
 	}
 	return nil
+}
+
+func systemID(id int) uint32 {
+	return uint32(id) //nolint:gosec // Linux UID/GID values originate from uint32 kernel IDs.
 }
 
 func lookupIdentity(uid uint32, expectedName, home string) (CommandIdentity, error) {

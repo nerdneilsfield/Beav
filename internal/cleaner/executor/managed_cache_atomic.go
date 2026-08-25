@@ -214,7 +214,7 @@ func managedIdentityFromStatx(st unix.Statx_t) managedIdentity {
 		UID:       st.Uid,
 		Mode:      uint32(st.Mode & unix.S_IFMT),
 		Nlink:     uint64(st.Nlink),
-		Size:      int64(st.Size),
+		Size:      int64(st.Size), //nolint:gosec // Linux statx size is bounded by signed off_t.
 		MtimeSec:  st.Mtime.Sec,
 		MtimeNsec: int64(st.Mtime.Nsec),
 		CtimeSec:  st.Ctime.Sec,
@@ -284,11 +284,12 @@ func checkedManagedProcessRunning(names []string, procRoot string) (bool, error)
 
 func emitManagedOpenSkip(cleanerID, path string, err error, emit func(model.Event), now func() time.Time) {
 	reason := "permission_denied"
-	if errors.Is(err, safety.ErrSymlink) {
+	switch {
+	case errors.Is(err, safety.ErrSymlink):
 		reason = string(model.SkipReasonSymlink)
-	} else if errors.Is(err, safety.ErrCrossFS) {
+	case errors.Is(err, safety.ErrCrossFS):
 		reason = string(model.SkipReasonCrossFS)
-	} else if errors.Is(err, unix.ENOTDIR) {
+	case errors.Is(err, unix.ENOTDIR):
 		reason = string(model.SkipReasonWrongType)
 	}
 	emit(model.Event{Event: model.EvSkipped, CleanerID: cleanerID, Path: path, Reason: reason, Detail: err.Error(), TS: now()})

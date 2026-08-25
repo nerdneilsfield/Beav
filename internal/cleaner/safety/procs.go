@@ -74,7 +74,7 @@ func OpenDescriptorMatches(_ string, dev, ino uint64, procRoot string) (bool, er
 // fstat device/inode identities against candidates. It never uses descriptor
 // symlink pathnames to decide whether an object is open.
 func OpenDescriptorsMatch(procRoot string, identities []FileIdentity) (bool, error) {
-	return openDescriptorsMatchForUID(procRoot, identities, -1, -1, uint32(os.Geteuid()))
+	return openDescriptorsMatchForUID(procRoot, identities, -1, -1, effectiveUID())
 }
 
 // OpenDescriptorMatchesExceptPID scans visible process descriptors while
@@ -82,14 +82,18 @@ func OpenDescriptorsMatch(procRoot string, identities []FileIdentity) (bool, err
 // across rename; excluding its own PID keeps that deliberate hold distinct
 // from an owner descriptor discovered through proc.
 func OpenDescriptorMatchesExceptPID(procRoot string, identities []FileIdentity, excludePID int) (bool, error) {
-	return openDescriptorsMatchForUID(procRoot, identities, excludePID, -1, uint32(os.Geteuid()))
+	return openDescriptorsMatchForUID(procRoot, identities, excludePID, -1, effectiveUID())
 }
 
 // OpenDescriptorMatchesExceptFD scans visible descriptors while excluding one
 // deliberate descriptor held by the caller. Other descriptors from same PID
 // remain visible, so an owner descriptor cannot hide behind process identity.
 func OpenDescriptorMatchesExceptFD(procRoot string, identities []FileIdentity, excludePID, excludeFD int) (bool, error) {
-	return openDescriptorsMatchForUID(procRoot, identities, excludePID, excludeFD, uint32(os.Geteuid()))
+	return openDescriptorsMatchForUID(procRoot, identities, excludePID, excludeFD, effectiveUID())
+}
+
+func effectiveUID() uint32 {
+	return uint32(os.Geteuid()) //nolint:gosec // Linux UID values originate from uint32 kernel IDs.
 }
 
 func openDescriptorsMatchForUID(procRoot string, identities []FileIdentity, excludePID, excludeFD int, effectiveUID uint32) (bool, error) {

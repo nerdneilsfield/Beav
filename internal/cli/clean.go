@@ -154,8 +154,9 @@ func shouldWriteOperationLog(targetUID int) bool {
 // identity for profile-backed cleaners. Closed executors never receive YAML
 // command, root, or identity data.
 func newCleanEngine(home string, targetUID int, whitelist *safety.Whitelist) *engine.Engine {
+	uid := uint32(targetUID) //nolint:gosec // targetUID comes from the OS or the validated uint32 sudo resolver.
 	toolOptions := []executor.ToolPruneOption{
-		executor.WithToolIdentity(executor.CommandIdentity{UID: uint32(targetUID)}),
+		executor.WithToolIdentity(executor.CommandIdentity{UID: uid}),
 	}
 	return engine.New(
 		engine.WithExecutor(model.TypePaths, executor.NewPathsExecutor(home, whitelist)),
@@ -163,8 +164,8 @@ func newCleanEngine(home string, targetUID int, whitelist *safety.Whitelist) *en
 		engine.WithExecutor(model.TypePkgCache, executor.NewPkgCacheExecutor()),
 		engine.WithExecutor(model.TypeContainerPrune, executor.NewContainerExecutor(executor.ContainerTarget{UID: targetUID, Home: home})),
 		engine.WithExecutor(model.TypeToolPrune, executor.NewToolPruneExecutor(home, whitelist, toolOptions...)),
-		engine.WithExecutor(model.TypeDebris, executor.NewDebrisExecutor(home, whitelist, uint32(targetUID))),
-		engine.WithExecutor(model.TypeManagedCache, executor.NewManagedCacheExecutor(home, whitelist, uint32(targetUID))),
+		engine.WithExecutor(model.TypeDebris, executor.NewDebrisExecutor(home, whitelist, uid)),
+		engine.WithExecutor(model.TypeManagedCache, executor.NewManagedCacheExecutor(home, whitelist, uid)),
 	)
 }
 

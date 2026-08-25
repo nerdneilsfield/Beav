@@ -87,7 +87,7 @@ type ManagedCacheExecutor struct {
 // NewManagedCacheExecutor creates a closed managed-cache executor. The
 // optional UID lets callers bind cleanup to a resolved target account.
 func NewManagedCacheExecutor(home string, wl *safety.Whitelist, targetUID ...uint32) *ManagedCacheExecutor {
-	uid := uint32(os.Getuid())
+	uid := systemID(os.Getuid())
 	if len(targetUID) > 0 {
 		uid = targetUID[0]
 	}
@@ -172,11 +172,12 @@ func (e *ManagedCacheExecutor) Run(ctx context.Context, c model.Cleaner, dryRun 
 	parentFD, rootFD, rootIdentity, err := e.openManagedRoot(root)
 	if err != nil {
 		reason := "root_unavailable"
-		if errors.Is(err, safety.ErrSymlink) {
+		switch {
+		case errors.Is(err, safety.ErrSymlink):
 			reason = string(model.SkipReasonSymlink)
-		} else if errors.Is(err, safety.ErrCrossFS) {
+		case errors.Is(err, safety.ErrCrossFS):
 			reason = string(model.SkipReasonCrossFS)
-		} else if errors.Is(err, errManagedRootChanged) {
+		case errors.Is(err, errManagedRootChanged):
 			reason = "root_identity_changed"
 		}
 		return skip(reason, err.Error())
@@ -276,7 +277,7 @@ const (
 )
 
 func (e *ManagedCacheExecutor) processManagedCandidate(
-	ctx context.Context,
+	_ context.Context,
 	c model.Cleaner,
 	profile managedCacheProfile,
 	root string,
@@ -462,7 +463,6 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 			e.emitManagedRenameFailure(c.ID, abs, err, emit)
 			return managedCandidateError
 		}
-		renamed = true
 	}
 
 	tombstoneIdentity, err := managedStatAt(parentFD, record.TombstoneLeaf)

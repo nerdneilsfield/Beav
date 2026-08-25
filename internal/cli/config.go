@@ -57,7 +57,7 @@ func NewConfigCmd() *cobra.Command {
 			if editor == "" {
 				editor = "vi"
 			}
-			c := exec.Command(editor, path)
+			c := exec.Command(editor, path) //nolint:gosec // EDITOR deliberately selects the user's executable; no shell is involved.
 			c.Stdin = os.Stdin
 			c.Stdout = cmd.OutOrStdout()
 			c.Stderr = cmd.ErrOrStderr()

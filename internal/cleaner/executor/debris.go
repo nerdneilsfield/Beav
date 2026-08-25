@@ -59,7 +59,7 @@ type DebrisExecutor struct {
 // NewDebrisExecutor creates a profile-backed debris executor. The optional
 // UID exists for callers that already resolved a target account.
 func NewDebrisExecutor(home string, wl *safety.Whitelist, targetUID ...uint32) *DebrisExecutor {
-	uid := uint32(os.Getuid())
+	uid := systemID(os.Getuid())
 	if len(targetUID) > 0 {
 		uid = targetUID[0]
 	}
@@ -153,13 +153,14 @@ func (e *DebrisExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 	rootFD, err := e.openDebrisRoot(root)
 	if err != nil {
 		reason := "boundary_violation"
-		if errors.Is(err, errDebrisRootUnavailable) {
+		switch {
+		case errors.Is(err, errDebrisRootUnavailable):
 			reason = "root_unavailable"
-		} else if errors.Is(err, errDebrisRootChanged) {
+		case errors.Is(err, errDebrisRootChanged):
 			reason = "root_identity_changed"
-		} else if errors.Is(err, safety.ErrSymlink) {
+		case errors.Is(err, safety.ErrSymlink):
 			reason = string(model.SkipReasonSymlink)
-		} else if errors.Is(err, safety.ErrCrossFS) {
+		case errors.Is(err, safety.ErrCrossFS):
 			reason = string(model.SkipReasonCrossFS)
 		}
 		return e.finishDebrisSkip(emit, c, start, reason, err.Error())

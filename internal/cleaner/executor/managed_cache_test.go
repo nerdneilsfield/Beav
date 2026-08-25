@@ -250,7 +250,7 @@ func TestManagedCacheRevalidatesPathBeforeRename(t *testing.T) {
 	writeManagedAged(t, unit, -31*24*time.Hour)
 
 	exec := newManagedTestExecutor(t, home)
-	exec.beforeRename = func(parentFD int, original, tombstone string) error {
+	exec.beforeRename = func(parentFD int, original, _ string) error {
 		moved := original + ".replacement"
 		if err := unix.Renameat(parentFD, original, parentFD, moved); err != nil {
 			return err
@@ -652,8 +652,8 @@ func TestManagedCacheHeldFDProtectsAgainstPostRenamePathReopen(t *testing.T) {
 	writeManagedAged(t, filepath.Join(unit, "dataset.arrow"), -31*24*time.Hour)
 	setManagedDirAge(t, unit, -31*24*time.Hour)
 	exec := newManagedTestExecutor(t, home)
-	exec.renameat2 = func(oldDir int, old string, newDir int, new string, flags uint) error {
-		if err := unix.Renameat2(oldDir, old, newDir, new, flags); err != nil {
+	exec.renameat2 = func(oldDir int, old string, newDir int, newName string, flags uint) error {
+		if err := unix.Renameat2(oldDir, old, newDir, newName, flags); err != nil {
 			return err
 		}
 		return os.Mkdir(filepath.Join(filepath.Dir(unit), old), 0o755)
@@ -769,11 +769,11 @@ func TestManagedCacheJournalParentFsyncPrecedesRename(t *testing.T) {
 		synced = true
 		return unix.Fsync(fd)
 	}
-	exec.renameat2 = func(oldDir int, old string, newDir int, new string, flags uint) error {
+	exec.renameat2 = func(oldDir int, old string, newDir int, newName string, flags uint) error {
 		if !synced {
 			t.Fatal("rename started before journal containing directory fsync")
 		}
-		return unix.Renameat2(oldDir, old, newDir, new, flags)
+		return unix.Renameat2(oldDir, old, newDir, newName, flags)
 	}
 	if err := exec.Run(context.Background(), managedCleaner("ai-torch-hub", 0), false, func(model.Event) {}); err != nil {
 		t.Fatal(err)
@@ -910,10 +910,10 @@ func writeManagedAged(t *testing.T, path string, age time.Duration) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if info, err := os.Stat(path); err == nil && info.IsDir() {
-		// Existing directory fixture gets its own timestamp below.
-	} else if err := os.WriteFile(path, []byte("managed-cache-fixture"), 0o600); err != nil {
-		t.Fatal(err)
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		if err := os.WriteFile(path, []byte("managed-cache-fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	when := time.Now().Add(age)
 	if err := os.Chtimes(path, when, when); err != nil {

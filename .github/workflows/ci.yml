@@ -9,26 +9,26 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: "1.26.x"
       - run: go test -race -coverprofile=cover.out ./...
       - run: |
           go tool cover -func=cover.out | tee coverage.txt
           awk -v min=50 '$1=="total:" { gsub("%","",$3); if ($3+0 < min) exit 1 }' coverage.txt
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.13.1
 
   build-smoke-binary:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: "1.26.x"
       - name: Build static Linux smoke binary
         env:
           CGO_ENABLED: "0"
