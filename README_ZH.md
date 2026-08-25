@@ -1,10 +1,9 @@
 <div align="center">
   <h1>🦫 Beav</h1>
-  <p><em>勤恳的河狸为你打理 Linux 磁盘——疏通缓存、清理日志、扫净构建残留。</em></p>
+  <p><strong>清理Linux缓存，不靠猜哪些文件能删。</strong></p>
   <p>
     <a href="https://github.com/nerdneilsfield/Beav/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nerdneilsfield/Beav/ci.yml?branch=master&style=flat-square&label=CI&logo=github" alt="CI"></a>
     <a href="https://github.com/nerdneilsfield/Beav/releases"><img src="https://img.shields.io/github/v/release/nerdneilsfield/Beav?style=flat-square&include_prereleases&label=release" alt="Release"></a>
-    <a href="https://goreportcard.com/report/github.com/nerdneilsfield/Beav"><img src="https://img.shields.io/badge/go%20report-A-brightgreen?style=flat-square" alt="Go Report"></a>
     <img src="https://img.shields.io/badge/Go-1.24%2B-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.24+">
     <img src="https://img.shields.io/badge/platform-Linux-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux">
     <a href="LICENSE"><img src="https://img.shields.io/github/license/nerdneilsfield/Beav?style=flat-square" alt="License"></a>
@@ -14,192 +13,150 @@
 
 ---
 
-> 🇬🇧 **English docs:** [README.md](README.md)
+Beav是一款Linux磁盘清理工具，处理缓存、过期下载、日志、构建产物和其他可重新生成的文件。遇到Homebrew、uv、Hugging Face、系统包管理器或容器运行时，它会调用对应工具的清理接口；这些地方不能简单地对着目录执行`rm`。
 
-**Beav** 是一款单二进制、纯 Go 的 Linux 缓存清理工具。灵感来自 macOS 上的 [Mole](https://github.com/tw93/mole)，但 Beav 为 Linux 桌面与开发机纷杂的生态重新设计：浏览器、IDE、语言工具链、容器运行时、包管理器堆积的缓存，Beav 一并扫清——**到此为止**。**你的数据不是缓存。Beav 知道边界在哪里。**
+个人文件不归Beav管。浏览器资料、凭据、项目目录、容器卷，以及`Downloads`里的普通文件都不会被当成缓存。
 
-## ✨ 为什么用 Beav？
+## 第一次运行，先 dry-run
 
-- 🦫 **默认按"年龄"删除。** 文件只有在指定天数内未被触碰才会被清理。明天打开 IDE，缓存自然重建；这周还在跑的工作完全不动。
-- 🛡️ **安全是契约，不是直觉。** 每次删除都要穿过一整套 `openat` 锚定关卡：白名单边界、硬黑名单、禁止跟随符号链接越界、禁止跨文件系统、`.git` 工作树保护、删前重 `stat` 防 TOCTOU。
-- 🧰 **一切皆数据。** 清理项是 YAML，内置项随二进制嵌入；想加一条只需把 YAML 丢进 `~/.config/beav/cleaners.d/`。
-- 🐙 **开箱覆盖 Linux 生态。** VS Code、JetBrains、Neovim、Firefox、Chrome 系、npm/pnpm/yarn/bun、pip、uv、Conda、pre-commit、ccache、Cypress、Homebrew、Flatpak、Hugging Face、Torch、gcloud、Azure、apt/dnf/pacman/zypper、journald、Docker、Podman、helm、k9s、kubectl、minikube。
-- 🧱 **执行器闭集。** 外部工具用 tool_prune，杂项产物用 debris，托管缓存用 managed_cache。YAML 只能选择已知 profile，不得提供 command、argv、environment 或任意 root。
-- 🚦 **两种作用域，一个二进制。** `beav clean` 清家目录；`sudo beav clean --system` 清系统；`sudo beav clean --all` 一并清理，带多重校验的 `SUDO_USER` 解析。
-- 🎨 **三种界面。** 终端里带 spinner，管道里走 plain，脚本/监控走 JSONL 事件流。
-- 🚫 **绝不越界。** Beav 永不偷偷调用 `sudo`，不跟随 symlink 跑出安全区，不动 `~/.ssh`、`~/.gnupg`、`~/.kube/config`、`~/.docker/config.json`、`/var/lib/{docker,containerd,kubelet}`、`/etc`、`/boot`、`/usr`。
-
-## 🚀 快速上手
+可以从[Releases](https://github.com/nerdneilsfield/Beav/releases)下载Linux压缩包，解压后把`beav`放进`PATH`。如果选择源码构建，需要Go 1.24或更新版本：
 
 ```bash
-# 从源码构建（需要 Go 1.24+）
-git clone https://github.com/nerdneilsfield/Beav
+git clone https://github.com/nerdneilsfield/Beav.git
 cd Beav
 make build
 ./bin/beav version
 ```
 
-```bash
-# 第一天的工作流
-beav clean --dry-run                # 先看清要删什么——建议每次都从这里开始
-beav clean                          # 清理 $HOME 下的缓存
-sudo beav clean --system            # 清理 /var/cache、journal、包管理器缓存
-sudo beav clean --all               # 一次清两个作用域
-beav analyze                        # 交互式磁盘浏览器（背后是 gdu）
-```
-
-## 🎬 清理效果一览
-
-```
-$ beav clean
-  ✓ VS Code Cache · 已释放 312.7 MB
-  ✓ JetBrains IDE caches · 已释放 1.4 GB
-  ✓ npm cache · 已释放 487.3 MB
-  ✓ Go build cache · 已释放 2.1 GB
-  ✓ Firefox cache · 已释放 145.0 MB
-  ○ Chromium-family cache · 跳过 (running_process)
-
-共释放 4.4 GB，运行了 5 个清理项。
-```
-
-<details>
-<summary><strong>📋 完整命令参考</strong></summary>
+新机器上不要急着删。先看计划：
 
 ```bash
-beav                                 # 启动交互式 bubbletea 菜单（需 TTY）
-
-beav clean                           # 用户作用域清理
-beav clean --system                  # 系统作用域（非 root 拒绝）
-beav clean --all                     # 用户 + 系统（root + 合法 SUDO_USER）
-beav clean --dry-run                 # 仅预览，不删除
-beav clean --only vscode,langs       # 按 ID 前缀或 tag 筛选；heavy 须完整 ID
-beav clean --skip browsers           # 反向筛选
-beav clean --min-age=14d             # 全局年龄阈值覆盖
-beav clean --min-age=langs=3d,logs=30d   # 按 tag 单独覆盖
-beav clean --force-no-age            # 启用主动声明无年龄过滤的 cleaner
-beav clean --output json             # stdout 输出 JSONL 事件
-beav clean --include-heavy           # 授权已启用的 heavy profile
-beav clean --yes                     # 跳过确认；绝不授权 heavy
-beav clean --user=alice --all        # 显式指定 SUDO_USER
-
-beav analyze [PATH]                  # 交互式磁盘浏览 TUI（gdu）
-beav config show                     # 打印生效配置 + cleaner 列表
-beav config edit                     # 用 $EDITOR 打开 ~/.config/beav/config.yaml
-beav completion {bash|zsh|fish}      # 生成 shell 补全脚本
-beav version
+beav clean --dry-run
 ```
 
-**退出码语义**
+确认输出符合预期，再去掉 `--dry-run`：
 
-| 码值 | 含义 |
-|------|------|
-| `0`  | 所选 cleaner 全部完成且无 error 事件 |
-| `1`  | 用法错误（参数错、提权被拒） |
-| `2`  | 配置 / registry / 路径安全校验失败 |
-| `3`  | 至少一个 cleaner 触发了 error 事件 |
-| `4`  | 信号中断（Ctrl-C） |
+```bash
+beav clean
+```
 
-</details>
+这条命令只处理当前用户的缓存。Beav 不会自行调用 `sudo`；系统清理需要明确执行：
 
-## 🎯 Beav 都清些什么？
+```bash
+sudo beav clean --system
+```
 
-| 类别 | 清理项 |
-|------|--------|
-| **桌面** | 回收站、缩略图缓存 |
-| **编辑器** | VS Code（含 server / cpptools）、JetBrains 全家、Neovim 状态目录 |
-| **浏览器** | Firefox、Chrome、Chromium、Edge ——只清 `Cache` / `Code Cache` / `GPUCache` 子目录（**绝不动 Profiles、cookies、登录态**） |
-| **语言与工具链** | npm、pnpm、yarn、bun、pip、uv、Conda、pre-commit、ccache、Cypress、Go build cache、Gradle、Maven |
-| **托管缓存** | Hugging Face Datasets Arrow、Torch Hub checkpoints（heavy、原子、按年龄） |
-| **AI/云端杂项** | Hugging Face incomplete、NVIDIA/Triton/TorchInductor cache、gcloud/Azure logs |
-| **Shell** | `~/.cache/zsh`、zcompdump |
-| **Kubernetes** | minikube 镜像缓存、helm、k9s、kubectl 缓存（**绝不动 `~/.kube/config`**） |
-| **容器（rootless）** | Docker / Podman 的 builder + image prune |
-| **包管理器** | apt、dnf、pacman、zypper |
-| **系统日志** | systemd journal（用 `journalctl --vacuum-time`，绝不直接 `rm`） |
-| **系统 tmp** | `/tmp`、`/var/tmp`，以及 `/var/cache` 中的零散子目录 |
-| **容器（rootful）** | Docker builder / image / container / network 各自 prune；Podman system prune |
+想在一次运行中同时处理原用户和系统作用域，可以用：
 
-<details>
-<summary><strong>🔬 默认年龄阈值</strong></summary>
+```bash
+sudo beav clean --all
+```
 
-| 类别 | 默认 `min_age_days` | 理由 |
-|------|---|---|
-| 浏览器 / IDE 缓存 | 7 | 一周没碰，说明不在活跃流里 |
-| 包管理器下载（apt/npm/pip/yarn/bun） | 14 | 中等保守；重下载成本低 |
-| 构建产物（go、gradle、maven、ccache） | 30 | 重建成本不容忽视 |
-| systemd journal | 14 | 走 `journalctl --vacuum-time=14d` |
-| `/tmp`、`/var/tmp` | 10 | 与 systemd-tmpfiles 默认对齐 |
-| `~/.local/share/Trash` | 30 | 留出后悔时间 |
-| 容器 builder / image（rootful） | 14 / 30 | builder cache 激进、image 谨慎 |
+直接运行 `beav` 会打开终端菜单。`beav analyze [PATH]` 则进入随程序提供的磁盘占用浏览器。
 
-闭集 profile 自带最低年龄：Downloads/Hugging Face incomplete 至少 24 小时，GPU 杂项至少 7 日，云日志与 managed cache 至少 30 日；`--min-age` 不得降低这些下限。
+## 能清理哪些内容
 
-可用 `--min-age=Nd` 全局覆盖、`--min-age=langs=3d,logs=30d` 按 tag 覆盖、或在 `~/.config/beav/config.yaml` 里按 cleaner ID 单独配置。
+内置清理项覆盖了常见的Linux桌面和开发环境：
 
-</details>
+| 范围 | 例子 |
+|---|---|
+| 编辑器 | VS Code、VS Code Server、JetBrains IDE、Neovim 缓存与状态目录 |
+| 浏览器 | Firefox、Chrome、Chromium、Edge 的缓存目录；用户资料和登录数据保留 |
+| 语言工具 | npm、pnpm、yarn、bun、pip、uv、Poetry、Conda、Corepack、Go、Gradle、Maven |
+| 开发工具 | pre-commit、ccache、Cypress、Playwright、mise |
+| AI 与 GPU | 未完成的 Hugging Face 下载、旧 HF Datasets Arrow 单元、Torch Hub checkpoints、NVIDIA compute cache、Triton、TorchInductor |
+| 桌面 | 回收站、缩略图缓存、过期的未完成下载、Flatpak 无用数据 |
+| Kubernetes | minikube 镜像缓存、Helm、k9s、kubectl 缓存 |
+| 云工具 | 过期的gcloud与Azure CLI日志 |
+| 容器 | Docker、Podman清理；无根模式与系统守护进程分开校验 |
+| 系统 | apt、dnf、pacman、zypper、systemd journal、`/tmp`、`/var/tmp`、选定的 `/var/cache` 内容、Nix GC |
 
-## 🛡️ 安全架构
+你安装的版本究竟带了哪些清理项，直接问本机二进制最准确：
 
-Beav 把删除当成手术——每一刀都要复核两遍。
+```bash
+beav config show
+```
 
-<details open>
-<summary><strong>每个文件穿越的八道关卡</strong></summary>
+工具没安装、相关进程仍在运行、文件太新，或者Beav无法证明目标安全时，对应清理项会跳过。跳过不等于删除失败。
 
-1. **加载期白名单** — 每条静态路径与 resolver fallback 都必须落在 `$HOME`、`/var/cache`、`/var/log`、`/tmp`、`/var/tmp` 之内。指向其他位置的 YAML cleaner **加载时就被拒**，而非运行时。
-2. **硬黑名单** — `/`、`/etc`、`/boot`、`/usr`、`/proc`、`/sys`、`/dev`、`/run`、`~/.ssh`、`~/.gnupg`、`~/.password-store`、`~/.docker/config.json`、`~/.kube/config`、`/var/lib/{docker,containerd,kubelet}`，以及 `~/{Documents,Desktop,Downloads,Pictures,Videos,Music}`，generic cleaner 即使由 YAML 指定也不会触碰。唯一例外是专用单层 Downloads profile，且只删除过期的 partial-download 后缀文件。
-3. **锚定下行** — 每条路径都从安全根（safe root）出发，逐分量 `openat` + `O_NOFOLLOW`。任何中间分量是 symlink 即拒绝。
-4. **跨文件系统守卫** — 在 root 抓取 `st_dev`，每个 entry 重新比对；挂载点直接跳过。
-5. **`.git` 守卫** — 任何含 `.git` 子项的目录视为 git 工作树，整棵子树跳过。
-6. **逐文件年龄过滤** — `now - mtime ≥ min_age_days` 是按**单个文件**判定，不是按父目录。空目录在子项删完后再自底向上删。
-7. **TOCTOU 重新 stat** — 调用 `unlinkat` 之前再 stat 一次，`(ino, dev, size, mtim)` 任一字段漂移就放弃删除。
-8. **进程守卫** — Beav 扫描 `/proc`，看到 `code`、`chromium`、`firefox`、`idea` 等正在运行就跳过对应 cleaner。
-9. **Heavy 授权** — heavy profile 虽启用，仍须 `--include-heavy`，或 `--only` 中出现一次完整 cleaner ID；`--yes`、`--all`、tag、ID 前缀均不得授权，`--skip`、disabled、作用域不符优先。
-10. **Root 闭合** — 闭集 profile 只解析固定且位于目标 home 的 root（`/nix`、`/var/lib/flatpak` 等固定 system root 除外）；用户提供的越界 cache root 一律不采纳。
+## 删除边界
 
-</details>
+缓存目录未必固定。环境变量可能改过它，符号链接可能在运行中被替换，`sudo`也可能指向错误的家目录。Beav会先核对这些条件，再决定能不能删。
+
+- 路径必须落在允许的根目录下，例如目标用户的 home、`/var/cache`、`/var/log`、`/tmp` 或 `/var/tmp`。
+- 已知凭据位置和个人数据目录在硬黑名单中，包括`~/.ssh`、`~/.gnupg`、`~/.password-store`、`~/.kube/config`和`~/.docker/config.json`。内置浏览器清理项只指向缓存子目录，不指向用户资料。
+- 普通清理项不能进入 `Documents`、`Desktop`、`Downloads`、`Pictures`、`Videos`、`Music`。Downloads 是唯一的窄例外：只检查一层，并且只识别未完成下载的后缀。
+- 年龄按单个文件计算。父目录很旧，不代表里面的新文件可以一起删。
+- 目录遍历由 `openat` 和 `O_NOFOLLOW` 锚定。遇到跨挂载点、符号链接替换或文件身份变化，删除会停止。
+- 相关程序、打开的文件描述符和锁文件都会影响判断。目标用户进程的检查一旦报错，Beav 会保守跳过。
+- heavy 清理项需要 `--include-heavy`，或者在 `--only` 中写出完整 cleaner ID。`--yes`、tag、前缀和 `--all` 都不能代替这次授权。
+
+Beav没有隐式提权。普通用户请求`--system`时只会收到sudo提示；root登录若想清理`/root`，还要明确传入`--allow-root-home`。在`sudo --all`下，Beav会交叉检查`SUDO_UID`、`SUDO_USER`和家目录所有者，然后才确定用户作用域。
 
 <details>
-<summary><strong>权限模型：为什么 Beav 不偷偷 sudo</strong></summary>
+<summary><strong>文件删除前具体检查什么</strong></summary>
 
-| 调用方式 | 实际 UID | 清理范围 |
-|---|---|---|
-| `beav clean` | 非 root | 用户作用域（调用者的 `$HOME`） |
-| `beav clean --system` | 非 root | 拒绝并打印 `sudo` 提示 |
-| `sudo beav clean --system` | root | 仅系统 |
-| `sudo beav clean --all` | root | 系统 + 原始用户的 `$HOME` |
-| 直接以 root 登录跑 `beav clean` | root | 拒绝，除非显式 `--allow-root-home` |
+对于路径型清理项，Beav 从可信目录描述符开始逐级打开路径。每个文件都会经过符号链接检查、文件系统设备检查、`.git` 目录保护和年龄判断；调用 `unlinkat` 前，还会再次比较 `(inode, device, size, mtime)`。
 
-`--all` 通过**三道独立校验**解析目标家目录——`$SUDO_UID`、`$SUDO_USER`、目录的 `lstat` owner——任何一处不一致就拒绝执行。`--user=name` 提供显式覆盖，但同样要过这三关。
+外部工具清理方案以闭集形式编译进Beav。YAML只能选择已知profile，不能注入命令、参数、环境变量或任意根目录。Hugging Face与Torch的托管缓存采用先重命名再删除的方式，并写入恢复日志；即使中途退出，下一次运行也无需相信过期路径。
+
+Docker、Podman的无根清理还会核对守护进程模式、套接字所有者和套接字位置。系统清理项不会连接无根守护进程。
 
 </details>
 
-<details>
-<summary><strong>容器 rootless 校验</strong></summary>
+## 常用命令
 
-用户作用域容器 cleaner 必须**全部满足**才会跑：
+```bash
+# 只预览语言工具相关清理项
+beav clean --dry-run --only langs
 
-1. 运行时报告 rootless 模式（`docker info -f '{{.SecurityOptions}}'` / `podman info -f '{{.Host.Security.Rootless}}'`）。
-2. 活跃 socket（通过 `docker context inspect` / `podman info` 查得）的 owner 是调用者 UID。
-3. socket 路径在 `/run/user/$UID/`、`$XDG_RUNTIME_DIR/`、或 `$HOME/` 之下。
+# 运行一个指定清理项
+beav clean --only lang-uv
 
-如果设置了 `DOCKER_HOST`，Beav 仅在它指向通过验证的 rootless socket 时才采纳；否则 cleaner 跳过并标记 `runtime_not_rootless`。系统作用域 cleaner 则反向：检测到 rootless daemon 时拒绝执行。
+# 本次跳过浏览器缓存
+beav clean --skip browser
 
-</details>
+# 全局改为30天
+beav clean --min-age=30d
 
-## 📜 配置
+# 分别覆盖 tag
+beav clean --min-age=langs=14d,logs=30d
 
-Beav 读取 `~/.config/beav/config.yaml`（如果存在）。**优先级：CLI flags > 配置文件 > 内置默认值。**
+# 允许已启用的heavy清理项
+beav clean --include-heavy
+
+# 给脚本输出 JSONL
+beav clean --dry-run --output json
+```
+
+`--only`和`--skip`支持cleaner ID、ID前缀或tag。heavy清理项更严格：只有完整ID才能在`--only`中顺带授权。敏感profile还有内置最低年龄，命令行参数不能把未完成下载或托管缓存的门槛降到安全线以下。
+
+完整参数以程序帮助为准：
+
+```bash
+beav clean --help
+```
+
+## 配置
+
+下面三条命令分别用于生成初始配置、查看合并结果和打开编辑器：
+
+```bash
+beav config init
+beav config show
+beav config edit
+```
+
+默认配置文件是 `~/.config/beav/config.yaml`。优先级很直接：命令行覆盖配置文件，配置文件覆盖内置默认值。
 
 ```yaml
-# ~/.config/beav/config.yaml
 defaults:
   min_age_days: 14
-  output: spinner            # spinner | plain | json
+  output: spinner # spinner | plain | json
 
 overrides:
   editor-vscode:
     min_age_days: 3
-    enabled: true
   browser-chromium:
     enabled: false
 
@@ -207,29 +164,11 @@ whitelist:
   - ~/.cache/keep-this
 ```
 
-内置闭集 profile 按 profile 名称选择，例如：
+额外的 cleaner YAML 放在 `~/.config/beav/cleaners.d/`。一个简单的路径型清理项如下：
 
 ```yaml
-- id: lang-uv
-  scope: user
-  type: tool_prune
-  impact: safe
-  enabled: true
-  min_age_days: 14
-  tool_prune: { profile: lang-uv }
-```
-
-`type: command` 不是任意 shell 入口，现已拒绝。旧 builtin `lang-cargo` 已移除，请改用 Cargo native GC。项目不附带 `cargo-cache` 或任何 plugin dependency。
-
-自定义 cleaner 放在 `~/.config/beav/cleaners.d/` 下，YAML 文件即可：
-
-<details>
-<summary><strong>例子：清理冷门工具的缓存</strong></summary>
-
-```yaml
-# ~/.config/beav/cleaners.d/zola.yaml
 - id: lang-zola
-  name: Zola 构建缓存
+  name: Zola build cache
   scope: user
   type: paths
   min_age_days: 14
@@ -238,67 +177,52 @@ whitelist:
   tags: [langs, static-site]
 ```
 
-`beav config show | jq '.cleaners[] | select(.id=="lang-zola")'` 可验证已生效。
+自定义YAML仍要通过清理项注册表和路径安全校验。`type: command`会被拒绝；`tool_prune`、`debris`、`managed_cache`这类闭集执行器只接受内置profile名称。
 
-</details>
+## 输出与脚本
 
-## 🧪 输出格式
-
-<details>
-<summary><strong>用 JSONL 串到流水线里</strong></summary>
+stdout 是终端时，默认输出 spinner；接到管道后会改用 plain。让其他程序读取时，建议显式选择 JSONL：
 
 ```bash
-beav clean --output json | jq -c 'select(.event=="finish")'
+beav clean --dry-run --output json | jq -c 'select(.event == "finish" or .event == "summary")'
 ```
 
-```json
-{"event":"start","cleaner_id":"editor-vscode","name":"VS Code Cache","scope":"user","type":"paths","ts":"2026-04-27T10:00:00Z"}
-{"event":"deleted","cleaner_id":"editor-vscode","path":"/home/dq/.config/Code/Cache/x","size":4096,"ts":"..."}
-{"event":"skipped","cleaner_id":"editor-vscode","path":"/home/dq/.config/Code/Cache/y","reason":"age_too_recent","ts":"..."}
-{"event":"finish","cleaner_id":"editor-vscode","status":"ok","files_deleted":42,"bytes_freed":12345678,"files_candidate":0,"bytes_candidate":0,"duration_ms":83,"ts":"..."}
-{"event":"summary","cleaners_run":12,"bytes_freed":987654321,"files_candidate":0,"bytes_candidate":0,"metrics_incomplete":false,"unmeasured_cleaners":[],"duration_ms":4200,"ts":"..."}
+dry-run 的候选数量写入 `files_candidate` 和 `bytes_candidate`，实际删除字段仍为零。部分原生工具无法给出准确字节数。遇到这种情况，summary 会设置 `metrics_incomplete` 并列出未计量的 cleaner，而不是编一个数字。
+
+脚本可以依赖以下退出码：
+
+| 退出码 | 含义 |
+|---:|---|
+| `0` | 所选清理项结束，没有错误事件 |
+| `1` | 参数无效或提权请求被拒绝 |
+| `2` | 配置、registry 或路径校验失败 |
+| `3` | 至少一个清理项产生错误事件 |
+| `4` | 收到信号后中断 |
+
+## 明确不清理的内容
+
+Beav不删除旧内核、容器卷、Downloads中的普通文件、浏览器历史、最近文件记录或远程缓存。对于缓存语义还不能安全确定的应用数据，目前也选择不碰，比如Ollama和ModelScope。
+
+Nix只调用原生GC，不传删除generation的参数。Conda限于索引缓存、tarball和日志。项目没有通用shell command cleaner。
+
+这些限制是有意留下的。一个目录只要可能存着用户工作的唯一副本，就应该单独设计清理流程，而不是再补一条 glob。
+
+## 参与开发
+
+新增路径型cleaner时，先从YAML开始，并给出保守的年龄。涉及原生工具或托管缓存时，安全规则应写进Go的闭集profile，同时配测试，不应变成用户传入的参数。
+
+提交前运行：
+
+```bash
+make test
+make race
+make lint
 ```
 
-实跑时 files_deleted/bytes_freed 只计实际删除。dry-run 输出 dry_run: true，实际删除字段仍为零；候选写入 files_candidate/bytes_candidate。外部工具或目录大小无法精确测量时，置 metrics_incomplete 并列出 unmeasured_cleaners。每种事件只输出自身字段，schema 稳定。
+[设计记录](docs/superpowers/specs/2026-04-26-beav-design.md) 解释了最初的安全模型；[实现计划](docs/superpowers/plans/2026-04-26-beav-implementation.md) 保留了首个版本的开发过程。
 
-</details>
+## 致谢与许可证
 
-## 🚧 v1 边界：明确不支持
+Beav的灵感来自[Mole](https://github.com/tw93/mole)。磁盘浏览由[gdu](https://github.com/dundee/gdu)提供，终端界面使用[Charm](https://charm.sh/)系列库。
 
-Beav v1 故意保持窄。下面这些已记入 v1.x 路线：
-
-- **`beav prune-kernels`** — 清旧内核会动 `/boot` 和包数据库，需要专门的强确认流程。
-- **`beav prune-volumes`** — Docker / Podman volume 是持久化数据，不是缓存；而且 `docker volume prune` 不支持 `--filter until=`，需要基于 inspect 的专用 executor。
-- **`beav prune-recents`** — 重写 `~/.local/share/recently-used.xbel` 需要 `transform` executor 类型，含备份 + 原子替换。
-- **GitHub Actions cache** — 属远端状态，绝不触碰。
-- **全量 Downloads** — 仅支持专用单层 partial-download profile，generic paths 不得指向 Downloads。
-- **Nix generations** — `sys-nix-gc` 只走 native GC，不传 generation-deletion 参数。
-- **Conda package 目录 / `force-pkgs-dirs`** — Conda profile 仅清 index cache、tarballs、logfiles。
-- **Ollama、ModelScope、macOS 行为、目标 home 外的用户 cache root** — 明确不支持。
-- **Snap / AppImage** — 沙箱语义待独立设计；Flatpak 仅有固定 user/system profile。
-- **`beav status` / `beav optimize`** — 用 `btop`、`htop`、`systemctl` 即可，不重复造轮子。
-
-## 🤝 贡献
-
-加新清理项很容易——把 YAML 放进 `~/.config/beav/cleaners.d/`。可用 `paths`、`journal_vacuum`、`pkg_cache`、`container_prune`；`command` 已拒绝，`tool_prune`、`debris`、`managed_cache` 仅接受已知内置 profile。schema 见 [docs/superpowers/specs/2026-04-26-beav-design.md §5.1](docs/superpowers/specs/2026-04-26-beav-design.md)。提交前请确保 `go test ./...` 与 `golangci-lint run ./...` 通过。
-
-## 📖 文档
-
-- [设计规范](docs/superpowers/specs/2026-04-26-beav-design.md) ——所有安全决策的来龙去脉。
-- [实现计划](docs/superpowers/plans/2026-04-26-beav-implementation.md) ——9 个阶段 28 个 task，TDD 全程。
-
-## 📜 许可证
-
-MIT，详见 [LICENSE](LICENSE)。
-
-## 🙏 致谢
-
-- [Mole](https://github.com/tw93/mole) ——macOS 上的灵感来源。
-- [gdu](https://github.com/dundee/gdu) ——`beav analyze` 的引擎。
-- [Charm](https://charm.sh/) ——bubbletea、lipgloss、bubbles。
-
----
-
-<div align="center">
-<sub>献给所有经常 <code>du -sh ~/.cache/*</code> 的人。</sub>
-</div>
+项目采用 [MIT License](LICENSE)。
