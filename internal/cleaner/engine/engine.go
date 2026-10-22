@@ -191,7 +191,7 @@ func Selected(c model.Cleaner, scope model.Scope, only, skip []string) bool {
 }
 
 // HeavyAuthorized reports whether heavy impact c has an explicit authorization.
-// HeavyAuthorized 报告 heavy 清理器 c 是否取得显式授权。
+// HeavyAuthorized 报告 heavy 清理器 c 是否取得显式授权。精确 ID 或 tag 选择器可以授权；ID 前缀不行。
 func HeavyAuthorized(c model.Cleaner, includeHeavy bool, only []string) bool {
 	if c.EffectiveImpact() != model.ImpactHeavy {
 		return true
@@ -202,6 +202,11 @@ func HeavyAuthorized(c model.Cleaner, includeHeavy bool, only []string) bool {
 	for _, selector := range only {
 		if selector == c.ID {
 			return true
+		}
+		for _, tag := range c.Tags {
+			if selector == tag {
+				return true
+			}
 		}
 	}
 	return false

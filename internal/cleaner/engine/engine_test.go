@@ -96,7 +96,7 @@ func TestEngineHeavyAuthorizationTable(t *testing.T) {
 		wantReason   string
 	}{
 		{name: "default denies heavy", wantReason: "heavy_not_authorized"},
-		{name: "tag selector does not authorize", only: []string{"system"}, wantReason: "heavy_not_authorized"},
+		{name: "tag selector authorizes", only: []string{"system"}, wantRun: true},
 		{name: "prefix selector does not authorize", only: []string{"sys"}, wantReason: "heavy_not_authorized"},
 		{name: "include heavy authorizes", includeHeavy: true, wantRun: true},
 		{name: "exact id authorizes", only: []string{"sys-nix-gc"}, wantRun: true},

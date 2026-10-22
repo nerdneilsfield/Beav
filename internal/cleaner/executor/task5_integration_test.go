@@ -93,7 +93,7 @@ func TestBuiltinRegistryEngineToolProfileIntegration(t *testing.T) {
 		includeHeavy bool
 		wantRun      bool
 	}{
-		{name: "tag cannot authorize", scope: model.ScopeUser, only: []string{"tools"}},
+		{name: "tag authorizes", scope: model.ScopeUser, only: []string{"tools"}, wantRun: true},
 		{name: "prefix cannot authorize", scope: model.ScopeUser, only: []string{"lang-poetry"}},
 		{name: "all scope cannot authorize", scope: model.ScopeAll},
 		{name: "exact full ID authorizes", scope: model.ScopeUser, only: []string{"lang-poetry-cache"}, wantRun: true},
