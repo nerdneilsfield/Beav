@@ -64,6 +64,16 @@ func Validate(c model.Cleaner) error {
 		if c.NoAgeFilter {
 			return fmt.Errorf("cleaner %q: managed_cache rejects no_age_filter", c.ID)
 		}
+	case model.TypeRustupPrune:
+		if c.RustupPrune == nil || c.RustupPrune.Profile == "" {
+			return fmt.Errorf("cleaner %q: rustup_prune type requires rustup_prune.profile", c.ID)
+		}
+		if !model.KnownProfile(model.TypeRustupPrune, c.RustupPrune.Profile) {
+			return fmt.Errorf("cleaner %q: unknown rustup_prune profile %q", c.ID, c.RustupPrune.Profile)
+		}
+		if c.NoAgeFilter {
+			return fmt.Errorf("cleaner %q: rustup_prune rejects no_age_filter", c.ID)
+		}
 	}
 	return nil
 }

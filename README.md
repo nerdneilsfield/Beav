@@ -203,7 +203,7 @@ Exit codes are stable for scripts:
 
 Beav does not remove old kernels, container volumes, arbitrary files from Downloads, browser history, recent-file lists, or remote caches. It also avoids application data whose cache semantics are not clear enough to encode safely, including Ollama and ModelScope data today.
 
-Nix cleanup calls native garbage collection without deleting generations. Conda cleanup is limited to index caches, tarballs, and logs. There is no general-purpose shell-command cleaner.
+Nix cleanup calls native garbage collection without deleting generations. Conda cleanup is limited to index caches, tarballs, and logs. Rust toolchain cleanup keeps the default toolchain, the newest member of each release line (stable, beta, nightly, and each `major.minor`), and linked toolchains. There is no general-purpose shell-command cleaner.
 
 These limits are intentional. If a directory may contain the only copy of someone's work, it needs a purpose-built design rather than another glob.
 

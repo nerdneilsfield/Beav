@@ -30,6 +30,10 @@ const TypeDebris ExecutorType = "debris"
 // TypeManagedCache 是受限、按 profile 驱动的托管缓存执行器。
 const TypeManagedCache ExecutorType = "managed_cache"
 
+// TypeRustupPrune is a closed, profile-backed Rust toolchain executor.
+// TypeRustupPrune 是受限、按 profile 驱动的 Rust 工具链执行器。
+const TypeRustupPrune ExecutorType = "rustup_prune"
+
 // TypeJournalVacuum is a journal vacuum executor type.
 // TypeJournalVacuum 是日志清理执行器类型。
 const TypeJournalVacuum ExecutorType = "journal_vacuum"
@@ -46,7 +50,7 @@ const TypeContainerPrune ExecutorType = "container_prune"
 // ParseExecutorType 将字符串解析为 ExecutorType。
 func ParseExecutorType(s string) (ExecutorType, bool) {
 	switch ExecutorType(s) {
-	case TypePaths, TypeJournalVacuum, TypePkgCache, TypeContainerPrune, TypeToolPrune, TypeDebris, TypeManagedCache:
+	case TypePaths, TypeJournalVacuum, TypePkgCache, TypeContainerPrune, TypeToolPrune, TypeDebris, TypeManagedCache, TypeRustupPrune:
 		return ExecutorType(s), true
 	}
 	return "", false
@@ -166,6 +170,12 @@ type ManagedCacheCfg struct {
 	Profile string `yaml:"profile"`
 }
 
+// RustupCfg selects one built-in Rust toolchain profile.
+// RustupCfg 选择一个内置 Rust 工具链 profile。
+type RustupCfg struct {
+	Profile string `yaml:"profile"`
+}
+
 // ToolPruneProfile is a compatibility name for ToolPruneCfg.
 // ToolPruneProfile 是 ToolPruneCfg 的兼容名称。
 type ToolPruneProfile = ToolPruneCfg
@@ -177,6 +187,10 @@ type DebrisProfile = DebrisCfg
 // ManagedCacheProfile is a compatibility name for ManagedCacheCfg.
 // ManagedCacheProfile 是 ManagedCacheCfg 的兼容名称。
 type ManagedCacheProfile = ManagedCacheCfg
+
+// RustupProfile is a compatibility name for RustupCfg.
+// RustupProfile 是 RustupCfg 的兼容名称。
+type RustupProfile = RustupCfg
 
 // Cleaner represents a cache cleaner configuration.
 // Cleaner 表示一个缓存清理器的配置。
@@ -244,6 +258,9 @@ type Cleaner struct {
 	// ManagedCache is the closed managed-cache profile configuration.
 	// ManagedCache 是受限托管缓存 profile 配置。
 	ManagedCache *ManagedCacheCfg `yaml:"managed_cache"`
+	// RustupPrune is the closed Rust toolchain profile configuration.
+	// RustupPrune 是受限 Rust 工具链 profile 配置。
+	RustupPrune *RustupCfg `yaml:"rustup_prune"`
 }
 
 // UnmarshalYAML preserves the safe default for legacy YAML that omits impact.
@@ -283,7 +300,7 @@ func validateCleanerYAMLFields(value *yaml.Node) error {
 		"enabled": {}, "min_age_days": {}, "no_age_filter": {}, "time_field": {},
 		"paths": {}, "path_resolvers": {}, "exclude": {}, "running_processes": {},
 		"needs_root": {}, "tags": {}, "pkg_cache": {}, "container_prune": {},
-		"tool_prune": {}, "debris": {}, "managed_cache": {},
+		"tool_prune": {}, "debris": {}, "managed_cache": {}, "rustup_prune": {},
 	}
 	for i := 0; i+1 < len(resolved.Content); i += 2 {
 		keyNode, err := resolveYAMLAlias(resolved.Content[i], map[*yaml.Node]bool{})
@@ -304,7 +321,7 @@ func validateCleanerYAMLFields(value *yaml.Node) error {
 			nestedAllowed = map[string]struct{}{"manager": {}}
 		case "container_prune":
 			nestedAllowed = map[string]struct{}{"runtime": {}, "target": {}}
-		case "tool_prune", "debris", "managed_cache":
+		case "tool_prune", "debris", "managed_cache", "rustup_prune":
 			nestedAllowed = map[string]struct{}{"profile": {}}
 		}
 		if nestedAllowed != nil && nested.Kind == yaml.MappingNode {
@@ -426,6 +443,10 @@ func (c Cleaner) Profile() string {
 		if c.ManagedCache != nil {
 			return c.ManagedCache.Profile
 		}
+	case TypeRustupPrune:
+		if c.RustupPrune != nil {
+			return c.RustupPrune.Profile
+		}
 	}
 	return ""
 }
@@ -433,8 +454,11 @@ func (c Cleaner) Profile() string {
 // ProfileImpactFloor reports the minimum impact required by a closed profile.
 // ProfileImpactFloor 返回受限 profile 要求的最低影响级别。
 func ProfileImpactFloor(t ExecutorType, profile string) Impact {
-	if t == TypeManagedCache {
+	if t == TypeManagedCache || t == TypeRustupPrune {
 		if _, ok := managedCacheProfiles[profile]; ok {
+			return ImpactHeavy
+		}
+		if _, ok := rustupProfiles[profile]; ok {
 			return ImpactHeavy
 		}
 	}
@@ -458,6 +482,9 @@ func KnownProfile(t ExecutorType, profile string) bool {
 		return ok
 	case TypeManagedCache:
 		_, ok := managedCacheProfiles[profile]
+		return ok
+	case TypeRustupPrune:
+		_, ok := rustupProfiles[profile]
 		return ok
 	default:
 		return false
@@ -498,4 +525,8 @@ var debrisProfiles = map[string]struct{}{
 var managedCacheProfiles = map[string]struct{}{
 	"ai-huggingface-datasets-arrow": {},
 	"ai-torch-hub":                  {},
+}
+
+var rustupProfiles = map[string]struct{}{
+	"lang-rustup": {},
 }

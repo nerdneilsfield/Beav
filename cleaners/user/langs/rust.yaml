@@ -1,0 +1,10 @@
+- id: lang-rustup
+  name: Rust toolchains
+  description: Stale per-release-line Rust toolchains; keeps the newest in each line, the default, and linked toolchains
+  scope: user
+  type: rustup_prune
+  impact: heavy
+  enabled: true
+  min_age_days: 30
+  rustup_prune: { profile: lang-rustup }
+  tags: [langs, rust, tools]

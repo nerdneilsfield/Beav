@@ -203,7 +203,7 @@ dry-run 的候选数量写入 `files_candidate` 和 `bytes_candidate`，实际�
 
 Beav不删除旧内核、容器卷、Downloads中的普通文件、浏览器历史、最近文件记录或远程缓存。对于缓存语义还不能安全确定的应用数据，目前也选择不碰，比如Ollama和ModelScope。
 
-Nix只调用原生GC，不传删除generation的参数。Conda限于索引缓存、tarball和日志。项目没有通用shell command cleaner。
+Nix只调用原生GC，不传删除generation的参数。Conda限于索引缓存、tarball和日志。Rust工具链清理保留默认工具链、每个发布线（stable、beta、nightly及每个`major.minor`）的最新成员，以及链接进来的工具链。项目没有通用shell command cleaner。
 
 这些限制是有意留下的。一个目录只要可能存着用户工作的唯一副本，就应该单独设计清理流程，而不是再补一条 glob。
 

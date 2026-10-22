@@ -166,6 +166,7 @@ func newCleanEngine(home string, targetUID int, whitelist *safety.Whitelist) *en
 		engine.WithExecutor(model.TypeToolPrune, executor.NewToolPruneExecutor(home, whitelist, toolOptions...)),
 		engine.WithExecutor(model.TypeDebris, executor.NewDebrisExecutor(home, whitelist, uid)),
 		engine.WithExecutor(model.TypeManagedCache, executor.NewManagedCacheExecutor(home, whitelist, uid)),
+		engine.WithExecutor(model.TypeRustupPrune, executor.NewRustupExecutor(home, whitelist, uid)),
 	)
 }
 

@@ -22,6 +22,7 @@ func TestExecutorTypeKnown(t *testing.T) {
 		{"tool_prune", TypeToolPrune, true},
 		{"debris", TypeDebris, true},
 		{"managed_cache", TypeManagedCache, true},
+		{"rustup_prune", TypeRustupPrune, true},
 		{"bogus", "", false},
 	}
 	for _, c := range cases {
