@@ -1,0 +1,10 @@
+- id: ai-codex-tmp
+  name: Codex temporary leftovers
+  description: Interrupted scratch data left by the Codex CLI; sessions are untouched
+  scope: user
+  type: paths
+  min_age_days: 1
+  paths:
+    - ~/.codex/.tmp
+    - ~/.codex/tmp
+  tags: [ai]

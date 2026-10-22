@@ -1,0 +1,10 @@
+- id: lang-pixi
+  name: Pixi/Rattler cache
+  description: Rattler package and repodata cache shared by pixi and rattler-based tools
+  scope: user
+  type: paths
+  min_age_days: 14
+  paths:
+    - ~/.cache/rattler/cache
+  running_processes: [pixi]
+  tags: [langs, python]

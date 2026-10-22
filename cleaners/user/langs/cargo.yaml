@@ -1,0 +1,10 @@
+- id: lang-cargo
+  name: Cargo registry download cache
+  description: Downloaded .crate archives; packages are re-downloaded on demand
+  scope: user
+  type: paths
+  min_age_days: 30
+  paths:
+    - ~/.cargo/registry/cache
+  running_processes: [cargo]
+  tags: [langs, rust]

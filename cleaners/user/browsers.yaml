@@ -22,3 +22,12 @@
     - ~/.cache/microsoft-edge/*/Cache/**
   running_processes: [chrome, chromium, msedge]
   tags: [browser]
+- id: browser-puppeteer
+  name: Puppeteer browser cache
+  description: Stale Puppeteer-managed Chrome downloads; the age filter keeps the recently fetched version
+  scope: user
+  type: paths
+  min_age_days: 30
+  paths:
+    - ~/.cache/puppeteer
+  tags: [browser, test]
