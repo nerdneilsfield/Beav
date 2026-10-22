@@ -89,7 +89,7 @@ Cache cleanup is easy until a path comes from an environment variable, a symlink
 - Files are checked individually against an age threshold. Beav does not decide that an entire directory is old because its parent timestamp is old.
 - Directory traversal is anchored with `openat` and `O_NOFOLLOW`. Mount boundaries, symlink substitutions, and file identity changes stop the deletion.
 - Running applications, open file descriptors, and lock markers can hold a cleaner back. Inspection errors fail closed for processes owned by the target user.
-- Heavy cleaners require `--include-heavy` or an exact cleaner ID in `--only`. `--yes`, tags, prefixes, and `--all` do not grant that permission.
+- Heavy cleaners require `--include-heavy`, or an exact cleaner ID or tag in `--only`. `--yes`, prefixes, and `--all` do not grant that permission.
 
 There is no hidden privilege escalation. A non-root `--system` request is refused with a hint; a root login cannot clean `/root` unless `--allow-root-home` is present. Under `sudo --all`, Beav cross-checks `SUDO_UID`, `SUDO_USER`, and the home directory owner before selecting the user scope.
 
@@ -129,7 +129,7 @@ beav clean --include-heavy
 beav clean --dry-run --output json
 ```
 
-`--only` and `--skip` accept cleaner IDs, ID prefixes, or tags. Heavy entries are the exception: only an exact full ID authorizes one implicitly. Built-in minimum floors still apply to sensitive profiles, so a command-line age cannot make interrupted downloads or managed caches newer than their safety floor eligible.
+`--only` and `--skip` accept cleaner IDs, ID prefixes, or tags. Heavy entries are the partial exception: an exact full ID or an exact tag in `--only` authorizes one implicitly, while ID prefixes never do. Built-in minimum floors still apply to sensitive profiles, so a command-line age cannot make interrupted downloads or managed caches newer than their safety floor eligible.
 
 The binary prints the complete flag list:
 

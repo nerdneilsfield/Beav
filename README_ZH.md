@@ -89,7 +89,7 @@ beav config show
 - 年龄按单个文件计算。父目录很旧，不代表里面的新文件可以一起删。
 - 目录遍历由 `openat` 和 `O_NOFOLLOW` 锚定。遇到跨挂载点、符号链接替换或文件身份变化，删除会停止。
 - 相关程序、打开的文件描述符和锁文件都会影响判断。目标用户进程的检查一旦报错，Beav 会保守跳过。
-- heavy 清理项需要 `--include-heavy`，或者在 `--only` 中写出完整 cleaner ID。`--yes`、tag、前缀和 `--all` 都不能代替这次授权。
+- heavy 清理项需要 `--include-heavy`，或者在 `--only` 中写出完整 cleaner ID 或 tag。`--yes`、前缀和 `--all` 都不能代替这次授权。
 
 Beav没有隐式提权。普通用户请求`--system`时只会收到sudo提示；root登录若想清理`/root`，还要明确传入`--allow-root-home`。在`sudo --all`下，Beav会交叉检查`SUDO_UID`、`SUDO_USER`和家目录所有者，然后才确定用户作用域。
 
