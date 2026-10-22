@@ -169,7 +169,13 @@ func (e *ToolPruneExecutor) searchPath(profile toolProfile, home string) []strin
 func defaultToolSearchPath(home string, system bool) []string {
 	paths := []string{}
 	if !system && home != "" {
-		paths = append(paths, filepath.Join(home, ".local", "bin"), filepath.Join(home, ".cargo", "bin"))
+		paths = append(paths,
+			filepath.Join(home, ".local", "bin"),
+			filepath.Join(home, ".cargo", "bin"),
+			// bin/brew is a symlink farm into Homebrew; the resolver rejects
+			// symlinks, so point at the real directory.
+			"/home/linuxbrew/.linuxbrew/Homebrew/bin",
+		)
 	}
 	paths = append(paths,
 		"/usr/local/bin",
