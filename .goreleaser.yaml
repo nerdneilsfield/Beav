@@ -51,3 +51,16 @@ changelog:
     exclude:
       - "^docs:"
       - "^test:"
+
+# Publish to the nerdneilsfield/homebrew-apps tap and Scoop bucket.
+homebrew_casks:
+  - name: beav
+    homepage: https://github.com/nerdneilsfield/Beav
+    description: Safe, lightweight Linux cache cleaner
+    binaries:
+      - beav
+    directory: Casks
+    repository:
+      owner: nerdneilsfield
+      name: homebrew-apps
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
