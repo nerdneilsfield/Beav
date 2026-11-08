@@ -17,6 +17,13 @@ Beav is a Linux disk cleaner for caches, stale downloads, logs, build output, an
 
 Personal files are outside its job. Browser profiles, credentials, project trees, container volumes, and ordinary files in `Downloads` are not cleanup targets.
 
+## Homebrew / Scoop
+
+```bash
+# macOS / Linux
+brew install --cask nerdneilsfield/apps/beav
+```
+
 ## Start with a dry run
 
 Download a Linux archive from [Releases](https://github.com/nerdneilsfield/Beav/releases), extract `beav`, and place it somewhere on your `PATH`. To build from source instead, use Go 1.24 or newer:

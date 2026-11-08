@@ -17,6 +17,13 @@ Beav是一款Linux磁盘清理工具，处理缓存、过期下载、日志、�
 
 个人文件不归Beav管。浏览器资料、凭据、项目目录、容器卷，以及`Downloads`里的普通文件都不会被当成缓存。
 
+## 通过 Homebrew / Scoop 安装
+
+```bash
+# macOS / Linux
+brew install --cask nerdneilsfield/apps/beav
+```
+
 ## 第一次运行，先 dry-run
 
 可以从[Releases](https://github.com/nerdneilsfield/Beav/releases)下载Linux压缩包，解压后把`beav`放进`PATH`。如果选择源码构建，需要Go 1.24或更新版本：
