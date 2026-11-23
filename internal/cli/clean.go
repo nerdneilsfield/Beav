@@ -1,5 +1,3 @@
-// Package cli provides the command-line interface for the beav tool.
-// Package cli 提供 beav 工具的命令行界面。
 package cli
 
 import (
@@ -13,13 +11,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dengqi/beav/cleaners"
 	"github.com/dengqi/beav/internal/cleaner/engine"
 	"github.com/dengqi/beav/internal/cleaner/executor"
 	"github.com/dengqi/beav/internal/cleaner/model"
 	"github.com/dengqi/beav/internal/cleaner/registry"
 	"github.com/dengqi/beav/internal/cleaner/safety"
 	"github.com/dengqi/beav/internal/config"
+	"github.com/dengqi/beav/internal/i18n"
 	"github.com/dengqi/beav/internal/oplog"
 	"github.com/dengqi/beav/internal/sysinfo"
 	"github.com/dengqi/beav/internal/ui"
@@ -30,28 +28,56 @@ import (
 
 // NewCleanCmd creates a command that cleans caches, logs, and other reclaimable disk usage.
 // NewCleanCmd 创建一个清理缓存、日志和其他可回收磁盘使用的命令。
-func NewCleanCmd() *cobra.Command {
+func NewCleanCmd(tr *i18n.Translator) *cobra.Command {
+	if tr == nil {
+		tr = i18n.New(i18n.LangEN)
+	}
 	var f CleanFlags
 	cmd := &cobra.Command{
 		Use:   "clean",
-		Short: "Clean caches, logs, and other reclaimable disk usage",
+		Short: tr.Text("Clean caches, logs, and other reclaimable disk usage", "清理缓存、日志和其他可回收磁盘空间"),
+		Long: tr.Text(
+			"Clean caches, logs, and build artifacts safely.\n"+
+				"In an interactive terminal, Beav previews the cleanup plan first and asks before deleting unless --yes is passed.\n"+
+				"Heavy cleaners require --include-heavy or an exact full cleaner ID/tag in --only. Run `beav list` or `beav info <id>` to inspect cleaners.",
+			"安全清理缓存、日志与可再生构建产物。\n"+
+				"在交互终端中默认先进行只读预览并等待确认后才删除（除非传入 --yes）。\n"+
+				"重度清理项需要 --include-heavy 或在 --only 中指定完整 ID/标签；运行 `beav list` 或 `beav info <ID>` 可查看全部清理器。",
+		),
+		Example: tr.Text(
+			"  beav clean --dry-run\n"+
+				"  beav clean --only langs,browser\n"+
+				"  beav clean --only lang-rustup --yes\n"+
+				"  sudo beav clean --system\n"+
+				"  sudo beav clean --all",
+			"  beav clean --dry-run\n"+
+				"  beav clean --only langs,browser\n"+
+				"  beav clean --only lang-rustup --yes\n"+
+				"  sudo beav clean --system\n"+
+				"  sudo beav clean --all",
+		),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runClean(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), f)
+			localTr := translatorForCommand(cmd, tr)
+			if langFlag, err := cmd.Flags().GetString("lang"); err == nil && langFlag != "" {
+				f.Lang = langFlag
+			}
+			return runCleanWithTranslator(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), f, localTr)
 		},
 	}
-	cmd.Flags().BoolVar(&f.System, "system", false, "clean system-scope cleaners")
-	cmd.Flags().BoolVar(&f.All, "all", false, "clean both user and system scopes")
-	cmd.Flags().BoolVar(&f.DryRun, "dry-run", false, "show what would be removed")
-	cmd.Flags().StringSliceVar(&f.Only, "only", nil, "run matching cleaner IDs, tags, or ID prefixes; heavy requires an exact full ID or tag")
-	cmd.Flags().BoolVar(&f.IncludeHeavy, "include-heavy", false, "explicitly authorize all heavy cleaners; an exact cleaner ID or tag in --only also authorizes one; --yes, --all, and prefixes do not")
-	cmd.Flags().StringSliceVar(&f.Skip, "skip", nil, "skip matching cleaner IDs, tags, or ID prefixes")
-	cmd.Flags().StringVar(&f.MinAge, "min-age", "", "override min age, for example 14d or tag=3d")
-	cmd.Flags().BoolVar(&f.ForceNoAge, "force-no-age", false, "allow cleaners that explicitly have no age filter")
-	cmd.Flags().StringVar(&f.Output, "output", "", "output mode: spinner, plain, or json")
-	cmd.Flags().BoolVar(&f.Yes, "yes", false, "run deletion without the confirmation prompt; does not authorize heavy cleaners")
-	cmd.Flags().BoolVar(&f.AllowRootHome, "allow-root-home", false, "allow cleaning /root")
-	cmd.Flags().StringVar(&f.UserOverride, "user", "", "target user for --all")
-	cmd.Flags().StringVar(&f.ConfigDir, "config-dir", "", "override config directory")
+	cmd.Flags().BoolVar(&f.System, "system", false, tr.Text("clean system-scope cleaners (requires sudo)", "清理系统级缓存项（需 sudo）"))
+	cmd.Flags().BoolVar(&f.All, "all", false, tr.Text("clean both user and system scopes (requires sudo)", "同时清理用户级与系统级缓存项（需 sudo）"))
+	cmd.Flags().BoolVar(&f.DryRun, "dry-run", false, tr.Text("preview what would be removed without deleting", "仅预览可清理项但不执行删除"))
+	cmd.Flags().StringSliceVar(&f.Only, "only", nil, tr.Text("run matching cleaner IDs, tags, or ID prefixes; heavy requires an exact full ID or tag", "仅运行匹配的清理器 ID、标签或 ID 前缀；重度项需指定完整 ID 或标签"))
+	cmd.Flags().BoolVar(&f.IncludeHeavy, "include-heavy", false, tr.Text("explicitly authorize all heavy cleaners; an exact cleaner ID or tag in --only also authorizes one; --yes, --all, and prefixes do not", "显式授权全部重度清理项；在 --only 中指定精确 ID 或标签也可授权（--yes、--all 与前缀不会授权）"))
+	cmd.Flags().StringSliceVar(&f.Skip, "skip", nil, tr.Text("skip matching cleaner IDs, tags, or ID prefixes", "跳过匹配的清理器 ID、标签或 ID 前缀"))
+	cmd.Flags().StringVar(&f.MinAge, "min-age", "", tr.Text("override min age, for example 14d or tag=3d", "覆盖最小保留天数，例如 14d 或 langs=3d"))
+	cmd.Flags().BoolVar(&f.ForceNoAge, "force-no-age", false, tr.Text("allow cleaners that explicitly have no age filter", "允许显式声明无保留期过滤的清理器"))
+	cmd.Flags().StringVar(&f.Output, "output", "", tr.Text("output mode: spinner, plain, or json", "输出格式：spinner、plain 或 json"))
+	cmd.Flags().BoolVarP(&f.Yes, "yes", "y", false, tr.Text("run deletion without the confirmation prompt; does not authorize heavy cleaners", "跳过交互确认直接执行；不会自动授权重度清理项"))
+	cmd.Flags().BoolVarP(&f.Verbose, "verbose", "v", false, tr.Text("show file samples, command output, and all skipped cleaners", "显示文件样本、原生命令输出与全部跳过项明细"))
+	cmd.Flags().BoolVar(&f.AllowRootHome, "allow-root-home", false, tr.Text("allow cleaning /root when running as root", "以 root 直接登录时允许清理 /root"))
+	cmd.Flags().StringVar(&f.UserOverride, "user", "", tr.Text("target user for --all", "配合 --all 指定目标用户名"))
+	cmd.Flags().StringVar(&f.ConfigDir, "config-dir", "", tr.Text("override config directory", "覆盖默认配置目录"))
 	cmd.Flags().BoolVar(&f.BuiltinDisabled, "builtin-disabled", false, "skip embedded cleaners")
 	_ = cmd.Flags().MarkHidden("builtin-disabled")
 	return cmd
@@ -60,100 +86,123 @@ func NewCleanCmd() *cobra.Command {
 // runClean executes the clean operation with the given flags.
 // runClean 使用给定标志执行清理操作。
 func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error {
-	scope, home, targetUID, err := determineScope(f)
+	return runCleanWithTranslator(ctx, stdout, stderr, f, translatorFromFlag(f.Lang))
+}
+
+func runCleanWithTranslator(ctx context.Context, stdout, stderr io.Writer, f CleanFlags, tr *i18n.Translator) error {
+	if tr == nil {
+		tr = i18n.New(i18n.LangEN)
+	}
+	lc, err := loadCleanContext(f, tr)
 	if err != nil {
-		return ExitError{code: 1, err: err}
+		return err
+	}
+	diagErr, warnings := diagnoseSelectors(lc.Merged, lc.Scope, f.Only, tr)
+	if diagErr != nil {
+		return diagErr
 	}
 
-	cfgDir := f.ConfigDir
-	if cfgDir == "" {
-		configHome := home
-		if scope == model.ScopeSystem || configHome == "" {
-			configHome, _ = os.UserHomeDir()
+	mode := outputMode(f.Output, lc.Cfg.Defaults.Output)
+	if mode != "json" {
+		for _, w := range warnings {
+			fmt.Fprintf(stderr, "%s %s\n", tr.Text("Warning:", "警告:"), w)
 		}
-		cfgDir = filepath.Join(configHome, ".config", "beav")
-	}
-	cfg, err := config.LoadWithHome(cfgDir, home)
-	if err != nil {
-		return ExitError{code: 2, err: fmt.Errorf("config load: %w", err)}
+		printRunHeader(stdout, lc.Scope, lc.Home, f.DryRun, confirmNeeded(f, lc.Cfg, stdout), tr)
 	}
 
-	var builtinList []registry.Loaded
-	if !f.BuiltinDisabled {
-		builtinList, err = registry.LoadBuiltin(cleaners.Builtin)
-		if err != nil {
-			return ExitError{code: 2, err: fmt.Errorf("builtin load: %w", err)}
-		}
-	}
-	userList, err := registry.LoadUserDir(filepath.Join(cfgDir, "cleaners.d"))
-	if err != nil {
-		return ExitError{code: 2, err: fmt.Errorf("user cleaners: %w", err)}
-	}
-	merged, err := registry.MergeByID(builtinList, userList)
-	if err != nil {
-		return ExitError{code: 2, err: err}
-	}
-	merged, err = applyEffectiveConfig(merged, cfg, f)
-	if err != nil {
-		return ExitError{code: 2, err: err}
-	}
-	if err := validateCleanersForRun(merged, scope, home, f); err != nil {
-		return ExitError{code: 2, err: err}
-	}
-
-	if confirmNeeded(f, cfg, stdout) {
-		res, info, err := runCleanPass(ctx, merged, scope, home, targetUID, cfg, f, true, stdout)
+	if confirmNeeded(f, lc.Cfg, stdout) {
+		res, info, err := runCleanPassWithOptions(ctx, lc.Merged, lc.Scope, lc.Home, lc.TargetUID, lc.Cfg, f, true, stdout, tr)
 		if err != nil {
 			return passExitError(err)
 		}
-		if res.FilesCandidate == 0 && len(info.native) == 0 {
-			fmt.Fprintln(stdout, "\nNothing to delete.")
+		if shouldAbortEarly(res, info) {
+			fmt.Fprintln(stdout, "\n"+tr.Text("Nothing to delete.", "没有发现可清理的文件。"))
 			return nil
 		}
-		if !confirmDeletion(os.Stdin, stdout, res, info) {
-			fmt.Fprintln(stdout, "\nCanceled. Nothing deleted.")
+		info.unmeasured = filterOutNative(res.UnmeasuredCleaners, info.native)
+		if !confirmDeletionLocalized(os.Stdin, stdout, res, info, tr) {
+			fmt.Fprintln(stdout, "\n"+tr.Text("Canceled. Nothing deleted.", "已取消，未删除任何文件。"))
 			return nil
 		}
+		fmt.Fprintf(stdout, "\n%s\n", tr.Text("Cleaning...", "开始执行清理..."))
 	}
-	res, _, err := runCleanPass(ctx, merged, scope, home, targetUID, cfg, f, false, stdout)
+	res, _, err := runCleanPassWithOptions(ctx, lc.Merged, lc.Scope, lc.Home, lc.TargetUID, lc.Cfg, f, false, stdout, tr)
 	if err != nil {
 		return passExitError(err)
 	}
 	if res.CleanersErrored > 0 {
-		return ExitError{code: 3, err: fmt.Errorf("errors in %d cleaners", res.CleanersErrored)}
+		return ExitError{
+			code: 3,
+			err:  fmt.Errorf("%s", tr.Textf("errors in %d cleaners", "有 %d 个清理器执行出错", res.CleanersErrored)),
+		}
 	}
-	_ = stderr
 	return nil
+}
+
+func printRunHeader(w io.Writer, scope model.Scope, home string, dryRun, previewBeforeConfirm bool, tr *i18n.Translator) {
+	phase := tr.Text("Clean", "执行清理")
+	if dryRun {
+		phase = tr.Text("Preview (read-only)", "预演扫描（只读）")
+	} else if previewBeforeConfirm {
+		phase = tr.Text("Preview before clean", "清理前预演")
+	}
+	scopeText := tr.ScopeLabel(scope)
+	if home != "" && scope != model.ScopeSystem {
+		scopeText += " (" + home + ")"
+	}
+	fmt.Fprintf(w, "%s | %s: %s\n", phase, tr.Text("scope", "作用域"), scopeText)
+}
+
+func shouldAbortEarly(res engine.Result, info passInfo) bool {
+	return res.FilesCandidate == 0 && len(info.native) == 0 && !res.MetricsIncomplete
+}
+
+func filterOutNative(unmeasured, native []string) []string {
+	if len(unmeasured) == 0 {
+		return nil
+	}
+	nativeSet := make(map[string]struct{}, len(native))
+	for _, id := range native {
+		nativeSet[id] = struct{}{}
+	}
+	out := make([]string, 0, len(unmeasured))
+	for _, id := range unmeasured {
+		if _, ok := nativeSet[id]; !ok {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // passInfo records what a preview pass learned about the upcoming real run.
 // passInfo 记录预演对随后真实运行的了解。
 type passInfo struct {
-	native []string // cleaners that will run native commands and cannot be previewed
+	native     []string // cleaners that refuse dry-run preview
+	unmeasured []string // native cleaners that previewed without exact byte totals
 }
 
-// runCleanPass wires executors, renders events, and runs one engine pass.
-// preview selects the interactive confirmation pass; the pass is dry whenever
-// preview or f.DryRun is set. Dryness is derived here from CleanFlags so no
-// call site can hand a literal dry value to the engine.
-// runCleanPass 接线执行器、渲染事件并运行一次引擎处理。
-// preview 选择交互确认用的预演 pass；preview 或 f.DryRun 置位时该 pass 为 dry。
-// dry 在此从 CleanFlags 派生，调用方无法向引擎传入字面量 dry 值。
 func runCleanPass(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, f CleanFlags, preview bool, stdout io.Writer) (engine.Result, passInfo, error) {
+	return runCleanPassWithOptions(ctx, merged, scope, home, targetUID, cfg, f, preview, stdout, translatorFromFlag(f.Lang))
+}
+
+func runCleanPassWithOptions(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, f CleanFlags, preview bool, stdout io.Writer, tr *i18n.Translator) (engine.Result, passInfo, error) {
+	renderer := chooseRendererWithOptions(f, cfg.Defaults.Output, stdout, tr)
+	defer func() { _ = renderer.Close() }()
+	return runCleanPassWithSink(ctx, merged, scope, home, targetUID, cfg, f, preview, renderer.Render)
+}
+
+// runCleanPassWithSink wires executors, emits events to sink, and runs one engine pass.
+// Dryness is always derived here from CleanFlags and preview so no caller can pass a literal dry value.
+// runCleanPassWithSink 接线执行器、将事件发送给 sink 并运行一次引擎处理；
+// dry 在此严格从 CleanFlags 与 preview 派生，调用方无法传入字面量 dry 值。
+func runCleanPassWithSink(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, f CleanFlags, preview bool, sink func(model.Event)) (engine.Result, passInfo, error) {
 	dry := preview || f.DryRun
 	info := passInfo{}
-	renderer := chooseRenderer(f.Output, cfg.Defaults.Output, stdout)
-	defer func() { _ = renderer.Close() }()
 
 	var log *oplog.Logger
-	if !dry && os.Getenv("BEAV_NO_OPLOG") == "" && shouldWriteOperationLog(targetUID) {
-		logHome := home
-		if logHome == "" {
-			logHome, _ = os.UserHomeDir()
-		}
-		if logHome != "" {
-			stateDir := filepath.Join(logHome, ".local", "state", "beav")
-			if l, err := oplog.New(filepath.Join(stateDir, "operations.log"), 10*1024*1024, 5); err == nil {
+	if !dry {
+		if p := operationLogPath(home, targetUID); p != "" {
+			if l, err := oplog.New(p, 10*1024*1024, 5); err == nil {
 				log = l
 				defer func() { _ = log.Close() }()
 			}
@@ -168,7 +217,9 @@ func runCleanPass(ctx context.Context, merged []model.Cleaner, scope model.Scope
 		if dry && ev.Event == model.EvCleanerSkipped && ev.Reason == string(model.SkipReasonDryRunUnsupported) {
 			info.native = append(info.native, ev.CleanerID)
 		}
-		renderer.Render(ev)
+		if sink != nil {
+			sink(ev)
+		}
 	}
 	res, err := eng.Run(ctx, merged, engine.Options{
 		Scope:        scope,
@@ -179,6 +230,20 @@ func runCleanPass(ctx context.Context, merged []model.Cleaner, scope model.Scope
 		Emitter:      emit,
 	})
 	return res, info, err
+}
+
+func operationLogPath(home string, targetUID int) string {
+	if os.Getenv("BEAV_NO_OPLOG") != "" || !shouldWriteOperationLog(targetUID) {
+		return ""
+	}
+	logHome := home
+	if logHome == "" {
+		logHome, _ = os.UserHomeDir()
+	}
+	if logHome == "" {
+		return ""
+	}
+	return filepath.Join(logHome, ".local", "state", "beav", "operations.log")
 }
 
 // confirmNeeded reports whether an interactive terminal user should see a
@@ -198,14 +263,29 @@ func confirmNeeded(f CleanFlags, cfg *config.Config, stdout io.Writer) bool {
 	return sysinfo.IsTerminal(os.Stdin)
 }
 
-// confirmDeletion asks the user to approve the deletion after the preview pass
-// has printed its plan summary. It returns true only on an explicit yes.
-// confirmDeletion 在预演 pass 打印计划后请求用户批准删除。只有明确回答 yes 才返回 true。
 func confirmDeletion(stdin io.Reader, stdout io.Writer, res engine.Result, info passInfo) bool {
-	if len(info.native) > 0 {
-		fmt.Fprintf(stdout, "No preview available, these run their own cleanup command: %s.\n", strings.Join(info.native, ", "))
+	return confirmDeletionLocalized(stdin, stdout, res, info, i18n.New(i18n.LangEN))
+}
+
+func confirmDeletionLocalized(stdin io.Reader, stdout io.Writer, _ engine.Result, info passInfo, tr *i18n.Translator) bool {
+	if tr == nil {
+		tr = i18n.New(i18n.LangEN)
 	}
-	fmt.Fprint(stdout, "Proceed with deletion? [y/N] ")
+	if len(info.native) > 0 {
+		fmt.Fprintf(stdout, "%s\n", tr.Textf(
+			"No preview available, these run their own cleanup command: %s.",
+			"以下清理项无法预览大小，将调用原生清理命令直接执行: %s。",
+			strings.Join(info.native, ", "),
+		))
+	}
+	if len(info.unmeasured) > 0 {
+		fmt.Fprintf(stdout, "%s\n", tr.Textf(
+			"Native commands with unmeasured byte totals: %s.",
+			"以下原生命令无法预先精确统计字节数: %s。",
+			strings.Join(info.unmeasured, ", "),
+		))
+	}
+	fmt.Fprint(stdout, tr.Text("Proceed with deletion? [y/N] ", "确认执行删除？[y/N] "))
 	line, err := bufio.NewReader(stdin).ReadString('\n')
 	if err != nil && line == "" {
 		fmt.Fprintln(stdout)
@@ -374,39 +454,51 @@ func outputMode(flag, cfgDefault string) string {
 	return cfgDefault
 }
 
-// chooseRenderer selects the appropriate output renderer based on flags and config.
-// chooseRenderer 根据标志和配置选择相应的输出渲染器。
 func chooseRenderer(flag, cfgDefault string, stdout io.Writer) ui.Renderer {
-	switch mode := outputMode(flag, cfgDefault); mode {
+	return chooseRendererWithOptions(CleanFlags{Output: flag}, cfgDefault, stdout, i18n.New(i18n.LangEN))
+}
+
+func chooseRendererWithOptions(f CleanFlags, cfgDefault string, stdout io.Writer, tr *i18n.Translator) ui.Renderer {
+	isTTY := false
+	if file, ok := stdout.(*os.File); ok && sysinfo.IsTerminal(file) {
+		isTTY = true
+	}
+	switch outputMode(f.Output, cfgDefault) {
 	case "json":
 		return uijson.New(stdout)
 	case "plain":
-		return uicli.NewPlain(stdout)
+		return uicli.NewPlainWithOptions(stdout, uicli.Options{Translator: tr, Verbose: f.Verbose})
 	case "spinner":
-		return uicli.NewSpinner(stdout)
+		return uicli.NewSpinnerWithOptions(stdout, uicli.Options{Translator: tr, Verbose: f.Verbose, Animate: isTTY})
 	default:
-		if f, ok := stdout.(*os.File); ok && sysinfo.IsTerminal(f) {
-			return uicli.NewSpinner(stdout)
+		if isTTY {
+			return uicli.NewSpinnerWithOptions(stdout, uicli.Options{Translator: tr, Verbose: f.Verbose, Animate: true})
 		}
-		return uicli.NewPlain(stdout)
+		return uicli.NewPlainWithOptions(stdout, uicli.Options{Translator: tr, Verbose: f.Verbose})
 	}
 }
 
 // determineScope determines the cleaning scope, home directory, and target UID from flags.
 // determineScope 从标志确定清理范围、主目录和目标 UID。
-func determineScope(f CleanFlags) (model.Scope, string, int, error) {
+func determineScope(f CleanFlags, tr *i18n.Translator) (model.Scope, string, int, error) {
+	if tr == nil {
+		tr = i18n.New(i18n.LangEN)
+	}
 	if f.System && f.All {
-		return "", "", 0, errors.New("--system and --all are mutually exclusive")
+		return "", "", 0, errors.New(tr.Text("--system and --all are mutually exclusive", "--system 与 --all 不能同时使用"))
 	}
 	if !f.System && !f.All {
 		if os.Getuid() == 0 && !f.AllowRootHome {
-			return "", "", 0, errors.New("running as root without --system/--all; pass --allow-root-home to clean /root")
+			return "", "", 0, errors.New(tr.Text(
+				"running as root without --system/--all; pass --allow-root-home to clean /root",
+				"当前以 root 身份运行但未指定 --system 或 --all；若确实要清理 /root，请加上 --allow-root-home",
+			))
 		}
 		home, _ := os.UserHomeDir()
 		return model.ScopeUser, home, os.Getuid(), nil
 	}
 	if os.Getuid() != 0 {
-		return "", "", 0, errors.New("--system and --all require root; run with sudo")
+		return "", "", 0, errors.New(tr.Text("--system and --all require root; run with sudo", "--system 和 --all 需要管理员权限，请使用 sudo 运行"))
 	}
 	if f.System {
 		return model.ScopeSystem, "", os.Getuid(), nil
@@ -424,7 +516,7 @@ func determineScope(f CleanFlags) (model.Scope, string, int, error) {
 	}
 	resolved, err := resolver.Resolve(env)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("--all home resolution failed: %w", err)
+		return "", "", 0, fmt.Errorf("%s: %w", tr.Text("--all home resolution failed", "--all 解析用户主目录失败"), err)
 	}
 	return model.ScopeAll, resolved.Home, int(resolved.UID), nil
 }

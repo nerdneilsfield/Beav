@@ -1,60 +1,119 @@
 package cli
 
-import "github.com/dengqi/beav/internal/cleaner/model"
+import (
+	"fmt"
+	"sort"
+	"strings"
 
-// skipPhrase maps a machine skip reason to a short human phrase.
-// skipPhrase 将机器跳过原因映射为简短的人类可读短语。
-func skipPhrase(reason string) string {
-	switch model.SkipReason(reason) {
-	case "root_unavailable":
-		return "root path unavailable"
-	case model.SkipReasonNoMatches:
-		return "no matching files"
-	case model.SkipReasonHeavyNotAuthorized:
-		return "heavy, not authorized"
-	case model.SkipReasonRunningProcess:
-		return "tool is running"
-	case model.SkipReasonRuntimeUnavailable:
-		return "runtime not available"
-	case model.SkipReasonRuntimeNotRootless:
-		return "daemon is not rootless"
-	case model.SkipReasonRuntimeBusy:
-		return "runtime busy"
-	case model.SkipReasonManagerNotInstalled:
-		return "manager not installed"
-	case model.SkipReasonDryRunUnsupported:
-		return "native command, no preview"
-	case model.SkipReasonAgeTooRecent:
-		return "files too recent"
-	case model.SkipReasonWhitelisted:
-		return "path is whitelisted"
-	case model.SkipReasonBlacklisted:
-		return "path is protected"
-	case model.SkipReasonKeepListIntersection:
-		return "path is on the keep list"
-	case model.SkipReasonExcluded:
-		return "excluded"
-	default:
-		return reason
-	}
+	"github.com/dengqi/beav/internal/cleaner/model"
+	"github.com/dengqi/beav/internal/i18n"
+)
+
+// Options configures Plain and Spinner CLI event renderers.
+// Options 配置 Plain 与 Spinner 命令行事件渲染器。
+type Options struct {
+	Translator *i18n.Translator
+	Verbose    bool
+	Animate    bool
 }
 
-// skipRemedy returns the action a user can take to make the skip go away, or
-// "" when no user action exists.
-// skipRemedy 返回用户可以采取的补救动作；无法补救时返回空字符串。
-func skipRemedy(reason string) string {
-	switch model.SkipReason(reason) {
-	case model.SkipReasonHeavyNotAuthorized:
-		return "pass --include-heavy or put the exact ID in --only"
-	case "root_unavailable":
-		return "run with sudo if you want this cleaner"
-	case model.SkipReasonRunningProcess:
-		return "close the tool and rerun"
-	case model.SkipReasonAgeTooRecent:
-		return "wait, or lower --min-age"
-	case model.SkipReasonManagerNotInstalled, model.SkipReasonRuntimeUnavailable:
-		return "install the tool if you want this cleaner"
-	default:
+type cleanerState struct {
+	start       model.Event
+	samples     []string
+	sampleTotal int
+	cmdLines    []string
+	cmdTotal    int
+}
+
+type skipEntry struct {
+	ID     string
+	Name   string
+	Detail string
+}
+
+const (
+	verboseDetailLimit = 10
+	previewCmdLimit    = 3
+)
+
+func resolveTranslator(tr *i18n.Translator) *i18n.Translator {
+	if tr == nil {
+		return i18n.New(i18n.LangEN)
+	}
+	return tr
+}
+
+func skipPhrase(tr *i18n.Translator, reason string) string {
+	return resolveTranslator(tr).SkipPhrase(reason)
+}
+
+func skipRemedy(tr *i18n.Translator, reason string) string {
+	return resolveTranslator(tr).SkipRemedy(reason)
+}
+
+func isQuietSkip(reason string) bool {
+	return i18n.IsQuietSkip(reason)
+}
+
+func displayName(tr *i18n.Translator, id, rawName string) string {
+	return resolveTranslator(tr).CleanerName(model.Cleaner{ID: id, Name: rawName})
+}
+
+func joinNames(tr *i18n.Translator, names []string, verbose bool) string {
+	const max = 4
+	if verbose || len(names) <= max {
+		return strings.Join(names, ", ")
+	}
+	return strings.Join(names[:max], ", ") + tr.Textf(", and %d more", "，另有 %d 项", len(names)-max)
+}
+
+func joinSkipEntries(tr *i18n.Translator, entries []skipEntry, verbose bool) string {
+	const max = 6
+	shown := entries
+	if !verbose && len(entries) > max {
+		shown = entries[:max]
+	}
+	parts := make([]string, 0, len(shown))
+	for _, e := range shown {
+		if e.ID != "" && e.Name != e.ID {
+			parts = append(parts, fmt.Sprintf("%s (%s)", e.Name, e.ID))
+		} else if e.ID != "" {
+			parts = append(parts, e.ID)
+		} else {
+			parts = append(parts, e.Name)
+		}
+	}
+	out := strings.Join(parts, ", ")
+	if len(entries) > len(shown) {
+		out += tr.Textf(", and %d more", "，另有 %d 项", len(entries)-len(shown))
+	}
+	return out
+}
+
+func sortedSkipReasons(m map[string][]skipEntry, quiet bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		if isQuietSkip(k) == quiet {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func formatSummaryTail(tr *i18n.Translator, e model.Event) string {
+	parts := make([]string, 0, 2)
+	if e.CleanersSkipped > 0 {
+		parts = append(parts, tr.Textf("%d skipped", "跳过 %d 项", e.CleanersSkipped))
+	}
+	if e.CleanersErrored > 0 {
+		parts = append(parts, tr.Textf("%d errored", "出错 %d 项", e.CleanersErrored))
+	}
+	if len(parts) == 0 {
 		return ""
 	}
+	if tr.IsZH() {
+		return "（" + strings.Join(parts, "，") + "）"
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
 }

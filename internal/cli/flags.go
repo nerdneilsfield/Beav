@@ -2,8 +2,8 @@
 // Package cli 提供 beav 工具的命令行界面。
 package cli
 
-// CleanFlags holds the command-line flags for the clean command.
-// CleanFlags 保存 clean 命令的命令行标志。
+// CleanFlags holds the command-line flags for the clean, scan, and root TUI commands.
+// CleanFlags 保存 clean、scan 与根交互命令的命令行标志。
 type CleanFlags struct {
 	// System enables cleaning of system-scope cleaners.
 	// System 启用系统范围清理器的清理。
@@ -35,6 +35,12 @@ type CleanFlags struct {
 	// Yes skips interactive confirmations.
 	// Yes 跳过交互式确认。
 	Yes bool
+	// Verbose prints candidate/deleted file samples and full skip details.
+	// Verbose 输出候选/已删文件样本及完整跳过详情。
+	Verbose bool
+	// Lang overrides the UI language (auto, en, or zh).
+	// Lang 覆盖界面显示语言（auto、en 或 zh）。
+	Lang string
 	// AllowRootHome allows cleaning /root when running as root.
 	// AllowRootHome 允许以 root 运行时清理 /root。
 	AllowRootHome bool

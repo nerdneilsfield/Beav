@@ -3,24 +3,42 @@ package cli
 import (
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 	"sync"
 
 	"github.com/dengqi/beav/internal/cleaner/model"
+	"github.com/dengqi/beav/internal/i18n"
 	"github.com/dustin/go-humanize"
 )
 
+// Plain renders cleaner events as plain, non-ANSI text suitable for pipes, logs, or --output plain.
+// Plain 将清理器事件渲染为纯文本（无 ANSI 控制符），适用于管道、日志或 --output plain。
 type Plain struct {
 	mu      sync.Mutex
 	w       io.Writer
-	current map[string]model.Event
+	tr      *i18n.Translator
+	verbose bool
+	current map[string]*cleanerState
 	noop    []string
-	skips   map[string][]string
+	skips   map[string][]skipEntry
 }
 
+// NewPlain creates a Plain renderer with default English concise options.
+// NewPlain 创建一个使用默认英文简洁选项的 Plain 渲染器。
 func NewPlain(w io.Writer) *Plain {
-	return &Plain{w: w, current: map[string]model.Event{}, skips: map[string][]string{}}
+	return NewPlainWithOptions(w, Options{})
+}
+
+// NewPlainWithOptions creates a Plain renderer configured with the given Options.
+// NewPlainWithOptions 创建一个按给定 Options 配置的 Plain 渲染器。
+func NewPlainWithOptions(w io.Writer, opts Options) *Plain {
+	return &Plain{
+		w:       w,
+		tr:      resolveTranslator(opts.Translator),
+		verbose: opts.Verbose,
+		current: map[string]*cleanerState{},
+		skips:   map[string][]skipEntry{},
+	}
 }
 
 // Render processes a cleaner event and writes the appropriate output.
@@ -31,88 +49,249 @@ func (p *Plain) Render(e model.Event) {
 
 	switch e.Event {
 	case model.EvStart:
-		p.current[e.CleanerID] = e
-	case model.EvFinish:
-		start := p.current[e.CleanerID]
-		name := start.Name
-		if name == "" {
-			name = e.CleanerID
+		p.current[e.CleanerID] = &cleanerState{start: e}
+	case model.EvDeleted:
+		if st := p.current[e.CleanerID]; st != nil && p.verbose {
+			st.sampleTotal++
+			if len(st.samples) < verboseDetailLimit {
+				st.samples = append(st.samples, fmt.Sprintf("%s (%s)", e.Path, humanize.Bytes(safeBytes(e.Size))))
+			}
 		}
+	case model.EvSkipped:
+		if e.Reason == string(model.SkipReasonDryRun) {
+			if st := p.current[e.CleanerID]; st != nil && p.verbose {
+				st.sampleTotal++
+				if len(st.samples) < verboseDetailLimit {
+					st.samples = append(st.samples, fmt.Sprintf("%s (%s)", e.Path, humanize.Bytes(safeBytes(e.Size))))
+				}
+			}
+		}
+	case model.EvCommandOutput:
+		if st := p.current[e.CleanerID]; st != nil {
+			line := strings.TrimSpace(e.Line)
+			if line != "" {
+				st.cmdTotal++
+				if len(st.cmdLines) < verboseDetailLimit {
+					st.cmdLines = append(st.cmdLines, line)
+				}
+			}
+		}
+	case model.EvFinish:
+		st := p.current[e.CleanerID]
+		var startName string
+		if st != nil {
+			startName = st.start.Name
+		}
+		name := displayName(p.tr, e.CleanerID, startName)
 		delete(p.current, e.CleanerID)
 		if e.Status == "skipped" || e.Status == "error" {
 			return
 		}
-		switch {
-		case e.DryRun && e.FilesCandidate > 0:
-			fmt.Fprintf(p.w, "%s (%s) - plan - %s in %d files\n", name, e.CleanerID, humanize.Bytes(safeBytes(e.BytesCandidate)), e.FilesCandidate)
-		case e.DryRun:
-			p.noop = append(p.noop, name)
-		case e.FilesDeleted > 0 || e.BytesFreed > 0:
-			fmt.Fprintf(p.w, "%s (%s) - ok - %s freed (%d files)\n", name, e.CleanerID, humanize.Bytes(safeBytes(e.BytesFreed)), e.FilesDeleted)
-		default:
-			p.noop = append(p.noop, name)
-		}
+		p.renderFinish(e, st, name)
 	case model.EvCleanerSkipped:
-		start := p.current[e.CleanerID]
-		name := start.Name
-		if name == "" {
-			name = e.CleanerID
+		st := p.current[e.CleanerID]
+		var startName string
+		if st != nil {
+			startName = st.start.Name
 		}
-		p.skips[e.Reason] = append(p.skips[e.Reason], name)
+		name := displayName(p.tr, e.CleanerID, startName)
+		p.skips[e.Reason] = append(p.skips[e.Reason], skipEntry{
+			ID:     e.CleanerID,
+			Name:   name,
+			Detail: e.Detail,
+		})
 	case model.EvError:
-		start := p.current[e.CleanerID]
-		name := start.Name
-		if name == "" {
-			name = e.CleanerID
+		st := p.current[e.CleanerID]
+		var startName string
+		if st != nil {
+			startName = st.start.Name
 		}
-		fmt.Fprintf(p.w, "%s (%s) - error - %s\n", name, e.CleanerID, e.Detail)
+		name := displayName(p.tr, e.CleanerID, startName)
+		fmt.Fprintf(p.w, "%s (%s) - %s - %s\n", name, e.CleanerID, p.tr.Text("error", "错误"), e.Detail)
 	case model.EvSummary:
 		p.flushGroups()
-		if e.DryRun {
-			fmt.Fprintf(p.w, "Total: %d ran - %s in %d files\n", e.CleanersRun, humanize.Bytes(safeBytes(e.BytesCandidate)), e.FilesCandidate)
-			return
-		}
-		fmt.Fprintf(p.w, "Total: %d ran - %s freed\n", e.CleanersRun, humanize.Bytes(safeBytes(e.BytesFreed)))
+		p.renderSummary(e)
 	}
 }
 
-// flushGroups prints the quiet no-op cleaners and the grouped skip reasons.
-// flushGroups 打印无事可做的清理器与按原因分组的跳过项。
+func (p *Plain) renderFinish(e model.Event, st *cleanerState, name string) {
+	switch {
+	case e.DryRun && e.FilesCandidate > 0:
+		partial := ""
+		if e.MetricsIncomplete {
+			partial = p.tr.Text(" (partial)", "（部分估算）")
+		}
+		fmt.Fprintf(p.w, "%s\n",
+			p.tr.Textf("%s (%s) - plan - %s in %s%s",
+				"%s (%s) - 预演 - %s（%s）%s",
+				name, e.CleanerID,
+				humanize.Bytes(safeBytes(e.BytesCandidate)),
+				p.tr.Plural(e.FilesCandidate, "file", "files", "个文件"),
+				partial,
+			),
+		)
+		p.printDetails(st, verboseDetailLimit)
+	case e.DryRun && e.MetricsIncomplete:
+		fmt.Fprintf(p.w, "%s (%s) - %s - %s\n",
+			name, e.CleanerID, p.tr.Text("plan", "预演"),
+			p.tr.Text("native command (size unmeasured)", "原生命令（无法预估大小）"),
+		)
+		limit := previewCmdLimit
+		if p.verbose {
+			limit = verboseDetailLimit
+		}
+		p.printCommandLines(st, limit)
+	case e.DryRun:
+		p.noop = append(p.noop, name)
+	case e.FilesDeleted > 0 || e.BytesFreed > 0:
+		partial := ""
+		if e.MetricsIncomplete {
+			partial = p.tr.Text(" (partial)", "（部分估算）")
+		}
+		fmt.Fprintf(p.w, "%s (%s) - %s - %s %s (%s)%s\n",
+			name, e.CleanerID, p.tr.Text("ok", "完成"),
+			humanize.Bytes(safeBytes(e.BytesFreed)),
+			p.tr.Text("freed", "已释放"),
+			p.tr.Plural(e.FilesDeleted, "file", "files", "个文件"),
+			partial,
+		)
+		p.printDetails(st, verboseDetailLimit)
+	case e.MetricsIncomplete:
+		fmt.Fprintf(p.w, "%s (%s) - %s - %s\n",
+			name, e.CleanerID, p.tr.Text("ok", "完成"),
+			p.tr.Text("native command completed (size unmeasured)", "原生命令已执行（未计量字节数）"),
+		)
+		if p.verbose {
+			p.printCommandLines(st, verboseDetailLimit)
+		}
+	default:
+		p.noop = append(p.noop, name)
+	}
+}
+
+func (p *Plain) printDetails(st *cleanerState, limit int) {
+	if !p.verbose || st == nil {
+		return
+	}
+	if len(st.samples) > 0 {
+		for _, line := range st.samples {
+			fmt.Fprintf(p.w, "  %s\n", line)
+		}
+		if st.sampleTotal > len(st.samples) {
+			fmt.Fprintf(p.w, "  %s\n", p.tr.Textf("... and %d more files", "... 另有 %d 个文件", st.sampleTotal-len(st.samples)))
+		}
+	}
+	p.printCommandLines(st, limit)
+}
+
+func (p *Plain) printCommandLines(st *cleanerState, limit int) {
+	if st == nil || len(st.cmdLines) == 0 {
+		return
+	}
+	n := len(st.cmdLines)
+	if n > limit {
+		n = limit
+	}
+	for _, line := range st.cmdLines[:n] {
+		fmt.Fprintf(p.w, "  %s\n", line)
+	}
+	if st.cmdTotal > n {
+		fmt.Fprintf(p.w, "  %s\n", p.tr.Textf("... and %d more lines", "... 另有 %d 行输出", st.cmdTotal-n))
+	}
+}
+
 func (p *Plain) flushGroups() {
 	if len(p.noop) > 0 {
-		fmt.Fprintf(p.w, "Nothing to do: %s\n", joinNames(p.noop))
+		fmt.Fprintf(p.w, "%s: %s\n", p.tr.Text("Nothing to do", "无需清理"), joinNames(p.tr, p.noop, p.verbose))
 		p.noop = nil
 	}
-	for _, reason := range sortedKeys(p.skips) {
-		names := p.skips[reason]
-		line := fmt.Sprintf("Skipped (%s): %s", skipPhrase(reason), joinNames(names))
-		if remedy := skipRemedy(reason); remedy != "" {
+	for _, reason := range sortedSkipReasons(p.skips, false) {
+		entries := p.skips[reason]
+		line := fmt.Sprintf("%s (%s): %s",
+			p.tr.Text("Skipped", "已跳过"),
+			skipPhrase(p.tr, reason),
+			joinSkipEntries(p.tr, entries, p.verbose),
+		)
+		if remedy := skipRemedy(p.tr, reason); remedy != "" {
 			line += " - " + remedy
 		}
-		fmt.Fprintf(p.w, "%s\n", line)
+		fmt.Fprintln(p.w, line)
+		if p.verbose {
+			for _, ent := range entries {
+				if ent.Detail != "" {
+					fmt.Fprintf(p.w, "  %s: %s\n", ent.ID, ent.Detail)
+				}
+			}
+		}
 	}
-	p.skips = map[string][]string{}
+
+	quietReasons := sortedSkipReasons(p.skips, true)
+	if len(quietReasons) > 0 {
+		if !p.verbose {
+			total := 0
+			for _, r := range quietReasons {
+				total += len(p.skips[r])
+			}
+			fmt.Fprintf(p.w, "%s (%s): %s\n",
+				p.tr.Text("Skipped", "已跳过"),
+				p.tr.Text("not installed / no cache", "未安装或无缓存"),
+				p.tr.Textf("%s - use --verbose to list", "%s - 加 --verbose 查看明细",
+					p.tr.Plural(int64(total), "cleaner", "cleaners", "项")),
+			)
+		} else {
+			for _, reason := range quietReasons {
+				entries := p.skips[reason]
+				fmt.Fprintf(p.w, "%s (%s): %s\n",
+					p.tr.Text("Skipped", "已跳过"),
+					skipPhrase(p.tr, reason),
+					joinSkipEntries(p.tr, entries, true),
+				)
+				for _, ent := range entries {
+					if ent.Detail != "" {
+						fmt.Fprintf(p.w, "  %s: %s\n", ent.ID, ent.Detail)
+					}
+				}
+			}
+		}
+	}
+	p.skips = map[string][]skipEntry{}
 }
 
+func (p *Plain) renderSummary(e model.Event) {
+	tail := formatSummaryTail(p.tr, e)
+	if e.DryRun {
+		fmt.Fprintf(p.w, "%s\n",
+			p.tr.Textf("Total: %s ran - %s in %s%s",
+				"总计: 扫描 %s - 可回收 %s（%s）%s",
+				p.tr.Plural(int64(e.CleanersRun), "cleaner", "cleaners", "项"),
+				humanize.Bytes(safeBytes(e.BytesCandidate)),
+				p.tr.Plural(e.FilesCandidate, "file", "files", "个文件"),
+				tail,
+			),
+		)
+	} else {
+		fmt.Fprintf(p.w, "%s\n",
+			p.tr.Textf("Total: %s ran - %s freed (%s)%s",
+				"总计: 运行 %s - 已释放 %s（%s）%s",
+				p.tr.Plural(int64(e.CleanersRun), "cleaner", "cleaners", "项"),
+				humanize.Bytes(safeBytes(e.BytesFreed)),
+				p.tr.Plural(e.FilesDeleted, "file", "files", "个文件"),
+				tail,
+			),
+		)
+	}
+	if e.MetricsIncomplete && len(e.UnmeasuredCleaners) > 0 {
+		fmt.Fprintf(p.w, "%s\n",
+			p.tr.Textf("Note: exact byte sizes unavailable for native commands: %s",
+				"提示: 以下原生命令无法精确统计字节数: %s",
+				strings.Join(e.UnmeasuredCleaners, ", "),
+			),
+		)
+	}
+}
+
+// Close satisfies the ui.Renderer interface.
+// Close 实现 ui.Renderer 接口。
 func (p *Plain) Close() error {
 	return nil
-}
-
-// joinNames lists up to four names plus an "and N more" tail.
-// joinNames 最多列出四个名称，其余以 "and N more" 结尾。
-func joinNames(names []string) string {
-	const max = 4
-	if len(names) <= max {
-		return strings.Join(names, ", ")
-	}
-	return strings.Join(names[:max], ", ") + fmt.Sprintf(", and %d more", len(names)-max)
-}
-
-func sortedKeys(m map[string][]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

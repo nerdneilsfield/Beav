@@ -24,7 +24,7 @@ Personal files are outside its job. Browser profiles, credentials, project trees
 brew install --cask nerdneilsfield/apps/beav
 ```
 
-## Start with a dry run
+## Quick start
 
 Download a Linux archive from [Releases](https://github.com/nerdneilsfield/Beav/releases), extract `beav`, and place it somewhere on your `PATH`. To build from source instead, use Go 1.24 or newer:
 
@@ -35,22 +35,24 @@ make build
 ./bin/beav version
 ```
 
-Before deleting anything on a new machine, inspect the plan:
+Running `beav` with no subcommand in an interactive terminal launches a full-screen read-only scan and selection workbench:
 
 ```bash
-beav clean --dry-run
+beav               # scan read-only, review sizes & sample files, toggle items, confirm before deleting
+sudo beav --system # open the interactive workbench for system caches
 ```
 
-In an interactive terminal, plain `beav clean` is just as safe: it prints the same plan and only deletes after you answer `y`. Any other answer cancels the run.
+Prefer plain CLI commands? Start with a read-only scan:
 
 ```bash
-beav clean        # terminal: preview first, deletes only on an explicit y
-beav clean --yes  # skip the prompt and clean directly
+beav scan          # read-only preview, never deletes anything
+beav clean         # terminal: previews first, deletes only after y
+beav clean --yes   # skip the prompt and clean safe items directly
 ```
 
 Pipes and CI have no terminal, so `beav clean` there still runs directly and script behavior is unchanged.
 
-This cleans the current user's caches. Beav does not invoke `sudo` for you. System cleanup is a separate, explicit command:
+Beav does not invoke `sudo` for you. System cleanup is a separate, explicit command:
 
 ```bash
 sudo beav clean --system
@@ -62,7 +64,13 @@ To clean the original user's home and the system in one run:
 sudo beav clean --all
 ```
 
-Running `beav` with no subcommand opens the terminal menu. `beav analyze [PATH]` starts the bundled disk-usage browser.
+To explore directory sizes interactively in read-only mode (powered by `gdu`, press `q` to quit):
+
+```bash
+beav analyze [PATH]
+```
+
+Interface text automatically follows your locale (`BEAV_LANG`, `LC_ALL`, `LC_MESSAGES`, `LANG`) between English and Simplified Chinese, or can be forced via `--lang en` / `--lang zh`.
 
 ## What Beav cleans
 
@@ -81,10 +89,12 @@ The built-in registry covers these areas:
 | Containers | Docker and Podman prune operations, with rootless and system daemons kept separate |
 | System | apt, dnf, pacman, zypper, systemd journal, `/tmp`, `/var/tmp`, selected `/var/cache` entries, Nix garbage collection |
 
-The exact list on your installed version is available locally:
+Inspect the exact list of cleaners, impact levels (`safe` / `heavy`), effective retention ages, and per-cleaner details locally:
 
 ```bash
-beav config show
+beav list
+beav list --heavy
+beav info lang-rustup
 ```
 
 Some entries are skipped when their tool is missing, the relevant process is running, the files are too recent, or Beav cannot prove that the target is safe. A skip is not treated as a deletion failure.
@@ -99,7 +109,7 @@ Cache cleanup is easy until a path comes from an environment variable, a symlink
 - Files are checked individually against an age threshold. Beav does not decide that an entire directory is old because its parent timestamp is old.
 - Directory traversal is anchored with `openat` and `O_NOFOLLOW`. Mount boundaries, symlink substitutions, and file identity changes stop the deletion.
 - Running applications, open file descriptors, and lock markers can hold a cleaner back. Inspection errors fail closed for processes owned by the target user.
-- Heavy cleaners require `--include-heavy`, or an exact cleaner ID or tag in `--only`. `--yes`, prefixes, and `--all` do not grant that permission.
+- Heavy cleaners require `--include-heavy`, an exact cleaner ID or tag in `--only`, or manual selection in the TUI. `--yes`, prefixes, and `--all` never authorize heavy cleaners automatically.
 
 There is no hidden privilege escalation. A non-root `--system` request is refused with a hint; a root login cannot clean `/root` unless `--allow-root-home` is present. Under `sudo --all`, Beav cross-checks `SUDO_UID`, `SUDO_USER`, and the home directory owner before selecting the user scope.
 
@@ -117,8 +127,11 @@ Rootless Docker and Podman cleaners also verify the daemon mode, socket owner, a
 ## Useful commands
 
 ```bash
-# Preview one family of cleaners
-beav clean --dry-run --only langs
+# Scan one family of cleaners without deleting
+beav scan --only langs --verbose
+
+# Inspect details and commands for one cleaner
+beav info lang-uv
 
 # Run one exact cleaner
 beav clean --only lang-uv
@@ -136,7 +149,7 @@ beav clean --min-age=langs=14d,logs=30d
 beav clean --include-heavy
 
 # Emit JSON Lines for a script
-beav clean --dry-run --output json
+beav scan --output json
 ```
 
 `--only` and `--skip` accept cleaner IDs, ID prefixes, or tags. Heavy entries are the partial exception: an exact full ID or an exact tag in `--only` authorizes one implicitly, while ID prefixes never do. Built-in minimum floors still apply to sensitive profiles, so a command-line age cannot make interrupted downloads or managed caches newer than their safety floor eligible.
@@ -149,12 +162,14 @@ beav clean --help
 
 ## Configuration
 
-Browse every cleaner with its ID, age, and state, create a starter file, or open the config in your editor:
+Inspect current config, create a starter file, open it in `$VISUAL`/`$EDITOR`, or manage protected whitelist paths:
 
 ```bash
+beav config show
 beav config init
-beav config show   # table of cleaners; the IDs work with --only/--skip; --json for scripts
 beav config edit
+beav config whitelist add ~/.cache/keep-this
+beav config whitelist remove ~/.cache/keep-this
 ```
 
 Turn one cleaner off for good, or bring it back, without editing YAML:
@@ -169,7 +184,7 @@ The default path is `~/.config/beav/config.yaml`. Command-line flags take preced
 ```yaml
 defaults:
   min_age_days: 14
-  output: spinner # spinner | plain | json
+  output: spinner # auto | spinner | plain | json
 
 overrides:
   editor-vscode:
@@ -201,7 +216,7 @@ Custom YAML still goes through registry and path-safety validation. `type: comma
 Terminal output uses a spinner when stdout is a TTY and plain text when it is not. Choose JSONL explicitly when another program will read the result:
 
 ```bash
-beav clean --dry-run --output json | jq -c 'select(.event == "finish" or .event == "summary")'
+beav scan --output json | jq -c 'select(.event == "finish" or .event == "summary")'
 ```
 
 A dry run reports candidates in `files_candidate` and `bytes_candidate`; actual deletion fields remain zero. Some native tools do not report exact byte counts. In that case the summary sets `metrics_incomplete` and names the unmeasured cleaners rather than inventing a number.
@@ -211,7 +226,7 @@ Exit codes are stable for scripts:
 | Code | Meaning |
 |---:|---|
 | `0` | Selected cleaners completed without error events |
-| `1` | Invalid usage or refused privilege request |
+| `1` | Invalid usage, unknown selector/ID, or refused privilege request |
 | `2` | Configuration, registry, or path validation failed |
 | `3` | At least one cleaner emitted an error event |
 | `4` | Interrupted by a signal |

@@ -24,7 +24,7 @@ Beav是一款Linux磁盘清理工具，处理缓存、过期下载、日志、�
 brew install --cask nerdneilsfield/apps/beav
 ```
 
-## 第一次运行，先 dry-run
+## 快速上手
 
 可以从[Releases](https://github.com/nerdneilsfield/Beav/releases)下载Linux压缩包，解压后把`beav`放进`PATH`。如果选择源码构建，需要Go 1.24或更新版本：
 
@@ -35,22 +35,24 @@ make build
 ./bin/beav version
 ```
 
-新机器上不要急着删。先看计划：
+在交互终端里直接运行 `beav`，会自动进入全屏只读扫描与勾选工作台：
 
 ```bash
-beav clean --dry-run
+beav               # 先执行只读扫描，查看体积与候选文件样本，自主勾选并二次确认后才清理
+sudo beav --system # 在系统作用域启动交互工作台
 ```
 
-在交互终端里，直接运行 `beav clean` 也一样安全：Beav 会先打印同样的计划，明确回答 `y` 才开始删除，回答其他任何值都会取消：
+如果习惯纯命令行，可以先运行只读扫描预览：
 
 ```bash
-beav clean        # 终端中：先预览，回答 y 才删除
-beav clean --yes  # 跳过确认直接清理
+beav scan          # 严格只读预览，绝不删除任何文件
+beav clean         # 终端中：先预览，回答 y 才删除
+beav clean --yes   # 跳过确认直接清理安全项
 ```
 
 管道和 CI 没有交互终端，`beav clean` 在那里保持直接执行，脚本行为不变。
 
-这条命令只处理当前用户的缓存。Beav 不会自行调用 `sudo`；系统清理需要明确执行：
+Beav 不会自行调用 `sudo`；系统清理需要明确执行：
 
 ```bash
 sudo beav clean --system
@@ -62,7 +64,13 @@ sudo beav clean --system
 sudo beav clean --all
 ```
 
-直接运行 `beav` 会打开终端菜单。`beav analyze [PATH]` 则进入随程序提供的磁盘占用浏览器。
+想以只读界面查看各目录磁盘占用（基于 `gdu`，按 `q` 退出）：
+
+```bash
+beav analyze [PATH]
+```
+
+界面语言会自动根据环境变量（`BEAV_LANG`、`LC_ALL`、`LC_MESSAGES`、`LANG`）在中英文间切换，也可以通过 `--lang zh` 或 `--lang en` 手动指定。
 
 ## 能清理哪些内容
 
@@ -81,10 +89,12 @@ sudo beav clean --all
 | 容器 | Docker、Podman清理；无根模式与系统守护进程分开校验 |
 | 系统 | apt、dnf、pacman、zypper、systemd journal、`/tmp`、`/var/tmp`、选定的 `/var/cache` 内容、Nix GC |
 
-你安装的版本究竟带了哪些清理项，直接问本机二进制最准确：
+查看本机二进制内置与自定义的全部清理器、影响级别（安全/重度）、实际生效保留天数以及单条详情：
 
 ```bash
-beav config show
+beav list
+beav list --heavy
+beav info lang-rustup
 ```
 
 工具没安装、相关进程仍在运行、文件太新，或者Beav无法证明目标安全时，对应清理项会跳过。跳过不等于删除失败。
@@ -99,7 +109,7 @@ beav config show
 - 年龄按单个文件计算。父目录很旧，不代表里面的新文件可以一起删。
 - 目录遍历由 `openat` 和 `O_NOFOLLOW` 锚定。遇到跨挂载点、符号链接替换或文件身份变化，删除会停止。
 - 相关程序、打开的文件描述符和锁文件都会影响判断。目标用户进程的检查一旦报错，Beav 会保守跳过。
-- heavy 清理项需要 `--include-heavy`，或者在 `--only` 中写出完整 cleaner ID 或 tag。`--yes`、前缀和 `--all` 都不能代替这次授权。
+- heavy 清理项需要 `--include-heavy`、在 `--only` 中写出完整 cleaner ID 或 tag，或在交互界面中手动按空格勾选。`--yes`、前缀和 `--all` 都不能代替这次授权。
 
 Beav没有隐式提权。普通用户请求`--system`时只会收到sudo提示；root登录若想清理`/root`，还要明确传入`--allow-root-home`。在`sudo --all`下，Beav会交叉检查`SUDO_UID`、`SUDO_USER`和家目录所有者，然后才确定用户作用域。
 
@@ -117,8 +127,11 @@ Docker、Podman的无根清理还会核对守护进程模式、套接字所有�
 ## 常用命令
 
 ```bash
-# 只预览语言工具相关清理项
-beav clean --dry-run --only langs
+# 只读预览语言工具相关清理项及候选文件样本
+beav scan --only langs --verbose
+
+# 查看单个清理器的说明、路径与示例命令
+beav info lang-uv
 
 # 运行一个指定清理项
 beav clean --only lang-uv
@@ -136,10 +149,10 @@ beav clean --min-age=langs=14d,logs=30d
 beav clean --include-heavy
 
 # 给脚本输出 JSONL
-beav clean --dry-run --output json
+beav scan --output json
 ```
 
-`--only`和`--skip`支持cleaner ID、ID前缀或tag。heavy清理项更严格：只有完整ID才能在`--only`中顺带授权。敏感profile还有内置最低年龄，命令行参数不能把未完成下载或托管缓存的门槛降到安全线以下。
+`--only`和`--skip`支持cleaner ID、ID前缀或tag。heavy清理项更严格：只有完整ID或完整tag才能在`--only`中顺带授权。敏感profile还有内置最低年龄，命令行参数不能把未完成下载或托管缓存的门槛降到安全线以下。
 
 完整参数以程序帮助为准：
 
@@ -149,12 +162,14 @@ beav clean --help
 
 ## 配置
 
-查看全部 cleaner 的 ID、年龄与状态，生成初始配置，或打开编辑器：
+查看当前生效配置、生成带注释的初始配置文件、用 `$VISUAL`/`$EDITOR` 编辑，或管理白名单保护路径：
 
 ```bash
+beav config show
 beav config init
-beav config show   # 清理器表格，含可用于 --only/--skip 的 ID；--json 为机器可读格式
 beav config edit
+beav config whitelist add ~/.cache/keep-this
+beav config whitelist remove ~/.cache/keep-this
 ```
 
 某个 cleaner 不想再清理，一行命令永久关闭或恢复，不需要手改 YAML：
@@ -169,7 +184,7 @@ beav config enable lang-pip
 ```yaml
 defaults:
   min_age_days: 14
-  output: spinner # spinner | plain | json
+  output: spinner # auto | spinner | plain | json
 
 overrides:
   editor-vscode:
@@ -198,10 +213,10 @@ whitelist:
 
 ## 输出与脚本
 
-stdout 是终端时，默认输出 spinner；接到管道后会改用 plain。让其他程序读取时，建议显式选择 JSONL：
+stdout 是终端时，默认输出动态 spinner；接到管道后会改用 plain。让其他程序读取时，建议显式选择 JSONL：
 
 ```bash
-beav clean --dry-run --output json | jq -c 'select(.event == "finish" or .event == "summary")'
+beav scan --output json | jq -c 'select(.event == "finish" or .event == "summary")'
 ```
 
 dry-run 的候选数量写入 `files_candidate` 和 `bytes_candidate`，实际删除字段仍为零。部分原生工具无法给出准确字节数。遇到这种情况，summary 会设置 `metrics_incomplete` 并列出未计量的 cleaner，而不是编一个数字。
@@ -211,7 +226,7 @@ dry-run 的候选数量写入 `files_candidate` 和 `bytes_candidate`，实际�
 | 退出码 | 含义 |
 |---:|---|
 | `0` | 所选清理项结束，没有错误事件 |
-| `1` | 参数无效或提权请求被拒绝 |
+| `1` | 参数无效、未知 ID/选择器或提权请求被拒绝 |
 | `2` | 配置、registry 或路径校验失败 |
 | `3` | 至少一个清理项产生错误事件 |
 | `4` | 收到信号后中断 |
