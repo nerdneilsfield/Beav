@@ -115,7 +115,7 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 			return nil
 		}
 	}
-	res, _, err := runCleanPass(ctx, merged, scope, home, targetUID, cfg, f, f.DryRun, stdout)
+	res, _, err := runCleanPass(ctx, merged, scope, home, targetUID, cfg, f, false, stdout)
 	if err != nil {
 		return passExitError(err)
 	}
@@ -133,8 +133,14 @@ type passInfo struct {
 }
 
 // runCleanPass wires executors, renders events, and runs one engine pass.
+// preview selects the interactive confirmation pass; the pass is dry whenever
+// preview or f.DryRun is set. Dryness is derived here from CleanFlags so no
+// call site can hand a literal dry value to the engine.
 // runCleanPass 接线执行器、渲染事件并运行一次引擎处理。
-func runCleanPass(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, f CleanFlags, dry bool, stdout io.Writer) (engine.Result, passInfo, error) {
+// preview 选择交互确认用的预演 pass；preview 或 f.DryRun 置位时该 pass 为 dry。
+// dry 在此从 CleanFlags 派生，调用方无法向引擎传入字面量 dry 值。
+func runCleanPass(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, f CleanFlags, preview bool, stdout io.Writer) (engine.Result, passInfo, error) {
+	dry := preview || f.DryRun
 	info := passInfo{}
 	renderer := chooseRenderer(f.Output, cfg.Defaults.Output, stdout)
 	defer func() { _ = renderer.Close() }()
