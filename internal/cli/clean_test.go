@@ -6,11 +6,14 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dengqi/beav/internal/cleaner/engine"
 	"github.com/dengqi/beav/internal/cleaner/model"
+	"github.com/dengqi/beav/internal/config"
 	uicli "github.com/dengqi/beav/internal/ui/cli"
 )
 
@@ -123,6 +126,96 @@ func TestCleanEngineRegistersClosedExecutors(t *testing.T) {
 				if event.Event == model.EvError && event.Reason == "internal" {
 					t.Fatalf("executor missing for %q: %+v", cleaner.Type, events)
 				}
+			}
+		})
+	}
+}
+
+// TestCleanDryRunNeverDeletes verifies that --dry-run reports candidates but
+// leaves every file on disk. This guards the dry-run integrity promise after a
+// regression passed a hard-coded non-dry pass.
+// TestCleanDryRunNeverDeletes 验证 --dry-run 只报告候选而不动磁盘上的任何文件。
+// 此测试保护 dry-run 的完整性承诺。
+func TestCleanDryRunNeverDeletes(t *testing.T) {
+	target := t.TempDir()
+	path := filepath.Join(target, "old.txt")
+	if err := os.WriteFile(path, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().AddDate(0, 0, -30)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgDir := t.TempDir()
+	cleanersDir := filepath.Join(cfgDir, "cleaners.d")
+	if err := os.MkdirAll(cleanersDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	def := "- id: drytest-cache\n  name: Drytest Cache\n  scope: user\n  type: paths\n  min_age_days: 7\n  paths:\n    - " + filepath.Join(target, "**") + "\n  tags: [drytest]\n"
+	if err := os.WriteFile(filepath.Join(cleanersDir, "drytest.yaml"), []byte(def), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cmd := NewRootCmd("t", "t", "t")
+	cmd.SetArgs([]string{"clean", "--dry-run", "--output", "json", "--only", "drytest-cache", "--config-dir", cfgDir, "--builtin-disabled", "--allow-root-home"})
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("err: %v out=%q", err, out.String())
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "keep" {
+		t.Fatalf("dry run must not delete the file: read err=%v", err)
+	}
+	if !strings.Contains(out.String(), `"files_candidate":1`) {
+		t.Fatalf("expected one candidate in the plan output: %q", out.String())
+	}
+}
+
+// TestConfirmNeededSkipsDryRunYesAndJSON verifies which flag combinations
+// bypass the interactive preview.
+// TestConfirmNeededSkipsDryRunYesAndJSON 验证哪些标志组合会绕过交互式预演。
+func TestConfirmNeededSkipsDryRunYesAndJSON(t *testing.T) {
+	cfg := &config.Config{}
+	if confirmNeeded(CleanFlags{DryRun: true}, cfg, &bytes.Buffer{}) {
+		t.Fatal("dry run must not ask for confirmation")
+	}
+	if confirmNeeded(CleanFlags{Yes: true}, cfg, &bytes.Buffer{}) {
+		t.Fatal("--yes must not ask for confirmation")
+	}
+	if confirmNeeded(CleanFlags{Output: "json"}, cfg, &bytes.Buffer{}) {
+		t.Fatal("json output is for scripts and must not ask for confirmation")
+	}
+	if confirmNeeded(CleanFlags{}, cfg, &bytes.Buffer{}) {
+		t.Fatal("non-terminal stdout must not ask for confirmation")
+	}
+}
+
+// TestConfirmDeletionAcceptsExplicitYes verifies the prompt answer parsing.
+// TestConfirmDeletionAcceptsExplicitYes 验证确认提示的回答解析。
+func TestConfirmDeletionAcceptsExplicitYes(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"y", "y\n", true},
+		{"yes", "YES\n", true},
+		{"n", "n\n", false},
+		{"empty default is no", "\n", false},
+		{"eof is no", "", false},
+		{"anything else is no", "why not\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			got := confirmDeletion(strings.NewReader(tc.input), &out, engine.Result{FilesCandidate: 3, BytesCandidate: 3000}, passInfo{native: []string{"lang-uv"}})
+			if got != tc.want {
+				t.Fatalf("confirmDeletion(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+			if !strings.Contains(out.String(), "Proceed with deletion? [y/N]") {
+				t.Fatalf("missing prompt: %q", out.String())
 			}
 		})
 	}

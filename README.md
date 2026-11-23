@@ -41,11 +41,14 @@ Before deleting anything on a new machine, inspect the plan:
 beav clean --dry-run
 ```
 
-If the result looks right, run the same cleanup without `--dry-run`:
+In an interactive terminal, plain `beav clean` is just as safe: it prints the same plan and only deletes after you answer `y`. Any other answer cancels the run.
 
 ```bash
-beav clean
+beav clean        # terminal: preview first, deletes only on an explicit y
+beav clean --yes  # skip the prompt and clean directly
 ```
+
+Pipes and CI have no terminal, so `beav clean` there still runs directly and script behavior is unchanged.
 
 This cleans the current user's caches. Beav does not invoke `sudo` for you. System cleanup is a separate, explicit command:
 

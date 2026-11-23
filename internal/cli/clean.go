@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -47,7 +48,7 @@ func NewCleanCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.MinAge, "min-age", "", "override min age, for example 14d or tag=3d")
 	cmd.Flags().BoolVar(&f.ForceNoAge, "force-no-age", false, "allow cleaners that explicitly have no age filter")
 	cmd.Flags().StringVar(&f.Output, "output", "", "output mode: spinner, plain, or json")
-	cmd.Flags().BoolVar(&f.Yes, "yes", false, "skip interactive confirmations; does not authorize heavy cleaners")
+	cmd.Flags().BoolVar(&f.Yes, "yes", false, "run deletion without the confirmation prompt; does not authorize heavy cleaners")
 	cmd.Flags().BoolVar(&f.AllowRootHome, "allow-root-home", false, "allow cleaning /root")
 	cmd.Flags().StringVar(&f.UserOverride, "user", "", "target user for --all")
 	cmd.Flags().StringVar(&f.ConfigDir, "config-dir", "", "override config directory")
@@ -57,7 +58,7 @@ func NewCleanCmd() *cobra.Command {
 }
 
 // runClean executes the clean operation with the given flags.
-// runClean 使用给定的标志执行清理操作。
+// runClean 使用给定标志执行清理操作。
 func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error {
 	scope, home, targetUID, err := determineScope(f)
 	if err != nil {
@@ -100,11 +101,46 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 		return ExitError{code: 2, err: err}
 	}
 
+	if confirmNeeded(f, cfg, stdout) {
+		res, info, err := runCleanPass(ctx, merged, scope, home, targetUID, cfg, f, true, stdout)
+		if err != nil {
+			return passExitError(err)
+		}
+		if res.FilesCandidate == 0 && len(info.native) == 0 {
+			fmt.Fprintln(stdout, "\nNothing to delete.")
+			return nil
+		}
+		if !confirmDeletion(os.Stdin, stdout, res, info) {
+			fmt.Fprintln(stdout, "\nCanceled. Nothing deleted.")
+			return nil
+		}
+	}
+	res, _, err := runCleanPass(ctx, merged, scope, home, targetUID, cfg, f, f.DryRun, stdout)
+	if err != nil {
+		return passExitError(err)
+	}
+	if res.CleanersErrored > 0 {
+		return ExitError{code: 3, err: fmt.Errorf("errors in %d cleaners", res.CleanersErrored)}
+	}
+	_ = stderr
+	return nil
+}
+
+// passInfo records what a preview pass learned about the upcoming real run.
+// passInfo 记录预演对随后真实运行的了解。
+type passInfo struct {
+	native []string // cleaners that will run native commands and cannot be previewed
+}
+
+// runCleanPass wires executors, renders events, and runs one engine pass.
+// runCleanPass 接线执行器、渲染事件并运行一次引擎处理。
+func runCleanPass(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, f CleanFlags, dry bool, stdout io.Writer) (engine.Result, passInfo, error) {
+	info := passInfo{}
 	renderer := chooseRenderer(f.Output, cfg.Defaults.Output, stdout)
 	defer func() { _ = renderer.Close() }()
 
 	var log *oplog.Logger
-	if os.Getenv("BEAV_NO_OPLOG") == "" && !f.DryRun && shouldWriteOperationLog(targetUID) {
+	if !dry && os.Getenv("BEAV_NO_OPLOG") == "" && shouldWriteOperationLog(targetUID) {
 		logHome := home
 		if logHome == "" {
 			logHome, _ = os.UserHomeDir()
@@ -123,27 +159,67 @@ func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error
 		if log != nil && ev.Event == model.EvDeleted {
 			_ = log.Write("delete", ev.Path, ev.Size, ev.CleanerID)
 		}
+		if dry && ev.Event == model.EvCleanerSkipped && ev.Reason == string(model.SkipReasonDryRunUnsupported) {
+			info.native = append(info.native, ev.CleanerID)
+		}
 		renderer.Render(ev)
 	}
 	res, err := eng.Run(ctx, merged, engine.Options{
 		Scope:        scope,
-		DryRun:       f.DryRun,
+		DryRun:       dry,
 		Only:         f.Only,
 		Skip:         f.Skip,
 		IncludeHeavy: f.IncludeHeavy,
 		Emitter:      emit,
 	})
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return ExitError{code: 4, err: err}
-		}
-		return ExitError{code: 3, err: err}
+	return res, info, err
+}
+
+// confirmNeeded reports whether an interactive terminal user should see a
+// preview and a deletion prompt before the real pass runs.
+// confirmNeeded 判断交互终端用户在真实运行前是否应看到预演与删除确认。
+func confirmNeeded(f CleanFlags, cfg *config.Config, stdout io.Writer) bool {
+	if f.DryRun || f.Yes {
+		return false
 	}
-	if res.CleanersErrored > 0 {
-		return ExitError{code: 3, err: fmt.Errorf("errors in %d cleaners", res.CleanersErrored)}
+	if outputMode(f.Output, cfg.Defaults.Output) == "json" {
+		return false
 	}
-	_ = stderr
-	return nil
+	out, ok := stdout.(*os.File)
+	if !ok || !sysinfo.IsTerminal(out) {
+		return false
+	}
+	return sysinfo.IsTerminal(os.Stdin)
+}
+
+// confirmDeletion asks the user to approve the deletion after the preview pass
+// has printed its plan summary. It returns true only on an explicit yes.
+// confirmDeletion 在预演 pass 打印计划后请求用户批准删除。只有明确回答 yes 才返回 true。
+func confirmDeletion(stdin io.Reader, stdout io.Writer, res engine.Result, info passInfo) bool {
+	if len(info.native) > 0 {
+		fmt.Fprintf(stdout, "No preview available, these run their own cleanup command: %s.\n", strings.Join(info.native, ", "))
+	}
+	fmt.Fprint(stdout, "Proceed with deletion? [y/N] ")
+	line, err := bufio.NewReader(stdin).ReadString('\n')
+	if err != nil && line == "" {
+		fmt.Fprintln(stdout)
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+// passExitError maps an engine error to the process exit code.
+// passExitError 将引擎错误映射为进程退出码。
+func passExitError(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return ExitError{code: 4, err: err}
+	}
+	return ExitError{code: 3, err: err}
 }
 
 func shouldWriteOperationLog(targetUID int) bool {
@@ -283,14 +359,19 @@ func parseDays(raw string) (int, error) {
 	return v, nil
 }
 
-// chooseRenderer selects the appropriate output renderer based on flags and config.
-// chooseRenderer 根据标志和配置选择合适的输出渲染器。
-func chooseRenderer(flag, cfgDefault string, stdout io.Writer) ui.Renderer {
-	mode := flag
-	if mode == "" {
-		mode = cfgDefault
+// outputMode resolves the effective output mode from the flag and config default.
+// outputMode 从标志与配置默认值解析有效的输出模式。
+func outputMode(flag, cfgDefault string) string {
+	if flag != "" {
+		return flag
 	}
-	switch mode {
+	return cfgDefault
+}
+
+// chooseRenderer selects the appropriate output renderer based on flags and config.
+// chooseRenderer 根据标志和配置选择相应的输出渲染器。
+func chooseRenderer(flag, cfgDefault string, stdout io.Writer) ui.Renderer {
+	switch mode := outputMode(flag, cfgDefault); mode {
 	case "json":
 		return uijson.New(stdout)
 	case "plain":

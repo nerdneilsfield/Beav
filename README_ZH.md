@@ -41,11 +41,14 @@ make build
 beav clean --dry-run
 ```
 
-确认输出符合预期，再去掉 `--dry-run`：
+在交互终端里，直接运行 `beav clean` 也一样安全：Beav 会先打印同样的计划，明确回答 `y` 才开始删除，回答其他任何值都会取消：
 
 ```bash
-beav clean
+beav clean        # 终端中：先预览，回答 y 才删除
+beav clean --yes  # 跳过确认直接清理
 ```
+
+管道和 CI 没有交互终端，`beav clean` 在那里保持直接执行，脚本行为不变。
 
 这条命令只处理当前用户的缓存。Beav 不会自行调用 `sudo`；系统清理需要明确执行：
 
