@@ -16,8 +16,8 @@ type Defaults struct {
 }
 
 type Override struct {
-	Enabled    *bool `yaml:"enabled"`
-	MinAgeDays *int  `yaml:"min_age_days"`
+	Enabled    *bool `yaml:"enabled,omitempty"`
+	MinAgeDays *int  `yaml:"min_age_days,omitempty"`
 }
 
 type Config struct {
@@ -85,6 +85,27 @@ func (c *Config) MergedWhitelist() []string {
 	out = append(out, c.whitelistTxt...)
 	out = append(out, c.Whitelist...)
 	return out
+}
+
+// Save writes defaults, overrides, and the whitelist back to config.yaml.
+// Save 将 defaults、overrides 与 whitelist 写回 config.yaml。
+func (c *Config) Save() error {
+	if err := os.MkdirAll(c.Dir, 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(c.Dir, "config.yaml"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	enc := yaml.NewEncoder(f)
+	defer func() { _ = enc.Close() }()
+	enc.SetIndent(2)
+	return enc.Encode(struct {
+		Defaults  Defaults            `yaml:"defaults"`
+		Overrides map[string]Override `yaml:"overrides,omitempty"`
+		Whitelist []string            `yaml:"whitelist,omitempty"`
+	}{c.Defaults, c.Overrides, c.Whitelist})
 }
 
 func expand(p, home string) (string, error) {

@@ -149,12 +149,19 @@ beav clean --help
 
 ## Configuration
 
-Create a starter file, inspect the merged result, or open it in your editor:
+Browse every cleaner with its ID, age, and state, create a starter file, or open the config in your editor:
 
 ```bash
 beav config init
-beav config show
+beav config show   # table of cleaners; the IDs work with --only/--skip; --json for scripts
 beav config edit
+```
+
+Turn one cleaner off for good, or bring it back, without editing YAML:
+
+```bash
+beav config disable lang-pip
+beav config enable lang-pip
 ```
 
 The default path is `~/.config/beav/config.yaml`. Command-line flags take precedence over this file, and the file takes precedence over built-in defaults.

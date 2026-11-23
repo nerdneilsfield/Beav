@@ -30,7 +30,7 @@ func NewRootCmd(version, commit, date string) *cobra.Command {
 			case "analyze":
 				return tui.RunAnalyze(".")
 			case "list":
-				return runConfigShow(cmd, "")
+				return runConfigShow(cmd, "", false)
 			}
 			return nil
 		},

@@ -4,9 +4,14 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"text/tabwriter"
 
 	"github.com/dengqi/beav/cleaners"
 	"github.com/dengqi/beav/internal/cleaner/registry"
@@ -19,6 +24,7 @@ import (
 func NewConfigCmd() *cobra.Command {
 	var dir string
 	var force bool
+	var showJSON bool
 	cmd := &cobra.Command{Use: "config", Short: "Inspect or edit beav config"}
 	initCmd := &cobra.Command{
 		Use:   "init",
@@ -32,12 +38,13 @@ func NewConfigCmd() *cobra.Command {
 
 	show := &cobra.Command{
 		Use:   "show",
-		Short: "Show effective config and cleaner list",
+		Short: "List cleaners with their IDs and state",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runConfigShow(cmd, dir)
+			return runConfigShow(cmd, dir, showJSON)
 		},
 	}
 	show.Flags().StringVar(&dir, "config-dir", "", "override config directory")
+	show.Flags().BoolVar(&showJSON, "json", false, "machine-readable JSON output")
 
 	edit := &cobra.Command{
 		Use:   "edit",
@@ -66,7 +73,27 @@ func NewConfigCmd() *cobra.Command {
 	}
 	edit.Flags().StringVar(&dir, "config-dir", "", "override config directory")
 
-	cmd.AddCommand(initCmd, show, edit)
+	enable := &cobra.Command{
+		Use:   "enable <cleaner-id>",
+		Short: "Enable a cleaner in every future run",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runConfigSetEnabled(resolveConfigDir(dir), args[0], true, cmd.OutOrStdout())
+		},
+	}
+	enable.Flags().StringVar(&dir, "config-dir", "", "override config directory")
+
+	disable := &cobra.Command{
+		Use:   "disable <cleaner-id>",
+		Short: "Disable a cleaner in every future run",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runConfigSetEnabled(resolveConfigDir(dir), args[0], false, cmd.OutOrStdout())
+		},
+	}
+	disable.Flags().StringVar(&dir, "config-dir", "", "override config directory")
+
+	cmd.AddCommand(initCmd, show, edit, enable, disable)
 	return cmd
 }
 
@@ -97,9 +124,10 @@ func writeDefaultConfig(path string, force bool) error {
 	return err
 }
 
-// runConfigShow displays the effective config and cleaner list as JSON.
-// runConfigShow 以 JSON 格式显示有效配置和清理器列表。
-func runConfigShow(cmd *cobra.Command, dir string) error {
+// runConfigShow lists cleaners in a human table, or the full merged config as
+// JSON when --json is set.
+// runConfigShow 以人类可读表格列出清理器；指定 --json 时输出完整合并配置 JSON。
+func runConfigShow(cmd *cobra.Command, dir string, showJSON bool) error {
 	cfgDir := resolveConfigDir(dir)
 	cfg, err := config.Load(cfgDir)
 	if err != nil {
@@ -113,18 +141,79 @@ func runConfigShow(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
-	out := map[string]any{
-		"config":   cfg,
-		"cleaners": nil,
+	merged, err := registry.MergeByID(builtin, user)
+	if err != nil {
+		return err
+	}
+	if showJSON {
+		out := map[string]any{"config": cfg, "cleaners": merged}
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tNAME\tSCOPE\tTYPE\tAGE\tTAGS\tSTATE")
+	for _, c := range merged {
+		age := "-"
+		if c.MinAgeDays != nil {
+			age = strconv.Itoa(*c.MinAgeDays) + "d"
+		}
+		state := "enabled"
+		if ov, ok := cfg.Overrides[c.ID]; ok && ov.Enabled != nil {
+			state = boolState(*ov.Enabled)
+		} else if c.Enabled != nil {
+			state = boolState(*c.Enabled)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", c.ID, c.Name, c.Scope, c.Type, age, strings.Join(c.Tags, ","), state)
+	}
+	return w.Flush()
+}
+
+func boolState(b bool) string {
+	if b {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+// runConfigSetEnabled persists an enable/disable override for one cleaner.
+// runConfigSetEnabled 为单个清理器持久化启用或禁用覆盖。
+func runConfigSetEnabled(cfgDir, id string, enabled bool, stdout io.Writer) error {
+	builtin, err := registry.LoadBuiltin(cleaners.Builtin)
+	if err != nil {
+		return err
+	}
+	user, err := registry.LoadUserDir(filepath.Join(cfgDir, "cleaners.d"))
+	if err != nil {
+		return err
 	}
 	merged, err := registry.MergeByID(builtin, user)
 	if err != nil {
 		return err
 	}
-	out["cleaners"] = merged
-	enc := json.NewEncoder(cmd.OutOrStdout())
-	enc.SetIndent("", "  ")
-	return enc.Encode(out)
+	known := false
+	for _, c := range merged {
+		if c.ID == id {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return fmt.Errorf("unknown cleaner id %q; run `beav config show` to list all IDs", id)
+	}
+	cfg, err := config.Load(cfgDir)
+	if err != nil {
+		return err
+	}
+	ov := cfg.Overrides[id]
+	ov.Enabled = &enabled
+	cfg.Overrides[id] = ov
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "%s is now %s by default\n", id, boolState(enabled))
+	return nil
 }
 
 // resolveConfigDir returns the config directory, using the override if provided.

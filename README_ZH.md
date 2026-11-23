@@ -149,12 +149,19 @@ beav clean --help
 
 ## 配置
 
-下面三条命令分别用于生成初始配置、查看合并结果和打开编辑器：
+查看全部 cleaner 的 ID、年龄与状态，生成初始配置，或打开编辑器：
 
 ```bash
 beav config init
-beav config show
+beav config show   # 清理器表格，含可用于 --only/--skip 的 ID；--json 为机器可读格式
 beav config edit
+```
+
+某个 cleaner 不想再清理，一行命令永久关闭或恢复，不需要手改 YAML：
+
+```bash
+beav config disable lang-pip
+beav config enable lang-pip
 ```
 
 默认配置文件是 `~/.config/beav/config.yaml`。优先级很直接：命令行覆盖配置文件，配置文件覆盖内置默认值。
