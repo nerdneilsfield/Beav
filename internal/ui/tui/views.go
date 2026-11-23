@@ -77,8 +77,8 @@ func (m workbenchModel) renderScanningView() string {
 
 	var b strings.Builder
 	b.WriteString(header + "\n\n")
-	b.WriteString(fmt.Sprintf("%s %s\n\n", m.spin.View(), m.tr.Text("Scanning caches without modifying any files...", "正在执行只读扫描，不会修改或删除任何文件...")))
-	b.WriteString(fmt.Sprintf("[%s] %d/%d (%d%%)\n", bar, m.scanCompleted, m.scanTotal, pct))
+	fmt.Fprintf(&b, "%s %s\n\n", m.spin.View(), m.tr.Text("Scanning caches without modifying any files...", "正在执行只读扫描，不会修改或删除任何文件..."))
+	fmt.Fprintf(&b, "[%s] %d/%d (%d%%)\n", bar, m.scanCompleted, m.scanTotal, pct)
 	b.WriteString(styleSubtle.Render(fitWidth(m.tr.Textf("Current: %s", "当前项目：%s", cur), maxInt(20, m.width-6))) + "\n\n")
 	b.WriteString(m.tr.Textf("%s %s (%s)",
 		"%s%s（%s）",
@@ -229,15 +229,14 @@ func (m workbenchModel) renderItemRow(s CleanerScan, section rowSection, focused
 	}
 
 	var check string
-	if section == sectionSkipped {
-		if s.Status == "error" {
-			check = styleDangerText.Render("[!]")
-		} else {
-			check = styleMuted.Render("[-]")
-		}
-	} else if m.selected[s.Cleaner.ID] {
+	switch {
+	case section == sectionSkipped && s.Status == "error":
+		check = styleDangerText.Render("[!]")
+	case section == sectionSkipped:
+		check = styleMuted.Render("[-]")
+	case m.selected[s.Cleaner.ID]:
 		check = styleBadgeSafe.Render("[x]")
-	} else {
+	default:
 		check = styleSubtle.Render("[ ]")
 	}
 
@@ -327,11 +326,12 @@ func (m workbenchModel) renderDetailPane(innerWidth, maxLines int) string {
 		}
 	}
 
-	if s.Status == "error" {
+	switch s.Status {
+	case "error":
 		lines = append(lines, "")
 		lines = append(lines, styleDangerText.Render(m.tr.Text("Scan error:", "扫描出错：")))
 		lines = append(lines, wrapText(s.ErrorDetail, innerWidth)...)
-	} else if s.Status == "skipped" {
+	case "skipped":
 		lines = append(lines, "")
 		lines = append(lines, styleWarnText.Render(fitWidth(m.tr.Text("Skip reason: ", "跳过原因：")+m.tr.SkipPhrase(s.SkipReason), innerWidth)))
 		if remedy := m.tr.SkipRemedy(s.SkipReason); remedy != "" {
@@ -342,7 +342,8 @@ func (m workbenchModel) renderDetailPane(innerWidth, maxLines int) string {
 		}
 	}
 
-	if len(s.Samples) > 0 {
+	switch {
+	case len(s.Samples) > 0:
 		lines = append(lines, "")
 		lines = append(lines, styleSubtle.Render(m.tr.Textf("Sample candidates (%s, %s):", "待清理文件预览（共 %s，%s）：",
 			humanBytes(s.BytesCandidate), m.tr.Plural(s.FilesCandidate, "file", "files", "个文件"))))
@@ -351,13 +352,13 @@ func (m workbenchModel) renderDetailPane(innerWidth, maxLines int) string {
 			entry := fmt.Sprintf("  %s (%s)", short, humanBytes(smp.Size))
 			lines = append(lines, styleMuted.Render(fitWidth(entry, innerWidth)))
 		}
-	} else if len(s.CommandPreview) > 0 {
+	case len(s.CommandPreview) > 0:
 		lines = append(lines, "")
 		lines = append(lines, styleSubtle.Render(m.tr.Text("Native command preview:", "命令输出预览：")))
 		for _, cl := range s.CommandPreview {
 			lines = append(lines, styleMuted.Render(fitWidth("  "+cl, innerWidth)))
 		}
-	} else if s.MetricsIncomplete {
+	case s.MetricsIncomplete:
 		lines = append(lines, "")
 		lines = append(lines, styleSubtle.Render(m.tr.Text(
 			"Native command cleaner: exact size cannot be estimated ahead of execution.",
@@ -439,11 +440,11 @@ func (m workbenchModel) renderExecutingView() string {
 
 	var b strings.Builder
 	b.WriteString(header + "\n\n")
-	b.WriteString(fmt.Sprintf("%s %s (%d/%d)\n\n",
+	fmt.Fprintf(&b, "%s %s (%d/%d)\n\n",
 		m.spin.View(),
 		m.tr.Text("Running selected cleaners...", "正在清理已选项目..."),
 		m.execCompleted, m.execTotal,
-	))
+	)
 
 	maxRows := maxInt(6, m.height-10)
 	shown := 0
@@ -456,18 +457,20 @@ func (m workbenchModel) renderExecutingView() string {
 		if scan, ok := m.scanByID[id]; ok {
 			name = m.tr.CleanerName(scan.Cleaner)
 		}
-		if res, done := m.execItems[id]; done {
+		res, done := m.execItems[id]
+		switch {
+		case done:
 			switch {
 			case res.Status == "error":
-				b.WriteString(fmt.Sprintf("  %s %s (%s) - %s\n", styleDangerText.Render("✗"), name, id, fitWidth(res.ErrorDetail, 45)))
+				fmt.Fprintf(&b, "  %s %s (%s) - %s\n", styleDangerText.Render("✗"), name, id, fitWidth(res.ErrorDetail, 45))
 			case res.MetricsIncomplete && res.BytesFreed == 0:
-				b.WriteString(fmt.Sprintf("  %s %s (%s) - %s\n", styleBadgeSafe.Render("✓"), name, id, m.tr.Text("native completed", "命令已执行")))
+				fmt.Fprintf(&b, "  %s %s (%s) - %s\n", styleBadgeSafe.Render("✓"), name, id, m.tr.Text("native completed", "命令已执行"))
 			default:
-				b.WriteString(fmt.Sprintf("  %s %s (%s) - %s\n", styleBadgeSafe.Render("✓"), name, id, humanBytes(res.BytesFreed)))
+				fmt.Fprintf(&b, "  %s %s (%s) - %s\n", styleBadgeSafe.Render("✓"), name, id, humanBytes(res.BytesFreed))
 			}
-		} else if m.currentID == id {
-			b.WriteString(fmt.Sprintf("  %s %s (%s)\n", m.spin.View(), name, id))
-		} else {
+		case m.currentID == id:
+			fmt.Fprintf(&b, "  %s %s (%s)\n", m.spin.View(), name, id)
+		default:
 			b.WriteString(styleMuted.Render(fmt.Sprintf("  · %s (%s)\n", name, id)))
 		}
 		shown++

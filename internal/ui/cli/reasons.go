@@ -60,27 +60,28 @@ func displayName(tr *i18n.Translator, id, rawName string) string {
 }
 
 func joinNames(tr *i18n.Translator, names []string, verbose bool) string {
-	const max = 4
+	const maxShown = 4
 	sep := tr.Text(", ", "、")
-	if verbose || len(names) <= max {
+	if verbose || len(names) <= maxShown {
 		return strings.Join(names, sep)
 	}
-	return strings.Join(names[:max], sep) + tr.Textf(", and %d more", "，另有 %d 项", len(names)-max)
+	return strings.Join(names[:maxShown], sep) + tr.Textf(", and %d more", "，另有 %d 项", len(names)-maxShown)
 }
 
 func joinSkipEntries(tr *i18n.Translator, entries []skipEntry, verbose bool) string {
-	const max = 6
+	const maxShown = 6
 	shown := entries
-	if !verbose && len(entries) > max {
-		shown = entries[:max]
+	if !verbose && len(entries) > maxShown {
+		shown = entries[:maxShown]
 	}
 	parts := make([]string, 0, len(shown))
 	for _, e := range shown {
-		if e.ID != "" && e.Name != e.ID {
+		switch {
+		case e.ID != "" && e.Name != e.ID:
 			parts = append(parts, fmt.Sprintf("%s (%s)", e.Name, e.ID))
-		} else if e.ID != "" {
+		case e.ID != "":
 			parts = append(parts, e.ID)
-		} else {
+		default:
 			parts = append(parts, e.Name)
 		}
 	}

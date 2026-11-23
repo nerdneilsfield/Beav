@@ -85,7 +85,9 @@ func NewConfigCmd(tr *i18n.Translator) *cobra.Command {
 			if len(parts) == 0 {
 				parts = []string{"vi"}
 			}
-			args := append(parts[1:], path)
+			args := make([]string, 0, len(parts))
+			args = append(args, parts[1:]...)
+			args = append(args, path)
 			c := exec.Command(parts[0], args...) //nolint:gosec // VISUAL/EDITOR intentionally selects the user's editor command.
 			c.Stdin = os.Stdin
 			c.Stdout = cmd.OutOrStdout()

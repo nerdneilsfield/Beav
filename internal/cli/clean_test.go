@@ -224,7 +224,7 @@ func TestDiagnoseSelectorsUnknownWrongScopeAndDisabled(t *testing.T) {
 	}
 	tr := i18n.New(i18n.LangEN)
 
-	err, _ := diagnoseSelectors(cleaners, model.ScopeUser, []string{"lang-pipx"}, tr)
+	_, err := diagnoseSelectors(cleaners, model.ScopeUser, []string{"lang-pipx"}, tr)
 	var cliErr ExitError
 	if !errors.As(err, &cliErr) || cliErr.Code() != 1 {
 		t.Fatalf("expected ExitError(1) for unknown selector, got %v", err)
@@ -233,12 +233,12 @@ func TestDiagnoseSelectorsUnknownWrongScopeAndDisabled(t *testing.T) {
 		t.Fatalf("expected suggestion and list hint, got %q", err.Error())
 	}
 
-	err, _ = diagnoseSelectors(cleaners, model.ScopeUser, []string{"pkg-apt-archives"}, tr)
+	_, err = diagnoseSelectors(cleaners, model.ScopeUser, []string{"pkg-apt-archives"}, tr)
 	if !errors.As(err, &cliErr) || cliErr.Code() != 1 || !strings.Contains(err.Error(), "--system") {
 		t.Fatalf("expected --system hint for wrong scope, got %v", err)
 	}
 
-	err, warnings := diagnoseSelectors(cleaners, model.ScopeUser, []string{"editor-vscode"}, tr)
+	warnings, err := diagnoseSelectors(cleaners, model.ScopeUser, []string{"editor-vscode"}, tr)
 	if err != nil || len(warnings) != 1 || !strings.Contains(warnings[0], "beav config enable editor-vscode") {
 		t.Fatalf("expected disabled warning, got err=%v warnings=%v", err, warnings)
 	}

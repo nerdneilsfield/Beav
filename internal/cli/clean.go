@@ -83,12 +83,6 @@ func NewCleanCmd(tr *i18n.Translator) *cobra.Command {
 	return cmd
 }
 
-// runClean executes the clean operation with the given flags.
-// runClean 使用给定标志执行清理操作。
-func runClean(ctx context.Context, stdout, stderr io.Writer, f CleanFlags) error {
-	return runCleanWithTranslator(ctx, stdout, stderr, f, translatorFromFlag(f.Lang))
-}
-
 func runCleanWithTranslator(ctx context.Context, stdout, stderr io.Writer, f CleanFlags, tr *i18n.Translator) error {
 	if tr == nil {
 		tr = i18n.New(i18n.LangEN)
@@ -97,7 +91,7 @@ func runCleanWithTranslator(ctx context.Context, stdout, stderr io.Writer, f Cle
 	if err != nil {
 		return err
 	}
-	diagErr, warnings := diagnoseSelectors(lc.Merged, lc.Scope, f.Only, tr)
+	warnings, diagErr := diagnoseSelectors(lc.Merged, lc.Scope, f.Only, tr)
 	if diagErr != nil {
 		return diagErr
 	}
@@ -179,10 +173,6 @@ func filterOutNative(unmeasured, native []string) []string {
 type passInfo struct {
 	native     []string // cleaners that refuse dry-run preview
 	unmeasured []string // native cleaners that previewed without exact byte totals
-}
-
-func runCleanPass(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, f CleanFlags, preview bool, stdout io.Writer) (engine.Result, passInfo, error) {
-	return runCleanPassWithOptions(ctx, merged, scope, home, targetUID, cfg, f, preview, stdout, translatorFromFlag(f.Lang))
 }
 
 func runCleanPassWithOptions(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, f CleanFlags, preview bool, stdout io.Writer, tr *i18n.Translator) (engine.Result, passInfo, error) {

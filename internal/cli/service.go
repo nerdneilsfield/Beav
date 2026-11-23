@@ -31,10 +31,6 @@ type cleanContext struct {
 	Merged    []model.Cleaner
 }
 
-func translatorFromFlag(flagLang string) *i18n.Translator {
-	return i18n.New(i18n.Detect(flagLang))
-}
-
 func translatorForCommand(cmd *cobra.Command, fallback *i18n.Translator) *i18n.Translator {
 	if cmd != nil {
 		if f := cmd.Flags().Lookup("lang"); f != nil && f.Changed {
@@ -146,7 +142,7 @@ func selectorMatchesCleaner(c model.Cleaner, selector string) bool {
 	return strings.HasPrefix(c.ID, selector+"-")
 }
 
-func diagnoseSelectors(merged []model.Cleaner, scope model.Scope, only []string, tr *i18n.Translator) (error, []string) {
+func diagnoseSelectors(merged []model.Cleaner, scope model.Scope, only []string, tr *i18n.Translator) ([]string, error) {
 	if len(only) == 0 {
 		return nil, nil
 	}
@@ -170,43 +166,43 @@ func diagnoseSelectors(merged []model.Cleaner, scope model.Scope, only []string,
 		if len(anyMatch) == 0 {
 			suggestions := suggestCleanerIDs(merged, sel, 3)
 			if len(suggestions) > 0 {
-				return ExitError{
+				return nil, ExitError{
 					code: 1,
 					err: fmt.Errorf("%s", tr.Textf(
 						"unknown cleaner or tag %q (did you mean: %s?); run `beav list` to inspect all IDs",
 						"未找到清理项或标签 %q（是否指：%s？）；运行 `beav list` 查看全部 ID",
 						sel, strings.Join(suggestions, ", "),
 					)),
-				}, nil
+				}
 			}
-			return ExitError{
+			return nil, ExitError{
 				code: 1,
 				err: fmt.Errorf("%s", tr.Textf(
 					"unknown cleaner or tag %q; run `beav list` to inspect all IDs",
 					"未找到清理项或标签 %q；运行 `beav list` 查看全部 ID",
 					sel,
 				)),
-			}, nil
+			}
 		}
 		if len(scopeMatch) == 0 {
 			if anyMatch[0].Scope == model.ScopeSystem {
-				return ExitError{
+				return nil, ExitError{
 					code: 1,
 					err: fmt.Errorf("%s", tr.Textf(
 						"%q matches system-scope cleaners; run `sudo beav clean --system --only %s`",
 						"%q 属于系统级清理项；请运行 `sudo beav clean --system --only %s`",
 						sel, sel,
 					)),
-				}, nil
+				}
 			}
-			return ExitError{
+			return nil, ExitError{
 				code: 1,
 				err: fmt.Errorf("%s", tr.Textf(
 					"%q matches user-scope cleaners; run `beav clean --only %s` (or `--all`) instead of `--system`",
 					"%q 属于用户级清理项；请改用 `beav clean --only %s`（或 `--all`）",
 					sel, sel,
 				)),
-			}, nil
+			}
 		}
 		if len(enabledMatch) == 0 {
 			warnings = append(warnings, tr.Textf(
@@ -216,10 +212,10 @@ func diagnoseSelectors(merged []model.Cleaner, scope model.Scope, only []string,
 			))
 		}
 	}
-	return nil, warnings
+	return warnings, nil
 }
 
-func suggestCleanerIDs(cleaners []model.Cleaner, query string, max int) []string {
+func suggestCleanerIDs(cleaners []model.Cleaner, query string, limit int) []string {
 	type scored struct {
 		id    string
 		score int
@@ -245,8 +241,8 @@ func suggestCleanerIDs(cleaners []model.Cleaner, query string, max int) []string
 		}
 		return candidates[i].id < candidates[j].id
 	})
-	if len(candidates) > max {
-		candidates = candidates[:max]
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
 	}
 	out := make([]string, 0, len(candidates))
 	for _, cand := range candidates {
