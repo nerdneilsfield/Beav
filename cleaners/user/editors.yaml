@@ -1,0 +1,31 @@
+- id: editor-cursor
+  name: Cursor IDE cache and logs
+  description: Cursor IDE caches, VSIX archives, and logs; settings and extensions are untouched
+  scope: user
+  type: paths
+  min_age_days: 7
+  paths:
+    - ~/.config/Cursor/Cache/**
+    - ~/.config/Cursor/CachedData/**
+    - '~/.config/Cursor/Code Cache/**'
+    - ~/.config/Cursor/GPUCache/**
+    - ~/.config/Cursor/DawnWebGPUCache/**
+    - ~/.config/Cursor/DawnGraphiteCache/**
+    - ~/.config/Cursor/CachedExtensionVSIXs/**
+    - ~/.config/Cursor/logs/**
+    - ~/.config/Cursor/Crashpad/completed/**
+    - ~/.cursor-server/data/logs/**
+    - ~/.cursor-server/data/CachedExtensionVSIXs/**
+  running_processes: [cursor]
+  tags: [editor, ide, ai]
+- id: editor-zed
+  name: Zed editor caches
+  description: Zed editor and internal Node LSP caches; settings and extensions are untouched
+  scope: user
+  type: paths
+  min_age_days: 14
+  paths:
+    - ~/.cache/zed/**
+    - ~/.local/share/zed/node/cache/**
+  running_processes: [zed, zed-editor]
+  tags: [editor, ide]

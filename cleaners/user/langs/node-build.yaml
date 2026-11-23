@@ -1,0 +1,15 @@
+- id: lang-node-build
+  name: Node build & Electron caches
+  description: Old node-gyp headers, Electron/esbuild binaries, TypeScript incremental build caches, and pnpm metadata cache
+  scope: user
+  type: paths
+  min_age_days: 14
+  paths:
+    - ~/.cache/node-gyp/**
+    - ~/.node-gyp/**
+    - ~/.cache/electron/**
+    - ~/.cache/electron-builder/**
+    - ~/.cache/typescript/**
+    - ~/.cache/esbuild/**
+    - ~/.cache/pnpm/**
+  tags: [langs, js, build]

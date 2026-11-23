@@ -238,3 +238,106 @@ func TestExpandRootsReturnsInvalidGlobError(t *testing.T) {
 		t.Fatalf("invalid glob should not be reported as no matches")
 	}
 }
+
+func TestPathsTrailingDoubleStarCleansEmptyAgedDirs(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".cache", "demo")
+	sub := filepath.Join(cache, "nested", "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(sub, "old.bin")
+	if err := os.WriteFile(old, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Now().Add(-30 * 24 * time.Hour)
+	for _, p := range []string{old, sub, filepath.Join(cache, "nested")} {
+		if err := os.Chtimes(p, when, when); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := model.Cleaner{
+		ID:         "demo-recursive",
+		Scope:      model.ScopeUser,
+		Type:       model.TypePaths,
+		MinAgeDays: ptrInt(7),
+		Paths:      []string{"~/.cache/demo/**"},
+	}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := NewPathsExecutor(home, safety.NewWhitelist(nil)).Run(context.Background(), c, false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !hasDelete(events, old) {
+		t.Fatalf("expected nested old file deletion; events=%+v", events)
+	}
+	if _, err := os.Stat(filepath.Join(cache, "nested")); !os.IsNotExist(err) {
+		t.Fatalf("empty aged subdirectory must be removed, got err=%v", err)
+	}
+	if _, err := os.Stat(cache); err != nil {
+		t.Fatalf("cache root itself must remain: %v", err)
+	}
+}
+
+func TestPathsSkipsMissingLiteralPathAsNoMatches(t *testing.T) {
+	home := t.TempDir()
+	c := model.Cleaner{
+		ID:         "missing-literal",
+		Scope:      model.ScopeUser,
+		Type:       model.TypePaths,
+		MinAgeDays: ptrInt(7),
+		Paths:      []string{"~/.cache/does-not-exist", "~/.cache/also-missing/**"},
+	}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := NewPathsExecutor(home, safety.NewWhitelist(nil)).Run(context.Background(), c, false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !hasCleanerSkip(events, "no_matches") {
+		t.Fatalf("expected no_matches cleaner skip for nonexistent literal paths; events=%+v", events)
+	}
+}
+
+func TestPathsComponentExcludeProtectsSubtree(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".cache", "tmpdemo")
+	privDir := filepath.Join(cache, "systemd-private-abc")
+	if err := os.MkdirAll(privDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	privFile := filepath.Join(privDir, "socket.tmp")
+	normalFile := filepath.Join(cache, "old.tmp")
+	for _, f := range []string{privFile, normalFile} {
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	when := time.Now().Add(-30 * 24 * time.Hour)
+	for _, p := range []string{privFile, privDir, normalFile} {
+		if err := os.Chtimes(p, when, when); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := model.Cleaner{
+		ID:         "tmp-exclude",
+		Scope:      model.ScopeUser,
+		Type:       model.TypePaths,
+		MinAgeDays: ptrInt(7),
+		Paths:      []string{"~/.cache/tmpdemo/**"},
+		Exclude:    []string{"systemd-private-*"},
+	}
+	events := captureEvents(t, func(emit func(model.Event)) {
+		if err := NewPathsExecutor(home, safety.NewWhitelist(nil)).Run(context.Background(), c, false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !hasDelete(events, normalFile) {
+		t.Fatalf("expected normal file deletion; events=%+v", events)
+	}
+	if hasDelete(events, privFile) {
+		t.Fatalf("excluded subtree file must never be deleted: %+v", events)
+	}
+	if _, err := os.Stat(privFile); err != nil {
+		t.Fatalf("excluded subtree file removed: %v", err)
+	}
+}

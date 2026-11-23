@@ -78,16 +78,16 @@ The built-in registry covers these areas:
 
 | Area | Examples |
 |---|---|
-| Editors | VS Code, VS Code Server, JetBrains IDEs, Neovim cache and state |
-| Browsers | Firefox, Chrome, Chromium, and Edge cache directories; profiles and login data stay in place |
-| Language tools | npm, pnpm, yarn, bun, pip, uv, Poetry, Conda, Corepack, Go, Gradle, Maven |
-| Developer tools | pre-commit, ccache, Cypress, Playwright, mise |
-| AI and GPU | interrupted Hugging Face downloads, old HF Datasets Arrow units, Torch Hub checkpoints, NVIDIA compute cache, Triton, TorchInductor |
-| Desktop | Trash, thumbnail cache, old partial-download files, Flatpak unused data |
+| Editors | VS Code / Insiders / VSCodium, Cursor, Zed, JetBrains IDEs, Neovim cache and state |
+| Browsers | Firefox, Chrome, Chromium, Edge, Brave, and Vivaldi cache directories; profiles and login data stay in place |
+| Language tools | npm, pnpm, yarn (Classic & Berry), bun, deno, node-gyp, Electron, pip, uv, Poetry, Conda, PDM/Hatch/pipx, Corepack, Cargo, Go (`GOCACHE`, gopls, `GOMODCACHE`), Gradle, Maven, Coursier |
+| Developer tools | pre-commit, ccache, sccache, clangd, zig, Bazel, Cypress, Playwright, mise |
+| AI and GPU | interrupted Hugging Face downloads, old HF Datasets Arrow units, Torch Hub checkpoints, vLLM & FlashInfer, Mesa & NVIDIA shaders, NVIDIA compute cache, Triton, TorchInductor |
+| Desktop | Trash, thumbnail cache, fontconfig cache, Flatpak app caches and unused runtimes, old partial-download files |
 | Kubernetes | minikube image cache, Helm, k9s, and kubectl cache |
 | Cloud tools | old gcloud and Azure CLI logs |
 | Containers | Docker and Podman prune operations, with rootless and system daemons kept separate |
-| System | apt, dnf, pacman, zypper, systemd journal, `/tmp`, `/var/tmp`, selected `/var/cache` entries, Nix garbage collection |
+| System | apt, dnf, pacman, zypper, systemd journal (rotate + vacuum), `/tmp`, `/var/tmp`, `/var/cache` (man, fontconfig, PackageKit), Nix garbage collection |
 
 Inspect the exact list of cleaners, impact levels (`safe` / `heavy`), effective retention ages, and per-cleaner details locally:
 

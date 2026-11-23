@@ -15,7 +15,7 @@ func NewVersionCmd(version, commit, date string, tr *i18n.Translator) *cobra.Com
 	}
 	return &cobra.Command{
 		Use:   "version",
-		Short: tr.Text("Print beav version", "打印 beav 版本信息"),
+		Short: tr.Text("Print beav version", "显示 beav 版本信息"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			_, err := fmt.Fprintf(cmd.OutOrStdout(), "beav %s (%s, %s)\n", version, commit, date)
 			return err

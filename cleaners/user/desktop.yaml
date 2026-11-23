@@ -13,3 +13,19 @@
   min_age_days: 30
   paths: ["~/.cache/thumbnails/**"]
   tags: [desktop]
+- id: desktop-flatpak-cache
+  name: Flatpak per-app caches
+  description: Temporary cache subdirectories inside sandboxed Flatpak apps (~/.var/app/*/cache); app data is untouched
+  scope: user
+  type: paths
+  min_age_days: 14
+  paths: ["~/.var/app/*/cache/**"]
+  tags: [desktop, flatpak]
+- id: desktop-fontconfig
+  name: User fontconfig cache
+  description: Old compiled fontconfig cache entries under ~/.cache/fontconfig
+  scope: user
+  type: paths
+  min_age_days: 30
+  paths: ["~/.cache/fontconfig/**"]
+  tags: [desktop]

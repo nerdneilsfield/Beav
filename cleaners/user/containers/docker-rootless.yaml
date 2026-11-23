@@ -12,3 +12,17 @@
   min_age_days: 30
   container_prune: { runtime: docker, target: image }
   tags: [container, docker, rootless]
+- id: container-rootless-docker-containers
+  name: Rootless Docker stopped containers
+  scope: user
+  type: container_prune
+  min_age_days: 7
+  container_prune: { runtime: docker, target: container }
+  tags: [container, docker, rootless]
+- id: container-rootless-docker-networks
+  name: Rootless Docker unused networks
+  scope: user
+  type: container_prune
+  min_age_days: 30
+  container_prune: { runtime: docker, target: network }
+  tags: [container, docker, rootless]

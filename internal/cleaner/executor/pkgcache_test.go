@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dengqi/beav/internal/cleaner/model"
@@ -49,6 +50,38 @@ func TestPkgCacheDryRunMarksMetricsIncomplete(t *testing.T) {
 		if ev.Event == model.EvFinish {
 			if !ev.MetricsIncomplete {
 				t.Fatalf("finish metrics incomplete = false: %+v", ev)
+			}
+			return
+		}
+	}
+	t.Fatal("missing finish event")
+}
+
+func TestPkgCacheRealRunMarksMetricsIncompleteAndUsesSingleAptClean(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "apt.log")
+	bin := filepath.Join(dir, "apt-get")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho \"$*\" >> "+logFile+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	c := model.Cleaner{ID: "pkg-apt-archives", Scope: model.ScopeSystem, Type: model.TypePkgCache, PkgCache: &model.PkgCacheCfg{Manager: "apt"}}
+	evs := captureEvents(t, func(emit func(model.Event)) {
+		if err := NewPkgCacheExecutor().Run(context.Background(), c, false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "clean" {
+		t.Fatalf("apt invocations = %q, want single 'clean'", string(data))
+	}
+	for _, ev := range evs {
+		if ev.Event == model.EvFinish {
+			if !ev.MetricsIncomplete || ev.Status != "ok" {
+				t.Fatalf("real pkg_cache finish must report ok + MetricsIncomplete=true: %+v", ev)
 			}
 			return
 		}

@@ -59,6 +59,9 @@ func resolveConfigDirForScope(override string, scope model.Scope, home string) s
 }
 
 func loadCleanContext(f CleanFlags, tr *i18n.Translator) (*cleanContext, error) {
+	if tr == nil {
+		tr = i18n.New(i18n.LangEN)
+	}
 	scope, home, targetUID, err := determineScope(f, tr)
 	if err != nil {
 		return nil, ExitError{code: 1, err: err}
@@ -66,24 +69,24 @@ func loadCleanContext(f CleanFlags, tr *i18n.Translator) (*cleanContext, error) 
 	cfgDir := resolveConfigDirForScope(f.ConfigDir, scope, home)
 	cfg, err := config.LoadWithHome(cfgDir, home)
 	if err != nil {
-		return nil, ExitError{code: 2, err: fmt.Errorf("config load: %w", err)}
+		return nil, ExitError{code: 2, err: fmt.Errorf("%s: %w", tr.Text("config load", "加载配置失败"), err)}
 	}
 	var builtinList []registry.Loaded
 	if !f.BuiltinDisabled {
 		builtinList, err = registry.LoadBuiltin(cleaners.Builtin)
 		if err != nil {
-			return nil, ExitError{code: 2, err: fmt.Errorf("builtin load: %w", err)}
+			return nil, ExitError{code: 2, err: fmt.Errorf("%s: %w", tr.Text("builtin load", "加载内置清理项失败"), err)}
 		}
 	}
 	userList, err := registry.LoadUserDir(filepath.Join(cfgDir, "cleaners.d"))
 	if err != nil {
-		return nil, ExitError{code: 2, err: fmt.Errorf("user cleaners: %w", err)}
+		return nil, ExitError{code: 2, err: fmt.Errorf("%s: %w", tr.Text("user cleaners", "加载自定义清理项失败"), err)}
 	}
 	merged, err := registry.MergeByID(builtinList, userList)
 	if err != nil {
 		return nil, ExitError{code: 2, err: err}
 	}
-	merged, err = applyEffectiveConfig(merged, cfg, f)
+	merged, err = applyEffectiveConfig(merged, cfg, f, tr)
 	if err != nil {
 		return nil, ExitError{code: 2, err: err}
 	}
@@ -100,28 +103,31 @@ func loadCleanContext(f CleanFlags, tr *i18n.Translator) (*cleanContext, error) 
 	}, nil
 }
 
-func loadCatalog(cfgDir string, f CleanFlags) (*config.Config, []model.Cleaner, string, error) {
+func loadCatalog(cfgDir string, f CleanFlags, tr *i18n.Translator) (*config.Config, []model.Cleaner, string, error) {
+	if tr == nil {
+		tr = i18n.New(i18n.LangEN)
+	}
 	resolvedDir := resolveConfigDir(cfgDir)
 	cfg, err := config.Load(resolvedDir)
 	if err != nil {
-		return nil, nil, resolvedDir, ExitError{code: 2, err: fmt.Errorf("config load: %w", err)}
+		return nil, nil, resolvedDir, ExitError{code: 2, err: fmt.Errorf("%s: %w", tr.Text("config load", "加载配置失败"), err)}
 	}
 	var builtin []registry.Loaded
 	if !f.BuiltinDisabled {
 		builtin, err = registry.LoadBuiltin(cleaners.Builtin)
 		if err != nil {
-			return nil, nil, resolvedDir, ExitError{code: 2, err: err}
+			return nil, nil, resolvedDir, ExitError{code: 2, err: fmt.Errorf("%s: %w", tr.Text("builtin load", "加载内置清理项失败"), err)}
 		}
 	}
 	user, err := registry.LoadUserDir(filepath.Join(resolvedDir, "cleaners.d"))
 	if err != nil {
-		return nil, nil, resolvedDir, ExitError{code: 2, err: err}
+		return nil, nil, resolvedDir, ExitError{code: 2, err: fmt.Errorf("%s: %w", tr.Text("user cleaners", "加载自定义清理项失败"), err)}
 	}
 	merged, err := registry.MergeByID(builtin, user)
 	if err != nil {
 		return nil, nil, resolvedDir, ExitError{code: 2, err: err}
 	}
-	effective, err := applyEffectiveConfig(merged, cfg, f)
+	effective, err := applyEffectiveConfig(merged, cfg, f, tr)
 	if err != nil {
 		return nil, nil, resolvedDir, ExitError{code: 2, err: err}
 	}
@@ -168,7 +174,7 @@ func diagnoseSelectors(merged []model.Cleaner, scope model.Scope, only []string,
 					code: 1,
 					err: fmt.Errorf("%s", tr.Textf(
 						"unknown cleaner or tag %q (did you mean: %s?); run `beav list` to inspect all IDs",
-						"未找到清理器或标签 %q（是否指: %s？）；运行 `beav list` 查看全部 ID",
+						"未找到清理项或标签 %q（是否指：%s？）；运行 `beav list` 查看全部 ID",
 						sel, strings.Join(suggestions, ", "),
 					)),
 				}, nil
@@ -177,7 +183,7 @@ func diagnoseSelectors(merged []model.Cleaner, scope model.Scope, only []string,
 				code: 1,
 				err: fmt.Errorf("%s", tr.Textf(
 					"unknown cleaner or tag %q; run `beav list` to inspect all IDs",
-					"未找到清理器或标签 %q；运行 `beav list` 查看全部 ID",
+					"未找到清理项或标签 %q；运行 `beav list` 查看全部 ID",
 					sel,
 				)),
 			}, nil
@@ -307,6 +313,14 @@ func sortCleaners(list []model.Cleaner) {
 		}
 		return list[i].ID < list[j].ID
 	})
+}
+
+func padLabel(label string, width int) string {
+	pad := width - lipgloss.Width(label)
+	if pad < 1 {
+		pad = 1
+	}
+	return label + strings.Repeat(" ", pad)
 }
 
 func writeAlignedTable(w io.Writer, headers []string, rows [][]string) {

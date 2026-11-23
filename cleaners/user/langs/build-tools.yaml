@@ -1,0 +1,39 @@
+- id: build-sccache
+  name: sccache compilation cache
+  description: Old C/C++/Rust compiled object cache artifacts under SCCACHE_DIR
+  scope: user
+  type: paths
+  min_age_days: 30
+  path_resolvers: [{ resolver: sccache_dir }]
+  running_processes: [sccache]
+  tags: [build, langs, rust]
+- id: build-clangd
+  name: clangd global index cache
+  description: Old C/C++ language server symbol indexes under ~/.cache/clangd
+  scope: user
+  type: paths
+  min_age_days: 30
+  paths:
+    - ~/.cache/clangd/**
+  running_processes: [clangd]
+  tags: [build, editor]
+- id: build-zig
+  name: Zig global cache
+  description: Old Zig compiler and package cache artifacts under ZIG_GLOBAL_CACHE_DIR
+  scope: user
+  type: paths
+  min_age_days: 30
+  path_resolvers: [{ resolver: zig_cache }]
+  running_processes: [zig]
+  tags: [build, langs]
+- id: build-bazel
+  name: Bazel output & repository cache
+  description: Heavy Bazel build outputs and fetched repository caches under ~/.cache/bazel
+  scope: user
+  type: paths
+  impact: heavy
+  min_age_days: 30
+  paths:
+    - ~/.cache/bazel/**
+  running_processes: [bazel]
+  tags: [build]

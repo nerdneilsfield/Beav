@@ -1,0 +1,13 @@
+- id: gpu-shader-cache
+  name: Mesa & NVIDIA shader caches
+  description: Old OpenGL/Vulkan shader caches for Mesa (AMD/Intel) and NVIDIA; regenerated automatically when needed
+  scope: user
+  type: paths
+  min_age_days: 14
+  paths:
+    - ~/.cache/mesa_shader_cache/**
+    - ~/.cache/mesa_shader_cache_db/**
+    - ~/.cache/radv_builtin_shaders/**
+    - ~/.cache/nvidia/GLCache/**
+    - ~/.nv/GLCache/**
+  tags: [gpu]

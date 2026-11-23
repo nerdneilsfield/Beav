@@ -27,7 +27,7 @@ func TestBuiltinRegistryEngineToolProfileIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	pnpm := filepath.Join(binDir, "pnpm")
-	if err := os.WriteFile(pnpm, []byte("#!/bin/sh\nprintf 'args=%s\\n' \"$*\" >> \"$HOME/task5-tool.log\"\nprintf 'cwd=%s\\n' \"$(pwd)\" >> \"$HOME/task5-tool.log\"\nprintf 'home=%s\\n' \"$HOME\" >> \"$HOME/task5-tool.log\"\nprintf 'runtime=%s\\n' \"$XDG_RUNTIME_DIR\" >> \"$HOME/task5-tool.log\"\nprintf 'pnpm 9.0\\n'\n"), 0o700); err != nil {
+	if err := os.WriteFile(pnpm, []byte("#!/bin/sh\nif [ \"$1\" = store ] && [ \"$2\" = --help ]; then printf 'pnpm store prune\\n'; exit 0; fi\nprintf 'args=%s\\n' \"$*\" >> \"$HOME/task5-tool.log\"\nprintf 'cwd=%s\\n' \"$(pwd)\" >> \"$HOME/task5-tool.log\"\nprintf 'home=%s\\n' \"$HOME\" >> \"$HOME/task5-tool.log\"\nprintf 'runtime=%s\\n' \"$XDG_RUNTIME_DIR\" >> \"$HOME/task5-tool.log\"\nprintf 'pnpm 9.0\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	poetry := filepath.Join(binDir, "poetry")

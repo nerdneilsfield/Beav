@@ -7,7 +7,10 @@
     - ~/.cache/mozilla/firefox/*/cache2/**
     - ~/.cache/mozilla/firefox/*/startupCache/**
     - ~/.cache/mozilla/firefox/*/OfflineCache/**
-  running_processes: [firefox, firefox-bin]
+    - ~/.cache/mozilla/firefox/*/thumbnails/**
+    - ~/.cache/mozilla/firefox/*/shader-cache/**
+    - ~/.cache/mozilla/firefox/*/jumpListCache/**
+  running_processes: [firefox, firefox-bin, firefox-esr]
   tags: [browser]
 - id: browser-chromium
   name: Chromium-family cache
@@ -17,10 +20,60 @@
   paths:
     - ~/.cache/google-chrome/*/Cache/**
     - '~/.cache/google-chrome/*/Code Cache/**'
-    - ~/.cache/google-chrome/*/GPUCache/**
     - ~/.cache/chromium/*/Cache/**
+    - '~/.cache/chromium/*/Code Cache/**'
     - ~/.cache/microsoft-edge/*/Cache/**
-  running_processes: [chrome, chromium, msedge]
+    - '~/.cache/microsoft-edge/*/Code Cache/**'
+    - ~/.cache/BraveSoftware/Brave-Browser/*/Cache/**
+    - '~/.cache/BraveSoftware/Brave-Browser/*/Code Cache/**'
+    - ~/.cache/vivaldi/*/Cache/**
+    - '~/.cache/vivaldi/*/Code Cache/**'
+    - ~/.config/google-chrome/*/GPUCache/**
+    - '~/.config/google-chrome/*/Code Cache/**'
+    - '~/.config/google-chrome/*/Service Worker/CacheStorage/**'
+    - '~/.config/google-chrome/*/Service Worker/ScriptCache/**'
+    - ~/.config/google-chrome/GrShaderCache/**
+    - ~/.config/google-chrome/ShaderCache/**
+    - ~/.config/google-chrome/GraphiteDawnCache/**
+    - ~/.config/google-chrome/DawnWebGPUCache/**
+    - ~/.config/google-chrome/DawnGraphiteCache/**
+    - ~/.config/chromium/*/GPUCache/**
+    - '~/.config/chromium/*/Code Cache/**'
+    - '~/.config/chromium/*/Service Worker/CacheStorage/**'
+    - '~/.config/chromium/*/Service Worker/ScriptCache/**'
+    - ~/.config/chromium/GrShaderCache/**
+    - ~/.config/chromium/ShaderCache/**
+    - ~/.config/chromium/GraphiteDawnCache/**
+    - ~/.config/chromium/DawnWebGPUCache/**
+    - ~/.config/chromium/DawnGraphiteCache/**
+    - ~/.config/microsoft-edge/*/GPUCache/**
+    - '~/.config/microsoft-edge/*/Code Cache/**'
+    - '~/.config/microsoft-edge/*/Service Worker/CacheStorage/**'
+    - '~/.config/microsoft-edge/*/Service Worker/ScriptCache/**'
+    - ~/.config/microsoft-edge/GrShaderCache/**
+    - ~/.config/microsoft-edge/ShaderCache/**
+    - ~/.config/microsoft-edge/GraphiteDawnCache/**
+    - ~/.config/microsoft-edge/DawnWebGPUCache/**
+    - ~/.config/microsoft-edge/DawnGraphiteCache/**
+    - ~/.config/BraveSoftware/Brave-Browser/*/GPUCache/**
+    - '~/.config/BraveSoftware/Brave-Browser/*/Code Cache/**'
+    - '~/.config/BraveSoftware/Brave-Browser/*/Service Worker/CacheStorage/**'
+    - '~/.config/BraveSoftware/Brave-Browser/*/Service Worker/ScriptCache/**'
+    - ~/.config/BraveSoftware/Brave-Browser/GrShaderCache/**
+    - ~/.config/BraveSoftware/Brave-Browser/ShaderCache/**
+    - ~/.config/BraveSoftware/Brave-Browser/GraphiteDawnCache/**
+    - ~/.config/BraveSoftware/Brave-Browser/DawnWebGPUCache/**
+    - ~/.config/BraveSoftware/Brave-Browser/DawnGraphiteCache/**
+    - ~/.config/vivaldi/*/GPUCache/**
+    - '~/.config/vivaldi/*/Code Cache/**'
+    - '~/.config/vivaldi/*/Service Worker/CacheStorage/**'
+    - '~/.config/vivaldi/*/Service Worker/ScriptCache/**'
+    - ~/.config/vivaldi/GrShaderCache/**
+    - ~/.config/vivaldi/ShaderCache/**
+    - ~/.config/vivaldi/GraphiteDawnCache/**
+    - ~/.config/vivaldi/DawnWebGPUCache/**
+    - ~/.config/vivaldi/DawnGraphiteCache/**
+  running_processes: [chrome, google-chrome, chromium, chromium-browser, msedge, microsoft-edge, brave, brave-browser, vivaldi-bin]
   tags: [browser]
 - id: browser-puppeteer
   name: Puppeteer browser cache

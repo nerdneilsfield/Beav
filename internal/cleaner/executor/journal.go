@@ -29,15 +29,28 @@ func (j *JournalExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool,
 		return nil
 	}
 	age := c.AgeOrDefault(14)
-	argv := []string{"journalctl", "--vacuum-time=" + fmt.Sprintf("%dd", age)}
+	rotateArgv := []string{"journalctl", "--rotate"}
+	vacuumArgv := []string{"journalctl", "--vacuum-time=" + fmt.Sprintf("%dd", age)}
 	if dryRun {
-		emit(model.Event{Event: model.EvCommandOutput, CleanerID: c.ID, Stream: "stdout", Line: "[dry-run] " + strings.Join(argv, " "), TS: time.Now()})
+		emit(model.Event{Event: model.EvCommandOutput, CleanerID: c.ID, Stream: "stdout", Line: "[dry-run] " + strings.Join(rotateArgv, " "), TS: time.Now()})
+		emit(model.Event{Event: model.EvCommandOutput, CleanerID: c.ID, Stream: "stdout", Line: "[dry-run] " + strings.Join(vacuumArgv, " "), TS: time.Now()})
 		emitFinishWithMetrics(emit, c.ID, "ok", 0, start, true)
 		return nil
 	}
+	// Best-effort rotate so active journal files are archived before vacuuming.
+	_ = RunCommand(ctx, CommandRun{
+		Argv:    rotateArgv,
+		Timeout: 1 * time.Minute,
+		OnStdout: func(line string) {
+			emit(model.Event{Event: model.EvCommandOutput, CleanerID: c.ID, Stream: "stdout", Line: line, TS: time.Now()})
+		},
+		OnStderr: func(line string) {
+			emit(model.Event{Event: model.EvCommandOutput, CleanerID: c.ID, Stream: "stderr", Line: line, TS: time.Now()})
+		},
+	})
 	errs := 0
 	err := RunCommand(ctx, CommandRun{
-		Argv:    argv,
+		Argv:    vacuumArgv,
 		Timeout: 5 * time.Minute,
 		OnStdout: func(line string) {
 			emit(model.Event{Event: model.EvCommandOutput, CleanerID: c.ID, Stream: "stdout", Line: line, TS: time.Now()})
@@ -54,6 +67,6 @@ func (j *JournalExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool,
 	if errs > 0 {
 		status = "error"
 	}
-	emitFinish(emit, c.ID, status, errs, start)
+	emitFinishWithMetrics(emit, c.ID, status, errs, start, true)
 	return nil
 }

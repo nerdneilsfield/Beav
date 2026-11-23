@@ -25,6 +25,9 @@ var resolvers = map[string]Resolver{
 	"gocache":          cmdResolver([]string{"go", "env", "GOCACHE"}, "$HOME/.cache/go-build"),
 	"gradle_home":      envResolver("GRADLE_USER_HOME", "$HOME/.gradle"),
 	"maven_local_repo": cmdResolver([]string{"mvn", "help:evaluate", "-Dexpression=settings.localRepository", "-q", "-DforceStdout"}, "$HOME/.m2/repository"),
+	"deno_dir":         envResolver("DENO_DIR", "$HOME/.cache/deno"),
+	"sccache_dir":      envResolver("SCCACHE_DIR", "$HOME/.cache/sccache"),
+	"zig_cache":        envResolver("ZIG_GLOBAL_CACHE_DIR", "$HOME/.cache/zig"),
 }
 
 // Resolve looks up a resolver by name and returns the resolved absolute path.

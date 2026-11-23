@@ -1,0 +1,12 @@
+- id: lang-python-tools
+  name: Python tooling caches (PDM/Hatch/pipx/Matplotlib)
+  description: Old package and font caches for PDM, Hatch, pipx, and Matplotlib; virtual environments stay intact
+  scope: user
+  type: paths
+  min_age_days: 14
+  paths:
+    - ~/.cache/pdm/**
+    - ~/.cache/hatch/**
+    - ~/.cache/pipx/**
+    - ~/.cache/matplotlib/**
+  tags: [langs, python]

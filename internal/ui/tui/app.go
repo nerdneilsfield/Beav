@@ -190,7 +190,7 @@ func newWorkbenchModel(ctx context.Context, opts Options) workbenchModel {
 
 	ti := textinput.New()
 	ti.Prompt = "/ "
-	ti.Placeholder = tr.Text("filter by name, id, or tag...", "按名称、ID 或标签筛选...")
+	ti.Placeholder = tr.Text("filter by name, id, or tag...", "按名称、ID 或标签搜索...")
 	ti.CharLimit = 64
 	ti.Width = 36
 
@@ -581,7 +581,7 @@ func (m workbenchModel) handleReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return nextM, tea.Batch(nextM.spin.Tick, cmd)
 	case "enter", "c":
 		if m.selectedCount() == 0 {
-			m.statusMsg = m.tr.Text("Select at least one cleaner with Space first.", "请先按 Space 勾选至少一个清理项。")
+			m.statusMsg = m.tr.Text("Select at least one cleaner with Space first.", "请先按空格键勾选至少一个清理项。")
 			return m, nil
 		}
 		m.statusMsg = ""
@@ -717,7 +717,7 @@ func (m *workbenchModel) rebuildRows() {
 	if len(safeItems) > 0 {
 		rows = append(rows, displayRow{
 			kind:  rowHeader,
-			label: m.tr.Text("Safe & Reclaimable", "安全可清理项"),
+			label: m.tr.Text("Safe & Reclaimable", "常规清理项"),
 			count: len(safeItems),
 		})
 		for _, s := range safeItems {

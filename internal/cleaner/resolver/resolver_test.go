@@ -29,3 +29,35 @@ func TestUnknownResolver(t *testing.T) {
 		t.Fatal("want error")
 	}
 }
+
+func TestNewDevResolversUseEnvOrDefault(t *testing.T) {
+	cases := []struct {
+		name     string
+		envVar   string
+		defRel   string
+		override string
+	}{
+		{"deno_dir", "DENO_DIR", ".cache/deno", "/home/u/custom-deno"},
+		{"sccache_dir", "SCCACHE_DIR", ".cache/sccache", "/home/u/custom-sccache"},
+		{"zig_cache", "ZIG_GLOBAL_CACHE_DIR", ".cache/zig", "/home/u/custom-zig"},
+	}
+	for _, tc := range cases {
+		t.Setenv(tc.envVar, "")
+		got, err := Resolve(tc.name, "/home/u")
+		if err != nil {
+			t.Fatalf("%s default err: %v", tc.name, err)
+		}
+		if got != "/home/u/"+tc.defRel {
+			t.Fatalf("%s default = %q, want %q", tc.name, got, "/home/u/"+tc.defRel)
+		}
+
+		t.Setenv(tc.envVar, tc.override)
+		got, err = Resolve(tc.name, "/home/u")
+		if err != nil {
+			t.Fatalf("%s override err: %v", tc.name, err)
+		}
+		if got != tc.override {
+			t.Fatalf("%s override = %q, want %q", tc.name, got, tc.override)
+		}
+	}
+}

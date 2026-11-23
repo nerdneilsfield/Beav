@@ -5,10 +5,35 @@
   type: paths
   min_age_days: 7
   paths:
-    - ~/.config/Code/Cache/*
-    - ~/.config/Code/CachedData/*
-    - ~/.config/Code/logs/*
+    - ~/.config/Code/Cache/**
+    - ~/.config/Code/CachedData/**
+    - '~/.config/Code/Code Cache/**'
+    - ~/.config/Code/GPUCache/**
+    - ~/.config/Code/DawnWebGPUCache/**
+    - ~/.config/Code/DawnGraphiteCache/**
+    - ~/.config/Code/CachedExtensionVSIXs/**
+    - ~/.config/Code/logs/**
+    - ~/.config/Code/Crashpad/completed/**
+    - '~/.config/Code - Insiders/Cache/**'
+    - '~/.config/Code - Insiders/CachedData/**'
+    - '~/.config/Code - Insiders/Code Cache/**'
+    - '~/.config/Code - Insiders/GPUCache/**'
+    - '~/.config/Code - Insiders/DawnWebGPUCache/**'
+    - '~/.config/Code - Insiders/DawnGraphiteCache/**'
+    - '~/.config/Code - Insiders/CachedExtensionVSIXs/**'
+    - '~/.config/Code - Insiders/logs/**'
+    - '~/.config/Code - Insiders/Crashpad/completed/**'
+    - ~/.config/VSCodium/Cache/**
+    - ~/.config/VSCodium/CachedData/**
+    - '~/.config/VSCodium/Code Cache/**'
+    - ~/.config/VSCodium/GPUCache/**
+    - ~/.config/VSCodium/DawnWebGPUCache/**
+    - ~/.config/VSCodium/DawnGraphiteCache/**
+    - ~/.config/VSCodium/CachedExtensionVSIXs/**
+    - ~/.config/VSCodium/logs/**
+    - ~/.config/VSCodium/Crashpad/completed/**
     - ~/.cache/vscode-cpptools/**
-    - ~/.vscode-server/data/CachedExtensionVSIXs/*
-  running_processes: [code, code-insiders]
+    - ~/.vscode-server/data/CachedExtensionVSIXs/**
+    - ~/.vscode-server/data/logs/**
+  running_processes: [code, code-insiders, codium]
   tags: [editor, ide]

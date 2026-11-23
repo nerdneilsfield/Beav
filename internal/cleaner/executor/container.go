@@ -140,7 +140,7 @@ func (ce *ContainerExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bo
 	if errs > 0 {
 		status = "error"
 	}
-	emitFinish(emit, c.ID, status, errs, start)
+	emitFinishWithMetrics(emit, c.ID, status, errs, start, true)
 	return nil
 }
 

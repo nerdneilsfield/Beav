@@ -507,6 +507,7 @@ var toolPruneProfiles = map[string]Impact{
 	"desktop-flatpak-system":   ImpactHeavy,
 	"lang-poetry-cache":        ImpactHeavy,
 	"test-playwright-browsers": ImpactHeavy,
+	"lang-go-modcache":         ImpactHeavy,
 }
 
 var debrisProfiles = map[string]struct{}{

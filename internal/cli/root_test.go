@@ -50,3 +50,57 @@ func TestRootHelpAndInvalidLangFlag(t *testing.T) {
 		t.Fatalf("expected invalid --lang error, got %v", err)
 	}
 }
+
+func TestLocalizedCobraHelpTreeZH(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := NewRootCmdWithLang("t", "t", "t", i18n.LangZH)
+	cmd.SetArgs([]string{"--help"})
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	rootHelp := buf.String()
+	for _, want := range []string{"用法：", "可用命令：", "选项：", "查看任意命令的帮助信息", "显示 beav 的帮助信息"} {
+		if !strings.Contains(rootHelp, want) {
+			t.Fatalf("ZH root help missing %q in:\n%s", want, rootHelp)
+		}
+	}
+	for _, forbidden := range []string{"Usage:", "Available Commands:", "Help about any command", "help for beav"} {
+		if strings.Contains(rootHelp, forbidden) {
+			t.Fatalf("ZH root help must not contain untranslated Cobra string %q in:\n%s", forbidden, rootHelp)
+		}
+	}
+
+	buf.Reset()
+	cmd = NewRootCmdWithLang("t", "t", "t", i18n.LangZH)
+	cmd.SetArgs([]string{"clean", "--help"})
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	cleanHelp := buf.String()
+	for _, want := range []string{"用法：", "选项：", "全局选项：", "显示 clean 的帮助信息"} {
+		if !strings.Contains(cleanHelp, want) {
+			t.Fatalf("ZH clean help missing %q in:\n%s", want, cleanHelp)
+		}
+	}
+	for _, forbidden := range []string{"Usage:", "Flags:", "Global Flags:", "help for clean"} {
+		if strings.Contains(cleanHelp, forbidden) {
+			t.Fatalf("ZH clean help must not contain untranslated Cobra string %q in:\n%s", forbidden, cleanHelp)
+		}
+	}
+
+	buf.Reset()
+	cmd = NewRootCmdWithLang("t", "t", "t", i18n.LangZH)
+	cmd.SetArgs([]string{"help", "clean"})
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "显示 clean 的帮助信息") {
+		t.Fatalf("ZH `help clean` missing localized help flag description: %s", buf.String())
+	}
+}

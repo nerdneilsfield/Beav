@@ -3,5 +3,9 @@
   scope: user
   type: paths
   min_age_days: 30
-  path_resolvers: [{ resolver: gocache }]
+  path_resolvers:
+    - resolver: gocache
+    - resolver: xdg_cache
+      subpaths: [gopls, golangci-lint]
+  running_processes: [go, gopls, golangci-lint]
   tags: [langs, go]

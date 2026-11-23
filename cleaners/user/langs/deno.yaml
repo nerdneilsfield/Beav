@@ -1,0 +1,9 @@
+- id: lang-deno
+  name: Deno cache
+  description: Remote modules and compiled TypeScript/V8 caches under DENO_DIR
+  scope: user
+  type: paths
+  min_age_days: 30
+  path_resolvers: [{ resolver: deno_dir }]
+  running_processes: [deno]
+  tags: [langs, js]

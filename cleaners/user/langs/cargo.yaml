@@ -1,10 +1,11 @@
 - id: lang-cargo
   name: Cargo registry download cache
-  description: Downloaded .crate archives; packages are re-downloaded on demand
+  description: Downloaded .crate archives and unpacked registry sources; re-downloaded on demand
   scope: user
   type: paths
   min_age_days: 30
-  paths:
-    - ~/.cargo/registry/cache
-  running_processes: [cargo]
+  path_resolvers:
+    - resolver: cargo_home
+      subpaths: [registry/cache, registry/src]
+  running_processes: [cargo, rustc, rust-analyzer]
   tags: [langs, rust]

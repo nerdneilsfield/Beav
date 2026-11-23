@@ -17,10 +17,10 @@ func NewInfoCmd(tr *i18n.Translator) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "info <cleaner-id>",
-		Short: tr.Text("Inspect details, safety rules, and targets for one cleaner", "查看单个清理器的详情、安全规则与清理目标"),
+		Short: tr.Text("Inspect details, safety rules, and targets for one cleaner", "查看单个清理项的说明、安全规则与清理目标"),
 		Long: tr.Text(
 			"Print the full description, effective age threshold, impact level, target paths or native command profile, and copy-ready commands for one cleaner.",
-			"显示单个清理器的中英文说明、实际生效的保留天数、影响级别、目标路径或原生命令配置以及可直接使用的示例命令。",
+			"显示单个清理项的详细说明、生效保留期、影响级别、目标路径或原生命令策略，以及常用操作命令。",
 		),
 		Example: tr.Text(
 			"  beav info lang-pip\n"+
@@ -33,7 +33,7 @@ func NewInfoCmd(tr *i18n.Translator) *cobra.Command {
 			if len(args) > 0 {
 				return nil, cobra.ShellCompDirectiveNoFileComp
 			}
-			_, effective, _, err := loadCatalog(configDir, CleanFlags{BuiltinDisabled: builtinDisabled})
+			_, effective, _, err := loadCatalog(configDir, CleanFlags{BuiltinDisabled: builtinDisabled}, tr)
 			if err != nil {
 				return nil, cobra.ShellCompDirectiveNoFileComp
 			}
@@ -49,7 +49,7 @@ func NewInfoCmd(tr *i18n.Translator) *cobra.Command {
 			localTr := translatorForCommand(cmd, tr)
 			id := args[0]
 
-			cfg, effective, _, err := loadCatalog(configDir, CleanFlags{BuiltinDisabled: builtinDisabled})
+			cfg, effective, _, err := loadCatalog(configDir, CleanFlags{BuiltinDisabled: builtinDisabled}, localTr)
 			if err != nil {
 				return err
 			}
@@ -68,7 +68,7 @@ func NewInfoCmd(tr *i18n.Translator) *cobra.Command {
 						code: 1,
 						err: fmt.Errorf("%s", localTr.Textf(
 							"unknown cleaner id %q (did you mean: %s?); run `beav list` to see all IDs",
-							"未找到清理器 ID %q（是否指: %s？）；运行 `beav list` 查看全部 ID",
+							"未找到清理项 ID %q（是否指：%s？）；运行 `beav list` 查看全部 ID",
 							id, strings.Join(suggestions, ", "),
 						)),
 					}
@@ -77,7 +77,7 @@ func NewInfoCmd(tr *i18n.Translator) *cobra.Command {
 					code: 1,
 					err: fmt.Errorf("%s", localTr.Textf(
 						"unknown cleaner id %q; run `beav list` to see all IDs",
-						"未找到清理器 ID %q；运行 `beav list` 查看全部 ID",
+						"未找到清理项 ID %q；运行 `beav list` 查看全部 ID",
 						id,
 					)),
 				}
@@ -95,13 +95,13 @@ func NewInfoCmd(tr *i18n.Translator) *cobra.Command {
 			if c.Scope == model.ScopeSystem {
 				scopeText += localTr.Text(" (requires sudo)", "（需要 sudo 权限）")
 			}
-			fmt.Fprintf(out, "%-16s %s\n", localTr.Text("Scope:", "作用域:"), scopeText)
+			fmt.Fprintf(out, "%s %s\n", padLabel(localTr.Text("Scope:", "作用域："), 16), scopeText)
 
 			impactText := localTr.ImpactLabel(c.EffectiveImpact())
 			if note := localTr.HeavyNote(c); note != "" {
 				impactText += " - " + note
 			}
-			fmt.Fprintf(out, "%-16s %s\n", localTr.Text("Impact:", "影响级别:"), impactText)
+			fmt.Fprintf(out, "%s %s\n", padLabel(localTr.Text("Impact:", "影响级别："), 16), impactText)
 
 			stateText := localTr.Text("enabled", "启用")
 			if !c.IsEnabled() {
@@ -110,37 +110,38 @@ func NewInfoCmd(tr *i18n.Translator) *cobra.Command {
 			if ov, ok := cfg.Overrides[c.ID]; ok && ov.Enabled != nil {
 				stateText += localTr.Text(" (overridden in config.yaml)", "（已在 config.yaml 中覆盖）")
 			}
-			fmt.Fprintf(out, "%-16s %s\n", localTr.Text("State:", "当前状态:"), stateText)
+			fmt.Fprintf(out, "%s %s\n", padLabel(localTr.Text("State:", "当前状态："), 16), stateText)
 
 			ageText := localTr.Text("command-managed (no fixed day filter)", "由原生工具策略控制（无固定天数）")
 			if c.MinAgeDays != nil {
-				tf := string(c.TimeField)
-				if tf == "" {
-					tf = string(model.TimeMtime)
-				}
-				ageText = fmt.Sprintf("%s (%s)", localTr.Days(*c.MinAgeDays), tf)
+				ageText = localTr.Textf(
+					"%s (%s)",
+					"%s（按%s）",
+					localTr.Days(*c.MinAgeDays),
+					localTr.TimeFieldLabel(c.TimeField),
+				)
 				if ov, ok := cfg.Overrides[c.ID]; ok && ov.MinAgeDays != nil {
 					ageText += localTr.Text(" (overridden in config.yaml)", "（已在 config.yaml 中覆盖）")
 				}
 			}
-			fmt.Fprintf(out, "%-16s %s\n", localTr.Text("Min age:", "保留天数:"), ageText)
+			fmt.Fprintf(out, "%s %s\n", padLabel(localTr.Text("Min age:", "保留期："), 16), ageText)
 
 			if len(c.Tags) > 0 {
-				fmt.Fprintf(out, "%-16s %s\n", localTr.Text("Tags:", "标签:"), strings.Join(c.Tags, ", "))
+				fmt.Fprintf(out, "%s %s\n", padLabel(localTr.Text("Tags:", "标签："), 16), strings.Join(c.Tags, ", "))
 			}
-			fmt.Fprintf(out, "%-16s %s\n", localTr.Text("Executor:", "执行器:"), string(c.Type))
+			fmt.Fprintf(out, "%s %s (%s)\n", padLabel(localTr.Text("Method:", "清理方式："), 16), localTr.ExecutorTypeLabel(c.Type), c.Type)
 
 			if prof := c.Profile(); prof != "" {
-				fmt.Fprintf(out, "%-16s %s\n", localTr.Text("Profile:", "内置配置:"), prof)
+				fmt.Fprintf(out, "%s %s\n", padLabel(localTr.Text("Profile:", "内置策略："), 16), prof)
 			}
 			if c.PkgCache != nil {
-				fmt.Fprintf(out, "%-16s %s\n", localTr.Text("Manager:", "包管理器:"), c.PkgCache.Manager)
+				fmt.Fprintf(out, "%s %s\n", padLabel(localTr.Text("Manager:", "包管理器："), 16), c.PkgCache.Manager)
 			}
 			if c.ContainerPrune != nil {
-				fmt.Fprintf(out, "%-16s %s (%s)\n", localTr.Text("Container:", "容器目标:"), c.ContainerPrune.Runtime, c.ContainerPrune.Target)
+				fmt.Fprintf(out, "%s %s (%s)\n", padLabel(localTr.Text("Container:", "容器目标："), 16), c.ContainerPrune.Runtime, c.ContainerPrune.Target)
 			}
 			if len(c.Paths) > 0 {
-				fmt.Fprintf(out, "%-16s %s\n", localTr.Text("Paths:", "目标路径:"), strings.Join(c.Paths, ", "))
+				fmt.Fprintf(out, "%s %s\n", padLabel(localTr.Text("Paths:", "目标路径："), 16), strings.Join(c.Paths, ", "))
 			}
 			if len(c.PathResolvers) > 0 {
 				var resolvers []string
@@ -151,17 +152,17 @@ func NewInfoCmd(tr *i18n.Translator) *cobra.Command {
 						resolvers = append(resolvers, r.Resolver)
 					}
 				}
-				fmt.Fprintf(out, "%-16s %s\n", localTr.Text("Resolvers:", "动态解析:"), strings.Join(resolvers, ", "))
+				fmt.Fprintf(out, "%s %s\n", padLabel(localTr.Text("Resolvers:", "路径解析："), 16), strings.Join(resolvers, ", "))
 			}
 			if len(c.Exclude) > 0 {
-				fmt.Fprintf(out, "%-16s %s\n", localTr.Text("Excludes:", "排除规则:"), strings.Join(c.Exclude, ", "))
+				fmt.Fprintf(out, "%s %s\n", padLabel(localTr.Text("Excludes:", "排除规则："), 16), strings.Join(c.Exclude, ", "))
 			}
 			if len(c.RunningProcesses) > 0 {
-				fmt.Fprintf(out, "%-16s %s\n", localTr.Text("Process guard:", "进程保护:"), strings.Join(c.RunningProcesses, ", "))
+				fmt.Fprintf(out, "%s %s\n", padLabel(localTr.Text("Process guard:", "进程保护："), 16), strings.Join(c.RunningProcesses, ", "))
 			}
 
 			fmt.Fprintln(out)
-			fmt.Fprintln(out, localTr.Text("Commands:", "常用命令:"))
+			fmt.Fprintln(out, localTr.Text("Commands:", "常用命令："))
 			prefix := "beav"
 			scopeFlag := ""
 			if c.Scope == model.ScopeSystem {

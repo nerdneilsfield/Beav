@@ -48,6 +48,7 @@ func TestEmbeddedRegistryContainsClosedProfiles(t *testing.T) {
 		"desktop-flatpak-system":        {model.TypeToolPrune, model.ImpactHeavy},
 		"lang-poetry-cache":             {model.TypeToolPrune, model.ImpactHeavy},
 		"test-playwright-browsers":      {model.TypeToolPrune, model.ImpactHeavy},
+		"lang-go-modcache":              {model.TypeToolPrune, model.ImpactHeavy},
 		"desktop-download-partials":     {model.TypeDebris, model.ImpactSafe},
 		"ai-huggingface-incomplete":     {model.TypeDebris, model.ImpactSafe},
 		"python-ruff-cache":             {model.TypeDebris, model.ImpactSafe},

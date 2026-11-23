@@ -61,10 +61,11 @@ func displayName(tr *i18n.Translator, id, rawName string) string {
 
 func joinNames(tr *i18n.Translator, names []string, verbose bool) string {
 	const max = 4
+	sep := tr.Text(", ", "、")
 	if verbose || len(names) <= max {
-		return strings.Join(names, ", ")
+		return strings.Join(names, sep)
 	}
-	return strings.Join(names[:max], ", ") + tr.Textf(", and %d more", "，另有 %d 项", len(names)-max)
+	return strings.Join(names[:max], sep) + tr.Textf(", and %d more", "，另有 %d 项", len(names)-max)
 }
 
 func joinSkipEntries(tr *i18n.Translator, entries []skipEntry, verbose bool) string {
@@ -83,7 +84,8 @@ func joinSkipEntries(tr *i18n.Translator, entries []skipEntry, verbose bool) str
 			parts = append(parts, e.Name)
 		}
 	}
-	out := strings.Join(parts, ", ")
+	sep := tr.Text(", ", "、")
+	out := strings.Join(parts, sep)
 	if len(entries) > len(shown) {
 		out += tr.Textf(", and %d more", "，另有 %d 项", len(entries)-len(shown))
 	}

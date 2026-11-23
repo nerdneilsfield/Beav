@@ -33,8 +33,8 @@ func NewConfigCmd(tr *i18n.Translator) *cobra.Command {
 		Long: tr.Text(
 			"Manage ~/.config/beav/config.yaml, per-cleaner enable/disable overrides, and protected whitelist paths.\n"+
 				"To browse all available cleaners and IDs, use `beav list` or `beav info <id>`.",
-			"管理 ~/.config/beav/config.yaml 配置、单个清理器的启用/禁用覆盖及白名单保护路径。\n"+
-				"若要浏览全部清理器及其 ID，请使用 `beav list` 或 `beav info <ID>`。",
+			"管理 ~/.config/beav/config.yaml 配置、单个清理项的启用/禁用规则及白名单保护路径。\n"+
+				"若要浏览全部清理项及其 ID，请使用 `beav list` 或 `beav info <ID>`。",
 		),
 	}
 	cmd.PersistentFlags().StringVar(&dir, "config-dir", "", tr.Text("override config directory", "覆盖默认配置目录"))
@@ -98,7 +98,7 @@ func NewConfigCmd(tr *i18n.Translator) *cobra.Command {
 		if len(args) > 0 {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
-		_, effective, _, err := loadCatalog(dir, CleanFlags{})
+		_, effective, _, err := loadCatalog(dir, CleanFlags{}, tr)
 		if err != nil {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
@@ -113,7 +113,7 @@ func NewConfigCmd(tr *i18n.Translator) *cobra.Command {
 
 	enable := &cobra.Command{
 		Use:               "enable <cleaner-id>",
-		Short:             tr.Text("Enable a cleaner in every future run", "永久启用指定清理器"),
+		Short:             tr.Text("Enable a cleaner in every future run", "永久启用指定清理项"),
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeCleanerIDs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -124,7 +124,7 @@ func NewConfigCmd(tr *i18n.Translator) *cobra.Command {
 
 	disable := &cobra.Command{
 		Use:               "disable <cleaner-id>",
-		Short:             tr.Text("Disable a cleaner in every future run", "永久禁用指定清理器"),
+		Short:             tr.Text("Disable a cleaner in every future run", "永久禁用指定清理项"),
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeCleanerIDs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -193,8 +193,8 @@ func runConfigInit(cfgDir string, force bool, stdout io.Writer, tr *i18n.Transla
 		return err
 	}
 	if stdout != nil {
-		fmt.Fprintf(stdout, "%s\n", tr.Textf("Created config file at %s", "已创建配置文件: %s", path))
-		fmt.Fprintf(stdout, "%s\n", tr.Text("Next: edit with `beav config edit` or browse cleaners with `beav list`.", "下一步: 运行 `beav config edit` 编辑配置，或 `beav list` 查看所有清理器。"))
+		fmt.Fprintf(stdout, "%s\n", tr.Textf("Created config file at %s", "已创建配置文件：%s", path))
+		fmt.Fprintf(stdout, "%s\n", tr.Text("Next: edit with `beav config edit` or browse cleaners with `beav list`.", "下一步：运行 `beav config edit` 编辑配置，或 `beav list` 查看所有清理项。"))
 	}
 	return nil
 }
@@ -230,11 +230,11 @@ func writeDefaultConfig(path string, force bool, tr *i18n.Translator) error {
 			"# whitelist:\n"+
 			"#   - ~/.cache/keep-this\n",
 		"# Beav 配置文件\n"+
-			"# 优先级：命令行参数 > 本配置文件 > 清理器内置默认值。\n"+
+			"# 优先级：命令行参数 > 本配置文件 > 清理项内置默认值。\n"+
 			"defaults:\n"+
 			"  min_age_days: 14\n"+
 			"  output: auto # auto | spinner | plain | json\n\n"+
-			"# 针对单个清理器的覆盖设置（运行 `beav list` 查看全部清理器 ID）：\n"+
+			"# 针对单个清理项的覆盖设置（运行 `beav list` 查看全部清理项 ID）：\n"+
 			"# overrides:\n"+
 			"#   editor-vscode:\n"+
 			"#     min_age_days: 3\n"+
@@ -276,14 +276,14 @@ func runConfigShow(cmd *cobra.Command, dir string, showJSON bool, tr *i18n.Trans
 	w := cmd.OutOrStdout()
 	statusLabel := tr.Text("not created yet, using defaults", "尚未创建，使用默认配置")
 	if cfg.ConfigExists() {
-		statusLabel = tr.Text("active", "已启用")
+		statusLabel = tr.Text("active", "生效中")
 	}
-	fmt.Fprintf(w, "%-16s %s (%s)\n", tr.Text("Config file:", "配置文件:"), cfg.ConfigPath(), statusLabel)
-	fmt.Fprintf(w, "%-16s %s (%s)\n", tr.Text("Custom dir:", "自定义目录:"), cfg.CleanersDir(), tr.Plural(int64(len(userCleaners)), "custom cleaner", "custom cleaners", "个自定义清理器"))
-	fmt.Fprintf(w, "%-16s min_age_days=%d, output=%s\n", tr.Text("Defaults:", "默认设置:"), cfg.Defaults.MinAgeDays, cfg.Defaults.Output)
+	fmt.Fprintf(w, "%s %s (%s)\n", padLabel(tr.Text("Config file:", "配置文件："), 16), cfg.ConfigPath(), statusLabel)
+	fmt.Fprintf(w, "%s %s (%s)\n", padLabel(tr.Text("Custom dir:", "自定义目录："), 16), cfg.CleanersDir(), tr.Plural(int64(len(userCleaners)), "custom cleaner", "custom cleaners", "个自定义清理项"))
+	fmt.Fprintf(w, "%s min_age_days=%d, output=%s\n", padLabel(tr.Text("Defaults:", "默认设置："), 16), cfg.Defaults.MinAgeDays, cfg.Defaults.Output)
 
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, tr.Text("Overrides:", "清理器覆盖:"))
+	fmt.Fprintln(w, tr.Text("Overrides:", "清理项覆盖："))
 	if len(cfg.Overrides) == 0 {
 		fmt.Fprintln(w, "  "+tr.Text("(none)", "（无）"))
 	} else {
@@ -306,11 +306,11 @@ func runConfigShow(cmd *cobra.Command, dir string, showJSON bool, tr *i18n.Trans
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, tr.Text("Whitelist:", "白名单:"))
+	fmt.Fprintln(w, tr.Text("Whitelist:", "白名单："))
 	printWhitelistEntries(w, cfg, tr)
 
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, tr.Text("Run `beav list` to inspect all available cleaners, or `beav config init` to create a starter config.", "运行 `beav list` 查看所有清理器，或运行 `beav config init` 生成初始配置文件。"))
+	fmt.Fprintln(w, tr.Text("Run `beav list` to inspect all available cleaners, or `beav config init` to create a starter config.", "运行 `beav list` 查看所有清理项，或运行 `beav config init` 生成初始配置文件。"))
 	return nil
 }
 
@@ -327,7 +327,7 @@ func printWhitelistEntries(w io.Writer, cfg *config.Config, tr *i18n.Translator)
 	yamlList := cfg.RawWhitelist()
 	txtList := cfg.WhitelistTxt()
 	if len(yamlList) == 0 && len(txtList) == 0 {
-		fmt.Fprintln(w, "  "+tr.Text("(none) - add one with `beav config whitelist add <path>`", "（空）- 可使用 `beav config whitelist add <路径>` 添加"))
+		fmt.Fprintln(w, "  "+tr.Text("(none) - add one with `beav config whitelist add <path>`", "（无）— 可使用 `beav config whitelist add <路径>` 添加"))
 		return
 	}
 	for _, p := range yamlList {
@@ -355,7 +355,7 @@ func runWhitelistAdd(cfgDir, path string, w io.Writer, tr *i18n.Translator) erro
 	if err := cfg.Save(); err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "%s\n", tr.Textf("Added %q to %s", "已将 %q 加入白名单 %s", path, cfg.ConfigPath()))
+	fmt.Fprintf(w, "%s\n", tr.Textf("Added %q to %s", "已将 %q 添加至白名单（%s）", path, cfg.ConfigPath()))
 	return nil
 }
 
@@ -385,22 +385,22 @@ func runWhitelistRemove(cfgDir, path string, w io.Writer, tr *i18n.Translator) e
 	if err := cfg.Save(); err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "%s\n", tr.Textf("Removed %q from %s", "已将 %q 从白名单移除 (%s)", path, cfg.ConfigPath()))
+	fmt.Fprintf(w, "%s\n", tr.Textf("Removed %q from %s", "已从白名单移除 %q（%s）", path, cfg.ConfigPath()))
 	if inTxt {
-		fmt.Fprintf(w, "%s\n", tr.Textf("Note: a matching entry still exists in %s.", "提示: %s 中仍保留有相同条目。", filepath.Join(cfgDir, "whitelist.txt")))
+		fmt.Fprintf(w, "%s\n", tr.Textf("Note: a matching entry still exists in %s.", "提示：%s 中仍保留有相同条目。", filepath.Join(cfgDir, "whitelist.txt")))
 	}
 	return nil
 }
 
 func boolState(b bool, tr *i18n.Translator) string {
 	if b {
-		return tr.Text("enabled", "已启用")
+		return tr.Text("enabled", "启用")
 	}
-	return tr.Text("disabled", "已禁用")
+	return tr.Text("disabled", "禁用")
 }
 
 // runConfigSetEnabled persists an enable/disable override for one cleaner.
-// runConfigSetEnabled 为单个清理器持久化启用或禁用覆盖。
+// runConfigSetEnabled 为单个清理项持久化启用或禁用规则。
 func runConfigSetEnabled(cfgDir, id string, enabled bool, stdout io.Writer, tr *i18n.Translator) error {
 	if tr == nil {
 		tr = i18n.New(i18n.LangEN)
@@ -431,7 +431,7 @@ func runConfigSetEnabled(cfgDir, id string, enabled bool, stdout io.Writer, tr *
 				code: 1,
 				err: fmt.Errorf("%s", tr.Textf(
 					"unknown cleaner id %q (did you mean: %s?); run `beav list` to see all IDs",
-					"未找到清理器 ID %q（是否指: %s？）；运行 `beav list` 查看全部 ID",
+					"未找到清理项 ID %q（是否指：%s？）；运行 `beav list` 查看全部 ID",
 					id, strings.Join(suggestions, ", "),
 				)),
 			}
@@ -440,7 +440,7 @@ func runConfigSetEnabled(cfgDir, id string, enabled bool, stdout io.Writer, tr *
 			code: 1,
 			err: fmt.Errorf("%s", tr.Textf(
 				"unknown cleaner id %q; run `beav list` to list all IDs",
-				"未找到清理器 ID %q；运行 `beav list` 查看全部 ID",
+				"未找到清理项 ID %q；运行 `beav list` 查看全部 ID",
 				id,
 			)),
 		}

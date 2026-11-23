@@ -118,3 +118,13 @@
   min_age_days: 30
   tool_prune: { profile: test-playwright-browsers }
   tags: [test, tools]
+- id: lang-go-modcache
+  name: Go module download cache
+  description: Heavy native go clean -modcache removing downloaded Go module archives
+  scope: user
+  type: tool_prune
+  impact: heavy
+  enabled: true
+  min_age_days: 30
+  tool_prune: { profile: lang-go-modcache }
+  tags: [langs, go, tools]

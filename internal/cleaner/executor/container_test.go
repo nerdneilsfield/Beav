@@ -146,3 +146,35 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+func TestContainerRealRunMarksMetricsIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	docker := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\nif [ \"$1\" = info ] && [ \"$3\" = '{{.SecurityOptions}}' ]; then echo '[]'; exit 0; fi\nexit 0\n"
+	if err := os.WriteFile(docker, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	c := model.Cleaner{
+		ID:             "container-docker-containers",
+		Name:           "Docker stopped containers",
+		Scope:          model.ScopeSystem,
+		Type:           model.TypeContainerPrune,
+		MinAgeDays:     ptrInt(7),
+		ContainerPrune: &model.ContainerPruneCfg{Runtime: "docker", Target: "container"},
+	}
+	evs := captureEvents(t, func(emit func(model.Event)) {
+		if err := NewContainerExecutor().Run(testContext(t), c, false, emit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, ev := range evs {
+		if ev.Event == model.EvFinish {
+			if !ev.MetricsIncomplete || ev.Status != "ok" {
+				t.Fatalf("real container prune finish must report ok + MetricsIncomplete=true: %+v", ev)
+			}
+			return
+		}
+	}
+	t.Fatal("missing finish event")
+}

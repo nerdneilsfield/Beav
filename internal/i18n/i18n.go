@@ -179,12 +179,46 @@ func (t *Translator) ScopeLabel(s model.Scope) string {
 }
 
 // ImpactLabel returns a localized label for a cleaner impact level.
-// ImpactLabel 返回清理器影响级别的本地化标签。
+// ImpactLabel 返回清理项影响级别的本地化标签。
 func (t *Translator) ImpactLabel(imp model.Impact) string {
 	if imp == model.ImpactHeavy {
 		return t.Text("heavy", "重度")
 	}
-	return t.Text("safe", "安全")
+	return t.Text("safe", "常规")
+}
+
+// ExecutorTypeLabel returns a localized human-readable label for a cleaner executor type.
+// ExecutorTypeLabel 返回清理方式（执行器类型）的本地化说明标签。
+func (t *Translator) ExecutorTypeLabel(et model.ExecutorType) string {
+	switch et {
+	case model.TypePaths:
+		return t.Text("path scan", "路径扫描")
+	case model.TypePkgCache:
+		return t.Text("package manager", "包管理器命令")
+	case model.TypeJournalVacuum:
+		return t.Text("systemd journal", "系统日志清理")
+	case model.TypeContainerPrune:
+		return t.Text("container runtime", "容器运行时")
+	case model.TypeToolPrune:
+		return t.Text("native tool", "原生工具命令")
+	case model.TypeDebris:
+		return t.Text("artifact cleanup", "残留文件清理")
+	case model.TypeManagedCache:
+		return t.Text("managed cache", "托管缓存单元")
+	case model.TypeRustupPrune:
+		return t.Text("Rust toolchain", "Rust 工具链")
+	default:
+		return string(et)
+	}
+}
+
+// TimeFieldLabel returns a localized label for the timestamp field used in age checks.
+// TimeFieldLabel 返回保留期判断所用时间字段的本地化标签。
+func (t *Translator) TimeFieldLabel(tf model.TimeField) string {
+	if tf == model.TimeCtime {
+		return t.Text("ctime", "创建时间 ctime")
+	}
+	return t.Text("mtime", "修改时间 mtime")
 }
 
 // SkipPhrase maps a machine skip reason to a concise localized explanation.
@@ -194,51 +228,51 @@ func (t *Translator) SkipPhrase(reason string) string {
 	case "root_unavailable":
 		return t.Text("cache directory not present", "缓存目录不存在或未配置")
 	case string(model.SkipReasonNoMatches):
-		return t.Text("no matching files", "未发现匹配缓存")
+		return t.Text("no matching files", "没有可清理的缓存")
 	case string(model.SkipReasonHeavyNotAuthorized):
-		return t.Text("heavy cleaner not authorized", "重度清理项未授权")
+		return t.Text("heavy cleaner not authorized", "重度清理项未启用")
 	case string(model.SkipReasonRunningProcess):
-		return t.Text("application is running", "对应应用正在运行")
+		return t.Text("application is running", "关联应用正在运行")
 	case "cache_busy":
-		return t.Text("cache is busy or locked", "缓存正被占用或已加锁")
+		return t.Text("cache is busy or locked", "缓存正被占用")
 	case string(model.SkipReasonRuntimeUnavailable):
 		return t.Text("runtime unavailable", "容器运行时不可用")
 	case string(model.SkipReasonRuntimeNotRootless):
-		return t.Text("daemon is not rootless", "守护进程非 rootless 模式")
+		return t.Text("daemon is not rootless", "容器守护进程非 Rootless 模式")
 	case string(model.SkipReasonRuntimeBusy):
 		return t.Text("containers are running", "有容器正在运行")
 	case string(model.SkipReasonManagerNotInstalled):
 		return t.Text("tool not installed", "未安装对应工具")
 	case string(model.SkipReasonDryRunUnsupported):
-		return t.Text("native command (no dry-run preview)", "原生命令（不支持预演估算）")
+		return t.Text("native command (no dry-run preview)", "原生命令（不支持预览估算）")
 	case string(model.SkipReasonAgeTooRecent):
-		return t.Text("files newer than min age", "文件未超过保留天数")
+		return t.Text("files newer than min age", "文件均在保留期内")
 	case string(model.SkipReasonWhitelisted):
-		return t.Text("protected by whitelist", "已被白名单保护")
+		return t.Text("protected by whitelist", "受白名单保护")
 	case string(model.SkipReasonBlacklisted):
-		return t.Text("protected system/personal path", "受保护路径已拦截")
+		return t.Text("protected system/personal path", "受保护的系统或个人路径")
 	case string(model.SkipReasonKeepListIntersection):
-		return t.Text("intersects protected keep list", "与受保护保留列表冲突")
+		return t.Text("intersects protected keep list", "命中受保护保留清单")
 	case string(model.SkipReasonExcluded):
-		return t.Text("excluded by rule", "被排除规则跳过")
+		return t.Text("excluded by rule", "匹配排除规则")
 	case string(model.SkipReasonBoundaryViolation):
-		return t.Text("outside allowed safety boundary", "超出安全路径边界")
+		return t.Text("outside allowed safety boundary", "超出允许的安全目录范围")
 	case string(model.SkipReasonSymlink):
-		return t.Text("symlink skipped for safety", "为安全起见跳过符号链接")
+		return t.Text("symlink skipped for safety", "跳过符号链接（安全保护）")
 	case string(model.SkipReasonCrossFS):
 		return t.Text("cross-filesystem boundary skipped", "跳过跨文件系统路径")
 	case string(model.SkipReasonPermissionDenied):
 		return t.Text("permission denied", "权限不足")
 	case "capability_unsupported":
-		return t.Text("installed tool lacks required flag", "当前工具版本缺少所需参数")
+		return t.Text("installed tool lacks required flag", "当前工具版本不支持所需选项")
 	case "version_mismatch":
-		return t.Text("unexpected tool binary/version", "工具版本或二进制校验不匹配")
+		return t.Text("unexpected tool binary/version", "工具版本校验未通过")
 	case "safety_changed":
-		return t.Text("target state changed during check", "检查期间目标状态发生变化")
+		return t.Text("target state changed during check", "检查期间目标文件已变动")
 	case "identity_unavailable":
 		return t.Text("target user identity unavailable", "无法确认目标用户身份")
 	case "profile_scope_mismatch":
-		return t.Text("cleaner scope does not match profile", "清理器作用域与配置不匹配")
+		return t.Text("cleaner scope does not match profile", "清理项作用域与规则不匹配")
 	default:
 		return strings.ReplaceAll(reason, "_", " ")
 	}
@@ -249,15 +283,15 @@ func (t *Translator) SkipPhrase(reason string) string {
 func (t *Translator) SkipRemedy(reason string) string {
 	switch reason {
 	case string(model.SkipReasonHeavyNotAuthorized):
-		return t.Text("pass --include-heavy or --only <id>", "加 --include-heavy 或 --only <ID>")
+		return t.Text("pass --include-heavy or --only <id>", "加上 --include-heavy 或 --only <ID> 即可启用")
 	case string(model.SkipReasonRunningProcess):
-		return t.Text("close the app and retry", "关闭对应应用后重试")
+		return t.Text("close the app and retry", "请关闭对应应用后重试")
 	case "cache_busy", string(model.SkipReasonRuntimeBusy):
-		return t.Text("wait for active tasks to finish and retry", "等待当前任务完成后重试")
+		return t.Text("wait for active tasks to finish and retry", "请等待当前任务结束后重试")
 	case string(model.SkipReasonRuntimeNotRootless):
-		return t.Text("use sudo beav clean --system for rootful daemon", "系统守护进程请运行 sudo beav clean --system")
+		return t.Text("use sudo beav clean --system for rootful daemon", "系统级守护进程请运行 sudo beav clean --system")
 	case string(model.SkipReasonAgeTooRecent):
-		return t.Text("lower --min-age to include newer files", "可调小 --min-age 包含较新文件")
+		return t.Text("lower --min-age to include newer files", "可调小 --min-age 以包含较新文件")
 	default:
 		return ""
 	}

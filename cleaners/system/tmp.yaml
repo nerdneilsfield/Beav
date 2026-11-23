@@ -4,5 +4,6 @@
   type: paths
   min_age_days: 10
   needs_root: true
-  paths: [/tmp/*, /var/tmp/*]
+  paths: [/tmp/**, /var/tmp/**]
+  exclude: [".X11-unix", ".ICE-unix", ".XIM-unix", ".font-unix", ".Test-unix", "systemd-private-*", "snap-private-tmp"]
   tags: [system]

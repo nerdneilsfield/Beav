@@ -8,3 +8,14 @@
     - ~/.codex/.tmp
     - ~/.codex/tmp
   tags: [ai]
+- id: ai-vllm-cache
+  name: vLLM & FlashInfer JIT cache
+  description: Compiled torch.compile graphs and FlashInfer JIT kernel caches for vLLM inference
+  scope: user
+  type: paths
+  min_age_days: 14
+  paths:
+    - ~/.cache/vllm/**
+    - ~/.cache/flashinfer/**
+  running_processes: [vllm]
+  tags: [ai, gpu]

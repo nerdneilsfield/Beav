@@ -21,7 +21,7 @@ func NewPkgCacheExecutor() *PkgCacheExecutor { return &PkgCacheExecutor{} }
 // pkgArgv maps package manager names to their clean commands.
 // pkgArgv 将包管理器名称映射到其清理命令。
 var pkgArgv = map[string][][]string{
-	"apt":    {{"apt-get", "clean"}, {"apt-get", "autoclean"}},
+	"apt":    {{"apt-get", "clean"}},
 	"dnf":    {{"dnf", "clean", "all"}},
 	"pacman": {{"pacman", "-Sc", "--noconfirm"}},
 	"zypper": {{"zypper", "clean", "-a"}},
@@ -83,6 +83,6 @@ func (p *PkgCacheExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool
 	if errs > 0 {
 		status = "error"
 	}
-	emitFinish(emit, c.ID, status, errs, start)
+	emitFinishWithMetrics(emit, c.ID, status, errs, start, true)
 	return nil
 }

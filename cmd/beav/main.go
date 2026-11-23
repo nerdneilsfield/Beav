@@ -32,14 +32,14 @@ func main() {
 	if err != nil {
 		var cliErr cli.ExitError
 		if errors.As(err, &cliErr) {
-			fmt.Fprintf(os.Stderr, "%s %s\n", tr.Text("Error:", "错误:"), cliErr.Error())
+			fmt.Fprint(os.Stderr, tr.Textf("Error: %s\n", "错误：%s\n", cliErr.Error()))
 			os.Exit(cliErr.Code())
 		}
 		if errors.Is(err, context.Canceled) {
-			fmt.Fprintf(os.Stderr, "%s %s\n", tr.Text("Canceled:", "已取消:"), err.Error())
+			fmt.Fprint(os.Stderr, tr.Textf("Canceled: %s\n", "已取消：%s\n", err.Error()))
 			os.Exit(4)
 		}
-		fmt.Fprintf(os.Stderr, "%s %s\n", tr.Text("Error:", "错误:"), err.Error())
+		fmt.Fprint(os.Stderr, tr.Textf("Error: %s\n", "错误：%s\n", err.Error()))
 		fmt.Fprintln(os.Stderr, tr.Text("Run `beav --help` for usage.", "运行 `beav --help` 查看用法。"))
 		os.Exit(1)
 	}

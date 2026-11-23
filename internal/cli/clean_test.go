@@ -318,7 +318,11 @@ func TestShouldAbortEarlyAccountsForMetricsIncomplete(t *testing.T) {
 }
 
 func TestRunReadOnlyScanStreamsCandidatesWithoutDeleting(t *testing.T) {
-	target := t.TempDir()
+	home := t.TempDir()
+	target := filepath.Join(home, ".cache", "demo")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	safeFile := filepath.Join(target, "safe.cache")
 	if err := os.WriteFile(safeFile, []byte("123456"), 0o644); err != nil {
 		t.Fatal(err)
@@ -350,7 +354,7 @@ func TestRunReadOnlyScanStreamsCandidatesWithoutDeleting(t *testing.T) {
 		},
 	}
 
-	ch, cancel := runReadOnlyScan(context.Background(), merged, model.ScopeUser, target, os.Getuid(), &config.Config{})
+	ch, cancel := runReadOnlyScan(context.Background(), merged, model.ScopeUser, home, os.Getuid(), &config.Config{})
 	defer cancel()
 
 	var items []tui.CleanerScan

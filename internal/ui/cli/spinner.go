@@ -175,7 +175,7 @@ func (s *Spinner) Render(e model.Event) {
 			startName = st.start.Name
 		}
 		name := displayName(s.tr, e.CleanerID, startName)
-		fmt.Fprintf(s.w, "  %s %s (%s) - %s\n", styleErr.Render("[err]"), name, e.CleanerID, e.Detail)
+		fmt.Fprintf(s.w, "  %s %s (%s) - %s\n", styleErr.Render(s.tr.Text("[err]", "[错误]")), name, e.CleanerID, e.Detail)
 	case model.EvSummary:
 		s.clearProgressLocked()
 		s.flushGroups()
@@ -192,7 +192,7 @@ func (s *Spinner) renderFinishLocked(e model.Event, st *cleanerState, name strin
 			partial = s.tr.Text(" (partial)", "（部分估算）")
 		}
 		fmt.Fprintf(s.w, "  %s %s\n",
-			stylePlan.Render(s.tr.Text("[plan]", "[预演]")),
+			stylePlan.Render(s.tr.Text("[plan]", "[预览]")),
 			s.tr.Textf("%s (%s) - %s in %s%s",
 				"%s (%s) - %s（%s）%s",
 				name, e.CleanerID,
@@ -205,9 +205,9 @@ func (s *Spinner) renderFinishLocked(e model.Event, st *cleanerState, name strin
 	case e.DryRun && e.MetricsIncomplete:
 		s.clearProgressLocked()
 		fmt.Fprintf(s.w, "  %s %s (%s) - %s\n",
-			stylePlan.Render(s.tr.Text("[plan]", "[预演]")),
+			stylePlan.Render(s.tr.Text("[plan]", "[预览]")),
 			name, e.CleanerID,
-			s.tr.Text("native command (size unmeasured)", "原生命令（无法预估大小）"),
+			s.tr.Text("native command (size unmeasured)", "原生命令（无法估算大小）"),
 		)
 		limit := previewCmdLimit
 		if s.verbose {
@@ -223,13 +223,15 @@ func (s *Spinner) renderFinishLocked(e model.Event, st *cleanerState, name strin
 		if e.MetricsIncomplete {
 			partial = s.tr.Text(" (partial)", "（部分估算）")
 		}
-		fmt.Fprintf(s.w, "  %s %s (%s) - %s %s (%s)%s\n",
+		fmt.Fprintf(s.w, "  %s %s\n",
 			styleOK.Render(s.tr.Text("[ok]", "[完成]")),
-			name, e.CleanerID,
-			humanize.Bytes(safeBytes(e.BytesFreed)),
-			s.tr.Text("freed", "已释放"),
-			s.tr.Plural(e.FilesDeleted, "file", "files", "个文件"),
-			partial,
+			s.tr.Textf("%s (%s) - %s freed (%s)%s",
+				"%s (%s) - 已释放 %s（%s）%s",
+				name, e.CleanerID,
+				humanize.Bytes(safeBytes(e.BytesFreed)),
+				s.tr.Plural(e.FilesDeleted, "file", "files", "个文件"),
+				partial,
+			),
 		)
 		s.printDetailsLocked(st, verboseDetailLimit)
 	case e.MetricsIncomplete:
@@ -237,7 +239,7 @@ func (s *Spinner) renderFinishLocked(e model.Event, st *cleanerState, name strin
 		fmt.Fprintf(s.w, "  %s %s (%s) - %s\n",
 			styleOK.Render(s.tr.Text("[ok]", "[完成]")),
 			name, e.CleanerID,
-			s.tr.Text("native command completed (size unmeasured)", "原生命令已执行（未计量字节数）"),
+			s.tr.Text("native command completed (size unmeasured)", "原生命令已执行（未统计大小）"),
 		)
 		if s.verbose {
 			s.printCommandLinesLocked(st, verboseDetailLimit)
@@ -281,19 +283,18 @@ func (s *Spinner) printCommandLinesLocked(st *cleanerState, limit int) {
 
 func (s *Spinner) flushGroups() {
 	if len(s.noop) > 0 {
-		fmt.Fprintf(s.w, "  %s %s: %s\n",
+		fmt.Fprintf(s.w, "  %s %s\n",
 			styleQuiet.Render("·"),
-			s.tr.Text("nothing to do", "无需清理"),
-			joinNames(s.tr, s.noop, s.verbose),
+			s.tr.Textf("nothing to do: %s", "无需清理：%s", joinNames(s.tr, s.noop, s.verbose)),
 		)
 		s.noop = nil
 	}
 	skipTag := styleSkip.Render(s.tr.Text("[skip]", "[跳过]"))
 	for _, reason := range sortedSkipReasons(s.skips, false) {
 		entries := s.skips[reason]
-		line := fmt.Sprintf("%s - %s", skipPhrase(s.tr, reason), joinSkipEntries(s.tr, entries, s.verbose))
+		line := s.tr.Textf("%s - %s", "%s：%s", skipPhrase(s.tr, reason), joinSkipEntries(s.tr, entries, s.verbose))
 		if remedy := skipRemedy(s.tr, reason); remedy != "" {
-			line += " - " + remedy
+			line += s.tr.Text(" - ", "；") + remedy
 		}
 		fmt.Fprintf(s.w, "  %s %s\n", skipTag, line)
 		if s.verbose {
@@ -312,16 +313,14 @@ func (s *Spinner) flushGroups() {
 			for _, r := range quietReasons {
 				total += len(s.skips[r])
 			}
-			line := fmt.Sprintf("%s - %s",
-				s.tr.Text("not installed / no cache", "未安装或无缓存"),
-				s.tr.Textf("%s - use --verbose to list", "%s - 加 --verbose 查看明细",
-					s.tr.Plural(int64(total), "cleaner", "cleaners", "项")),
-			)
+			line := s.tr.Textf("not installed / no cache - %s - use --verbose to list",
+				"未安装或无缓存：%s（加 --verbose 查看明细）",
+				s.tr.Plural(int64(total), "cleaner", "cleaners", "项"))
 			fmt.Fprintf(s.w, "  %s %s\n", skipTag, line)
 		} else {
 			for _, reason := range quietReasons {
 				entries := s.skips[reason]
-				line := fmt.Sprintf("%s - %s", skipPhrase(s.tr, reason), joinSkipEntries(s.tr, entries, true))
+				line := s.tr.Textf("%s - %s", "%s：%s", skipPhrase(s.tr, reason), joinSkipEntries(s.tr, entries, true))
 				fmt.Fprintf(s.w, "  %s %s\n", skipTag, line)
 				for _, ent := range entries {
 					if ent.Detail != "" {
@@ -339,7 +338,7 @@ func (s *Spinner) renderSummary(e model.Event) {
 	if e.DryRun {
 		fmt.Fprintf(s.w, "\n%s\n",
 			s.tr.Textf("Plan: %s in %s across %s%s.",
-				"预演计划: 共 %s（%s），涉及 %s%s。",
+				"扫描汇总：预计可释放 %s（%s），涉及 %s%s。",
 				humanize.Bytes(safeBytes(e.BytesCandidate)),
 				s.tr.Plural(e.FilesCandidate, "file", "files", "个文件"),
 				s.tr.Plural(int64(e.CleanersRun), "cleaner", "cleaners", "项"),
@@ -349,7 +348,7 @@ func (s *Spinner) renderSummary(e model.Event) {
 	} else {
 		fmt.Fprintf(s.w, "\n%s\n",
 			s.tr.Textf("Freed %s (%s) across %s%s.",
-				"已释放 %s（%s），共处理 %s%s。",
+				"清理完成：已释放 %s（%s），共处理 %s%s。",
 				humanize.Bytes(safeBytes(e.BytesFreed)),
 				s.tr.Plural(e.FilesDeleted, "file", "files", "个文件"),
 				s.tr.Plural(int64(e.CleanersRun), "cleaner", "cleaners", "项"),
@@ -360,7 +359,7 @@ func (s *Spinner) renderSummary(e model.Event) {
 	if e.MetricsIncomplete && len(e.UnmeasuredCleaners) > 0 {
 		fmt.Fprintf(s.w, "%s\n",
 			s.tr.Textf("Note: exact byte sizes unavailable for native commands: %s.",
-				"提示: 以下原生命令无法精确统计字节数: %s。",
+				"提示：以下原生命令无法精确统计释放空间：%s。",
 				strings.Join(e.UnmeasuredCleaners, ", "),
 			),
 		)

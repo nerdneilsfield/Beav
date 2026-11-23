@@ -5,5 +5,5 @@
   min_age_days: 30
   path_resolvers:
     - resolver: gradle_home
-      subpaths: [caches]
+      subpaths: [caches, daemon, .tmp]
   tags: [langs, jvm]

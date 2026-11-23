@@ -1,0 +1,9 @@
+- id: lang-coursier
+  name: Coursier JVM dependency cache
+  description: Downloaded Maven/Ivy JAR caches managed by Coursier for Scala and JVM tools
+  scope: user
+  type: paths
+  min_age_days: 30
+  paths:
+    - ~/.cache/coursier/v1/**
+  tags: [langs, jvm]

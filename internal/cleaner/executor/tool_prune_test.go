@@ -626,19 +626,20 @@ func TestToolProfilesDeclareExactCommandSafetyContract(t *testing.T) {
 	wants := map[string]profileContract{
 		"pkg-homebrew":             {"brew", []string{"cleanup", "--prune=5"}, []string{"cleanup", "--prune=5", "--dry-run"}, true, false, filepath.Join(".cache", "Homebrew"), nil, []string{"--dry-run"}},
 		"lang-uv":                  {"uv", []string{"cache", "prune"}, []string{"cache", "prune"}, false, false, filepath.Join(".cache", "uv"), nil, nil},
-		"lang-pnpm":                {"pnpm", []string{"store", "prune"}, []string{"store", "prune"}, false, false, filepath.Join(".local", "share", "pnpm", "store"), nil, nil},
+		"lang-pnpm":                {"pnpm", []string{"store", "prune"}, []string{"store", "prune"}, false, false, filepath.Join(".local", "share", "pnpm", "store"), []string{"prune"}, nil},
 		"dev-pre-commit":           {"pre-commit", []string{"gc"}, []string{"gc"}, false, false, filepath.Join(".cache", "pre-commit"), nil, nil},
 		"lang-conda":               {"conda", []string{"clean", "--index-cache", "--tarballs", "--logfiles", "--yes"}, []string{"clean", "--index-cache", "--tarballs", "--logfiles", "--yes", "--dry-run", "--json"}, true, false, ".conda", nil, []string{"--dry-run", "--json"}},
 		"test-cypress":             {"cypress", []string{"cache", "prune"}, []string{"cache", "prune"}, false, false, filepath.Join(".cache", "Cypress"), nil, nil},
 		"build-ccache":             {"ccache", []string{"--cleanup"}, []string{"--cleanup"}, false, false, filepath.Join(".cache", "ccache"), nil, nil},
 		"ai-huggingface-prune":     {"hf", []string{"cache", "prune", "--cache-dir", "/tmp/home/.cache/huggingface", "--yes"}, []string{"cache", "prune", "--cache-dir", "/tmp/home/.cache/huggingface", "--yes", "--dry-run"}, true, false, filepath.Join(".cache", "huggingface"), []string{"--cache-dir", "--yes"}, []string{"--dry-run"}},
-		"dev-mise":                 {"mise", []string{"prune", "--yes"}, []string{"prune", "--yes"}, false, false, filepath.Join(".cache", "mise"), []string{"--yes"}, nil},
-		"lang-corepack":            {"corepack", []string{"cache", "clean"}, []string{"cache", "clean"}, false, false, filepath.Join(".cache", "node", "corepack"), nil, nil},
+		"dev-mise":                 {"mise", []string{"prune", "--yes"}, []string{"prune", "--dry-run"}, true, false, filepath.Join(".cache", "mise"), []string{"--yes"}, []string{"--dry-run"}},
+		"lang-corepack":            {"corepack", []string{"cache", "clean"}, []string{"cache", "clean"}, false, false, filepath.Join(".cache", "node", "corepack"), []string{"cache"}, nil},
 		"sys-nix-gc":               {"nix-collect-garbage", nil, []string{"--dry-run"}, true, true, "/nix", nil, []string{"--dry-run"}},
 		"desktop-flatpak-user":     {"flatpak", []string{"uninstall", "--user", "--unused", "--noninteractive"}, []string{"uninstall", "--user", "--unused", "--noninteractive"}, false, false, filepath.Join(".local", "share", "flatpak"), []string{"--noninteractive"}, nil},
 		"desktop-flatpak-system":   {"flatpak", []string{"uninstall", "--system", "--unused", "--noninteractive"}, []string{"uninstall", "--system", "--unused", "--noninteractive"}, false, true, "/var/lib/flatpak", []string{"--noninteractive"}, nil},
 		"lang-poetry-cache":        {"poetry", []string{"cache", "clear", "pypi", "--all", "--no-interaction"}, []string{"cache", "clear", "pypi", "--all", "--no-interaction"}, false, false, filepath.Join(".cache", "pypoetry"), nil, nil},
-		"test-playwright-browsers": {"playwright", []string{"uninstall", "--all"}, []string{"uninstall", "--all"}, false, false, filepath.Join(".cache", "ms-playwright"), nil, nil},
+		"test-playwright-browsers": {"playwright", []string{"uninstall", "--all"}, []string{"uninstall", "--all"}, false, false, filepath.Join(".cache", "ms-playwright"), []string{"--all"}, nil},
+		"lang-go-modcache":         {"go", []string{"clean", "-modcache"}, []string{"clean", "-modcache"}, false, false, filepath.Join("go", "pkg", "mod"), nil, nil},
 	}
 	if len(wants) != len(toolProfiles) {
 		t.Fatalf("contract table covers %d profiles, registry has %d", len(wants), len(toolProfiles))

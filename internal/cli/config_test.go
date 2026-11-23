@@ -202,3 +202,33 @@ func TestConfigWhitelistAddListRemove(t *testing.T) {
 		t.Fatalf("remove output = %q", buf.String())
 	}
 }
+
+func TestConfigSetEnabledChineseNoDoublePrefix(t *testing.T) {
+	dir := t.TempDir()
+	var buf bytes.Buffer
+
+	cmd := NewRootCmdWithLang("t", "t", "t", i18n.LangZH)
+	cmd.SetArgs([]string{"config", "disable", "lang-pip", "--config-dir", dir})
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "默认禁用") || strings.Contains(got, "默认已禁用") {
+		t.Fatalf("unexpected ZH disable message: %q", got)
+	}
+
+	buf.Reset()
+	cmd = NewRootCmdWithLang("t", "t", "t", i18n.LangZH)
+	cmd.SetArgs([]string{"config", "enable", "lang-pip", "--config-dir", dir})
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got = buf.String()
+	if !strings.Contains(got, "默认启用") || strings.Contains(got, "默认已启用") {
+		t.Fatalf("unexpected ZH enable message: %q", got)
+	}
+}

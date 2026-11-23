@@ -4,5 +4,5 @@
   type: paths
   min_age_days: 30
   needs_root: true
-  paths: [/var/cache/man/*, /var/cache/fontconfig/*]
+  paths: [/var/cache/man/**, /var/cache/fontconfig/**, /var/cache/PackageKit/**]
   tags: [system]

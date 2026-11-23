@@ -52,6 +52,8 @@ var toolProfiles = map[string]toolProfile{
 		Binary:       "pnpm",
 		RootResolver: homeRoot(".local", "share", "pnpm", "store"),
 		BuildArgs:    func(_ string, _ int, _ bool) []string { return []string{"store", "prune"} },
+		ProbeArgs:    []string{"store", "--help"},
+		Required:     []string{"prune"},
 		VersionWords: []string{"pnpm"},
 	},
 	"dev-pre-commit": {
@@ -106,16 +108,27 @@ var toolProfiles = map[string]toolProfile{
 	},
 	"dev-mise": {
 		Binary:       "mise",
+		NativeDryRun: true,
 		RootResolver: homeRoot(".cache", "mise"),
-		BuildArgs:    func(_ string, _ int, _ bool) []string { return []string{"prune", "--yes"} },
-		ProbeArgs:    []string{"prune", "--help"},
-		Required:     []string{"--yes"},
-		VersionWords: []string{"mise"},
+		BuildArgs: func(_ string, _ int, dry bool) []string {
+			if dry {
+				return []string{"prune", "--dry-run"}
+			}
+			return []string{"prune", "--yes"}
+		},
+		ProbeArgs:          []string{"prune", "--help"},
+		Required:           []string{"--yes"},
+		DryRunProbeArgs:    []string{"prune", "--help"},
+		DryRunRequired:     []string{"--dry-run"},
+		DryRunVersionWords: []string{"mise"},
+		VersionWords:       []string{"mise"},
 	},
 	"lang-corepack": {
 		Binary:       "corepack",
 		RootResolver: homeRoot(".cache", "node", "corepack"),
 		BuildArgs:    func(_ string, _ int, _ bool) []string { return []string{"cache", "clean"} },
+		ProbeArgs:    []string{"--help"},
+		Required:     []string{"cache"},
 		VersionWords: []string{"corepack"},
 	},
 	"sys-nix-gc": {
@@ -166,7 +179,16 @@ var toolProfiles = map[string]toolProfile{
 		Binary:       "playwright",
 		RootResolver: homeRoot(".cache", "ms-playwright"),
 		BuildArgs:    func(_ string, _ int, _ bool) []string { return []string{"uninstall", "--all"} },
+		ProbeArgs:    []string{"uninstall", "--help"},
+		Required:     []string{"--all"},
 		VersionWords: []string{"playwright"},
+	},
+	"lang-go-modcache": {
+		Binary:       "go",
+		RootResolver: homeRoot("go", "pkg", "mod"),
+		BuildArgs:    func(_ string, _ int, _ bool) []string { return []string{"clean", "-modcache"} },
+		ProbeArgs:    []string{"version"},
+		VersionWords: []string{"go version"},
 	},
 }
 

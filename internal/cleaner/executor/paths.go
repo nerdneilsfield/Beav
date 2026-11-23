@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -216,6 +217,8 @@ func entryOldEnough(e safety.Entry, age int, field safety.TimeField, now time.Ti
 func emitOpenSkip(cleanerID, path string, err error, emit func(model.Event)) {
 	reason := "permission_denied"
 	switch {
+	case errors.Is(err, os.ErrNotExist):
+		reason = "no_matches"
 	case errors.Is(err, safety.ErrSymlink):
 		reason = "symlink"
 	case errors.Is(err, safety.ErrCrossFS):
@@ -250,8 +253,10 @@ func (p *PathsExecutor) expandRoots(c model.Cleaner) ([]string, error) {
 	}
 
 	out := make([]string, 0, len(raws))
+	seen := make(map[string]struct{}, len(raws))
 	hadMatch := false
 	for _, r := range raws {
+		r = strings.TrimSuffix(r, string(filepath.Separator)+"**")
 		matches := []string{r}
 		if hasGlobMeta(r) {
 			var err error
@@ -262,10 +267,16 @@ func (p *PathsExecutor) expandRoots(c model.Cleaner) ([]string, error) {
 			if len(matches) == 0 {
 				continue
 			}
+		} else if _, err := os.Lstat(r); errors.Is(err, os.ErrNotExist) {
+			continue
 		}
 		for _, m := range matches {
 			hadMatch = true
 			clean := filepath.Clean(m)
+			if _, dup := seen[clean]; dup {
+				continue
+			}
+			seen[clean] = struct{}{}
 			if !safety.InsideAllowList(clean, p.Home) || safety.Blacklisted(clean, p.Home) {
 				continue
 			}
@@ -299,6 +310,10 @@ type globSet []string
 func compileGlobs(patterns []string) globSet { return globSet(patterns) }
 
 func matchAny(set globSet, absPath, relPath string) bool {
+	if len(set) == 0 {
+		return false
+	}
+	segments := strings.Split(filepath.Clean(relPath), string(filepath.Separator))
 	for _, pattern := range set {
 		if ok, _ := filepath.Match(pattern, filepath.Base(absPath)); ok {
 			return true
@@ -308,6 +323,14 @@ func matchAny(set globSet, absPath, relPath string) bool {
 		}
 		if ok, _ := filepath.Match(pattern, absPath); ok {
 			return true
+		}
+		for _, seg := range segments {
+			if seg == "" || seg == "." {
+				continue
+			}
+			if ok, _ := filepath.Match(pattern, seg); ok {
+				return true
+			}
 		}
 	}
 	return false

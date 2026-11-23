@@ -124,3 +124,47 @@ func TestPlural(t *testing.T) {
 		t.Fatalf("zh = %q", got)
 	}
 }
+
+func TestImpactExecutorAndTimeFieldLabels(t *testing.T) {
+	en := New(LangEN)
+	zh := New(LangZH)
+
+	if got := en.ImpactLabel(model.ImpactSafe); got != "safe" {
+		t.Fatalf("en safe = %q", got)
+	}
+	if got := en.ImpactLabel(model.ImpactHeavy); got != "heavy" {
+		t.Fatalf("en heavy = %q", got)
+	}
+	if got := zh.ImpactLabel(model.ImpactSafe); got != "常规" {
+		t.Fatalf("zh safe = %q, want 常规", got)
+	}
+	if got := zh.ImpactLabel(model.ImpactHeavy); got != "重度" {
+		t.Fatalf("zh heavy = %q, want 重度", got)
+	}
+
+	types := []model.ExecutorType{
+		model.TypePaths,
+		model.TypePkgCache,
+		model.TypeJournalVacuum,
+		model.TypeContainerPrune,
+		model.TypeToolPrune,
+		model.TypeDebris,
+		model.TypeManagedCache,
+		model.TypeRustupPrune,
+	}
+	for _, et := range types {
+		if got := en.ExecutorTypeLabel(et); got == "" || got == string(et) {
+			t.Fatalf("en ExecutorTypeLabel(%q) = %q, want human label", et, got)
+		}
+		if got := zh.ExecutorTypeLabel(et); got == "" || got == string(et) {
+			t.Fatalf("zh ExecutorTypeLabel(%q) = %q, want Chinese label", et, got)
+		}
+	}
+
+	if got := zh.TimeFieldLabel(model.TimeMtime); got != "修改时间 mtime" {
+		t.Fatalf("zh mtime = %q", got)
+	}
+	if got := zh.TimeFieldLabel(model.TimeCtime); got != "创建时间 ctime" {
+		t.Fatalf("zh ctime = %q", got)
+	}
+}

@@ -143,14 +143,27 @@ func TestPlainChineseAndVerbose(t *testing.T) {
 	r.Render(model.Event{Event: model.EvSummary, DryRun: true, CleanersRun: 1, FilesCandidate: 1, BytesCandidate: 2048})
 
 	got := buf.String()
-	if !strings.Contains(got, "pip Wheel 缓存 (lang-pip)") {
-		t.Fatalf("expected localized ZH cleaner name: %q", got)
+	if !strings.Contains(got, "pip 安装包缓存 (lang-pip)") || !strings.Contains(got, "预览") {
+		t.Fatalf("expected localized ZH cleaner name and plan tag: %q", got)
 	}
 	if !strings.Contains(got, "/tmp/a.whl") {
 		t.Fatalf("expected verbose file sample: %q", got)
 	}
-	if !strings.Contains(got, "总计: 扫描 1 项 - 可回收 2.0 kB（1 个文件）") {
+	if !strings.Contains(got, "总计：扫描 1 项，预计可释放 2.0 kB（1 个文件）") {
 		t.Fatalf("expected ZH summary: %q", got)
+	}
+
+	buf.Reset()
+	r = NewPlainWithOptions(&buf, Options{Translator: i18n.New(i18n.LangZH)})
+	r.Render(model.Event{Event: model.EvStart, CleanerID: "lang-pip", Name: "pip wheel cache", TS: time.Now()})
+	r.Render(model.Event{Event: model.EvFinish, CleanerID: "lang-pip", Status: "ok", FilesDeleted: 1, BytesFreed: 2048})
+	r.Render(model.Event{Event: model.EvSummary, CleanersRun: 1, FilesDeleted: 1, BytesFreed: 2048})
+	realGot := buf.String()
+	if !strings.Contains(realGot, "pip 安装包缓存 (lang-pip) - 完成 - 已释放 2.0 kB（1 个文件）") {
+		t.Fatalf("expected natural ZH freed word order, got %q", realGot)
+	}
+	if !strings.Contains(realGot, "总计：处理 1 项，已释放 2.0 kB（1 个文件）") {
+		t.Fatalf("expected natural ZH real summary, got %q", realGot)
 	}
 }
 

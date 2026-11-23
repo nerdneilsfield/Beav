@@ -18,7 +18,7 @@ func NewAnalyzeCmd(tr *i18n.Translator) *cobra.Command {
 	}
 	return &cobra.Command{
 		Use:   "analyze [path]",
-		Short: tr.Text("Explore disk usage in a read-only TUI (powered by gdu)", "以只读 TUI 界面分析目录磁盘占用（基于 gdu）"),
+		Short: tr.Text("Explore disk usage in a read-only TUI (powered by gdu)", "以只读界面分析目录磁盘占用（基于 gdu）"),
 		Long: tr.Text(
 			"Launch the bundled read-only disk usage explorer (powered by gdu) for the given directory (defaults to current directory).\n"+
 				"Deletion and shell spawning are disabled for safety. Press q to quit.",

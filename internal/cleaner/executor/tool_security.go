@@ -172,6 +172,15 @@ func defaultToolSearchPath(home string, system bool) []string {
 		paths = append(paths,
 			filepath.Join(home, ".local", "bin"),
 			filepath.Join(home, ".cargo", "bin"),
+			filepath.Join(home, ".local", "share", "pnpm"),
+			filepath.Join(home, ".bun", "bin"),
+			filepath.Join(home, "go", "bin"),
+			"/usr/local/go/bin",
+			filepath.Join(home, "miniconda3", "bin"),
+			filepath.Join(home, "miniforge3", "bin"),
+			filepath.Join(home, "anaconda3", "bin"),
+			filepath.Join(home, "mambaforge", "bin"),
+			"/opt/conda/bin",
 			// bin/brew is a symlink farm into Homebrew; the resolver rejects
 			// symlinks, so point at the real directory.
 			"/home/linuxbrew/.linuxbrew/Homebrew/bin",

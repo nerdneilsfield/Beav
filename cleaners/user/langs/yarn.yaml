@@ -3,5 +3,8 @@
   scope: user
   type: paths
   min_age_days: 14
+  paths:
+    - ~/.yarn/berry/cache/**
+    - ~/.cache/yarnpkg/**
   path_resolvers: [{ resolver: yarn_cache }]
   tags: [langs, js]

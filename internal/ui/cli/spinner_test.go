@@ -140,7 +140,24 @@ func TestSpinnerAnimatedTickerRaceSafe(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := buf.String()
-	if !strings.Contains(got, "VS Code 缓存") || !strings.Contains(got, "(editor-vscode)") {
+	if !strings.Contains(got, "VS Code 缓存与日志") || !strings.Contains(got, "(editor-vscode)") {
 		t.Fatalf("expected localized output, got %q", got)
+	}
+	if !strings.Contains(got, "已释放 512 B（1 个文件）") {
+		t.Fatalf("expected natural ZH freed word order, got %q", got)
+	}
+}
+
+func TestSpinnerChineseErrorTag(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewSpinnerWithOptions(&buf, Options{Translator: i18n.New(i18n.LangZH)})
+	r.Render(model.Event{Event: model.EvStart, CleanerID: "lang-pip", Name: "pip wheel cache", TS: time.Now()})
+	r.Render(model.Event{Event: model.EvError, CleanerID: "lang-pip", Detail: "permission denied"})
+	r.Render(model.Event{Event: model.EvFinish, CleanerID: "lang-pip", Status: "error"})
+	r.Render(model.Event{Event: model.EvSummary, CleanersErrored: 1})
+
+	got := buf.String()
+	if !strings.Contains(got, "[错误]") || strings.Contains(got, "[err]") {
+		t.Fatalf("expected localized error tag [错误], got %q", got)
 	}
 }

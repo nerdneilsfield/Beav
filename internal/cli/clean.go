@@ -35,14 +35,14 @@ func NewCleanCmd(tr *i18n.Translator) *cobra.Command {
 	var f CleanFlags
 	cmd := &cobra.Command{
 		Use:   "clean",
-		Short: tr.Text("Clean caches, logs, and other reclaimable disk usage", "清理缓存、日志和其他可回收磁盘空间"),
+		Short: tr.Text("Clean caches, logs, and other reclaimable disk usage", "清理缓存、日志及其他可释放磁盘空间"),
 		Long: tr.Text(
 			"Clean caches, logs, and build artifacts safely.\n"+
 				"In an interactive terminal, Beav previews the cleanup plan first and asks before deleting unless --yes is passed.\n"+
 				"Heavy cleaners require --include-heavy or an exact full cleaner ID/tag in --only. Run `beav list` or `beav info <id>` to inspect cleaners.",
 			"安全清理缓存、日志与可再生构建产物。\n"+
-				"在交互终端中默认先进行只读预览并等待确认后才删除（除非传入 --yes）。\n"+
-				"重度清理项需要 --include-heavy 或在 --only 中指定完整 ID/标签；运行 `beav list` 或 `beav info <ID>` 可查看全部清理器。",
+				"在交互终端中默认先执行只读扫描并等待确认后才删除（除非传入 --yes）。\n"+
+				"重度清理项需要 --include-heavy 或在 --only 中指定完整 ID 或标签；运行 `beav list` 或 `beav info <ID>` 可查看全部清理项。",
 		),
 		Example: tr.Text(
 			"  beav clean --dry-run\n"+
@@ -64,18 +64,18 @@ func NewCleanCmd(tr *i18n.Translator) *cobra.Command {
 			return runCleanWithTranslator(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), f, localTr)
 		},
 	}
-	cmd.Flags().BoolVar(&f.System, "system", false, tr.Text("clean system-scope cleaners (requires sudo)", "清理系统级缓存项（需 sudo）"))
-	cmd.Flags().BoolVar(&f.All, "all", false, tr.Text("clean both user and system scopes (requires sudo)", "同时清理用户级与系统级缓存项（需 sudo）"))
-	cmd.Flags().BoolVar(&f.DryRun, "dry-run", false, tr.Text("preview what would be removed without deleting", "仅预览可清理项但不执行删除"))
-	cmd.Flags().StringSliceVar(&f.Only, "only", nil, tr.Text("run matching cleaner IDs, tags, or ID prefixes; heavy requires an exact full ID or tag", "仅运行匹配的清理器 ID、标签或 ID 前缀；重度项需指定完整 ID 或标签"))
-	cmd.Flags().BoolVar(&f.IncludeHeavy, "include-heavy", false, tr.Text("explicitly authorize all heavy cleaners; an exact cleaner ID or tag in --only also authorizes one; --yes, --all, and prefixes do not", "显式授权全部重度清理项；在 --only 中指定精确 ID 或标签也可授权（--yes、--all 与前缀不会授权）"))
-	cmd.Flags().StringSliceVar(&f.Skip, "skip", nil, tr.Text("skip matching cleaner IDs, tags, or ID prefixes", "跳过匹配的清理器 ID、标签或 ID 前缀"))
-	cmd.Flags().StringVar(&f.MinAge, "min-age", "", tr.Text("override min age, for example 14d or tag=3d", "覆盖最小保留天数，例如 14d 或 langs=3d"))
-	cmd.Flags().BoolVar(&f.ForceNoAge, "force-no-age", false, tr.Text("allow cleaners that explicitly have no age filter", "允许显式声明无保留期过滤的清理器"))
+	cmd.Flags().BoolVar(&f.System, "system", false, tr.Text("clean system-scope cleaners (requires sudo)", "清理系统级清理项（需 sudo）"))
+	cmd.Flags().BoolVar(&f.All, "all", false, tr.Text("clean both user and system scopes (requires sudo)", "同时清理用户级与系统级清理项（需 sudo）"))
+	cmd.Flags().BoolVar(&f.DryRun, "dry-run", false, tr.Text("preview what would be removed without deleting", "仅预览可清理内容而不执行删除"))
+	cmd.Flags().StringSliceVar(&f.Only, "only", nil, tr.Text("run matching cleaner IDs, tags, or ID prefixes; heavy requires an exact full ID or tag", "仅运行匹配的清理项 ID、标签或 ID 前缀；重度项需指定完整 ID 或标签"))
+	cmd.Flags().BoolVar(&f.IncludeHeavy, "include-heavy", false, tr.Text("explicitly authorize all heavy cleaners; an exact cleaner ID or tag in --only also authorizes one; --yes, --all, and prefixes do not", "启用全部重度清理项；在 --only 中指定精确 ID 或标签也可启用（--yes、--all 与前缀不会自动启用）"))
+	cmd.Flags().StringSliceVar(&f.Skip, "skip", nil, tr.Text("skip matching cleaner IDs, tags, or ID prefixes", "跳过匹配的清理项 ID、标签或 ID 前缀"))
+	cmd.Flags().StringVar(&f.MinAge, "min-age", "", tr.Text("override min age, for example 14d or tag=3d", "覆盖最小保留天数，如 14d 或 langs=3d"))
+	cmd.Flags().BoolVar(&f.ForceNoAge, "force-no-age", false, tr.Text("allow cleaners that explicitly have no age filter", "允许执行未设置保留天数过滤的清理项"))
 	cmd.Flags().StringVar(&f.Output, "output", "", tr.Text("output mode: spinner, plain, or json", "输出格式：spinner、plain 或 json"))
-	cmd.Flags().BoolVarP(&f.Yes, "yes", "y", false, tr.Text("run deletion without the confirmation prompt; does not authorize heavy cleaners", "跳过交互确认直接执行；不会自动授权重度清理项"))
+	cmd.Flags().BoolVarP(&f.Yes, "yes", "y", false, tr.Text("run deletion without the confirmation prompt; does not authorize heavy cleaners", "跳过交互确认直接执行；不会自动启用重度清理项"))
 	cmd.Flags().BoolVarP(&f.Verbose, "verbose", "v", false, tr.Text("show file samples, command output, and all skipped cleaners", "显示文件样本、原生命令输出与全部跳过项明细"))
-	cmd.Flags().BoolVar(&f.AllowRootHome, "allow-root-home", false, tr.Text("allow cleaning /root when running as root", "以 root 直接登录时允许清理 /root"))
+	cmd.Flags().BoolVar(&f.AllowRootHome, "allow-root-home", false, tr.Text("allow cleaning /root when running as root", "以 root 运行时允许清理 /root 目录"))
 	cmd.Flags().StringVar(&f.UserOverride, "user", "", tr.Text("target user for --all", "配合 --all 指定目标用户名"))
 	cmd.Flags().StringVar(&f.ConfigDir, "config-dir", "", tr.Text("override config directory", "覆盖默认配置目录"))
 	cmd.Flags().BoolVar(&f.BuiltinDisabled, "builtin-disabled", false, "skip embedded cleaners")
@@ -105,7 +105,7 @@ func runCleanWithTranslator(ctx context.Context, stdout, stderr io.Writer, f Cle
 	mode := outputMode(f.Output, lc.Cfg.Defaults.Output)
 	if mode != "json" {
 		for _, w := range warnings {
-			fmt.Fprintf(stderr, "%s %s\n", tr.Text("Warning:", "警告:"), w)
+			fmt.Fprintf(stderr, "%s\n", tr.Textf("Warning: %s", "警告：%s", w))
 		}
 		printRunHeader(stdout, lc.Scope, lc.Home, f.DryRun, confirmNeeded(f, lc.Cfg, stdout), tr)
 	}
@@ -116,7 +116,7 @@ func runCleanWithTranslator(ctx context.Context, stdout, stderr io.Writer, f Cle
 			return passExitError(err)
 		}
 		if shouldAbortEarly(res, info) {
-			fmt.Fprintln(stdout, "\n"+tr.Text("Nothing to delete.", "没有发现可清理的文件。"))
+			fmt.Fprintln(stdout, "\n"+tr.Text("Nothing to delete.", "没有发现可清理的缓存。"))
 			return nil
 		}
 		info.unmeasured = filterOutNative(res.UnmeasuredCleaners, info.native)
@@ -133,7 +133,7 @@ func runCleanWithTranslator(ctx context.Context, stdout, stderr io.Writer, f Cle
 	if res.CleanersErrored > 0 {
 		return ExitError{
 			code: 3,
-			err:  fmt.Errorf("%s", tr.Textf("errors in %d cleaners", "有 %d 个清理器执行出错", res.CleanersErrored)),
+			err:  fmt.Errorf("%s", tr.Textf("errors in %d cleaners", "有 %d 个清理项执行出错", res.CleanersErrored)),
 		}
 	}
 	return nil
@@ -142,15 +142,15 @@ func runCleanWithTranslator(ctx context.Context, stdout, stderr io.Writer, f Cle
 func printRunHeader(w io.Writer, scope model.Scope, home string, dryRun, previewBeforeConfirm bool, tr *i18n.Translator) {
 	phase := tr.Text("Clean", "执行清理")
 	if dryRun {
-		phase = tr.Text("Preview (read-only)", "预演扫描（只读）")
+		phase = tr.Text("Preview (read-only)", "只读扫描（不会删除文件）")
 	} else if previewBeforeConfirm {
-		phase = tr.Text("Preview before clean", "清理前预演")
+		phase = tr.Text("Preview before clean", "清理前预览")
 	}
 	scopeText := tr.ScopeLabel(scope)
 	if home != "" && scope != model.ScopeSystem {
 		scopeText += " (" + home + ")"
 	}
-	fmt.Fprintf(w, "%s | %s: %s\n", phase, tr.Text("scope", "作用域"), scopeText)
+	fmt.Fprint(w, tr.Textf("%s | scope: %s\n", "%s | 作用域：%s\n", phase, scopeText))
 }
 
 func shouldAbortEarly(res engine.Result, info passInfo) bool {
@@ -274,14 +274,14 @@ func confirmDeletionLocalized(stdin io.Reader, stdout io.Writer, _ engine.Result
 	if len(info.native) > 0 {
 		fmt.Fprintf(stdout, "%s\n", tr.Textf(
 			"No preview available, these run their own cleanup command: %s.",
-			"以下清理项无法预览大小，将调用原生清理命令直接执行: %s。",
+			"以下清理项不支持预览估算，将直接调用原生命令执行：%s。",
 			strings.Join(info.native, ", "),
 		))
 	}
 	if len(info.unmeasured) > 0 {
 		fmt.Fprintf(stdout, "%s\n", tr.Textf(
 			"Native commands with unmeasured byte totals: %s.",
-			"以下原生命令无法预先精确统计字节数: %s。",
+			"以下原生命令在执行前无法估算释放空间：%s。",
 			strings.Join(info.unmeasured, ", "),
 		))
 	}
@@ -354,9 +354,9 @@ func validateCleanersForRun(cleaners []model.Cleaner, scope model.Scope, home st
 }
 
 // applyEffectiveConfig applies configuration overrides and age settings to cleaners.
-// applyEffectiveConfig 将配置覆盖和年龄设置应用到清理器。
-func applyEffectiveConfig(cleaners []model.Cleaner, cfg *config.Config, f CleanFlags) ([]model.Cleaner, error) {
-	globalAge, perTagAge, err := parseMinAge(f.MinAge)
+// applyEffectiveConfig 将配置覆盖和保留期设置应用到清理项。
+func applyEffectiveConfig(cleaners []model.Cleaner, cfg *config.Config, f CleanFlags, tr *i18n.Translator) ([]model.Cleaner, error) {
+	globalAge, perTagAge, err := parseMinAge(f.MinAge, tr)
 	if err != nil {
 		return nil, err
 	}
@@ -405,8 +405,8 @@ func applyEffectiveConfig(cleaners []model.Cleaner, cfg *config.Config, f CleanF
 }
 
 // parseMinAge parses the --min-age flag into global and per-tag age values.
-// parseMinAge 将 --min-age 标志解析为全局和每标签的年龄值。
-func parseMinAge(raw string) (int, map[string]int, error) {
+// parseMinAge 将 --min-age 标志解析为全局和每标签的保留天数。
+func parseMinAge(raw string, tr *i18n.Translator) (int, map[string]int, error) {
 	global := -1
 	perTag := map[string]int{}
 	if raw == "" {
@@ -418,14 +418,14 @@ func parseMinAge(raw string) (int, map[string]int, error) {
 			continue
 		}
 		if key, val, ok := strings.Cut(part, "="); ok {
-			days, err := parseDays(val)
+			days, err := parseDays(val, tr)
 			if err != nil {
 				return 0, nil, err
 			}
 			perTag[key] = days
 			continue
 		}
-		days, err := parseDays(part)
+		days, err := parseDays(part, tr)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -436,11 +436,14 @@ func parseMinAge(raw string) (int, map[string]int, error) {
 
 // parseDays parses a day string (e.g., "14d") into an integer.
 // parseDays 将天数字符串（如 "14d"）解析为整数。
-func parseDays(raw string) (int, error) {
-	raw = strings.TrimSuffix(strings.TrimSpace(raw), "d")
-	v, err := strconv.Atoi(raw)
+func parseDays(raw string, tr *i18n.Translator) (int, error) {
+	if tr == nil {
+		tr = i18n.New(i18n.LangEN)
+	}
+	stripped := strings.TrimSuffix(strings.TrimSpace(raw), "d")
+	v, err := strconv.Atoi(stripped)
 	if err != nil || v < 0 {
-		return 0, fmt.Errorf("invalid age %q", raw)
+		return 0, fmt.Errorf("%s", tr.Textf("invalid age %q (example: 14d or langs=3d)", "无效的保留天数 %q（示例：14d 或 langs=3d）", raw))
 	}
 	return v, nil
 }
@@ -491,7 +494,7 @@ func determineScope(f CleanFlags, tr *i18n.Translator) (model.Scope, string, int
 		if os.Getuid() == 0 && !f.AllowRootHome {
 			return "", "", 0, errors.New(tr.Text(
 				"running as root without --system/--all; pass --allow-root-home to clean /root",
-				"当前以 root 身份运行但未指定 --system 或 --all；若确实要清理 /root，请加上 --allow-root-home",
+				"当前以 root 身份运行但未指定 --system 或 --all；若需要处理 /root，请加上 --allow-root-home",
 			))
 		}
 		home, _ := os.UserHomeDir()
