@@ -28,7 +28,46 @@ type cleanContext struct {
 	TargetUID int
 	CfgDir    string
 	Cfg       *config.Config
+	Policy    safety.Policy
 	Merged    []model.Cleaner
+}
+
+func effectivePolicy(f CleanFlags, cfg *config.Config) safety.Policy {
+	var p safety.Policy
+	if cfg != nil {
+		p = cfg.Safety.ToPolicy()
+	}
+	if envUnsafe := strings.ToLower(strings.TrimSpace(os.Getenv("BEAV_UNSAFE"))); envUnsafe == "1" || envUnsafe == "true" {
+		p.BypassAll = true
+	}
+	if f.Unsafe {
+		p.BypassAll = true
+	}
+	if len(f.AllowPaths) > 0 {
+		p.AllowList = append(p.AllowList, f.AllowPaths...)
+	}
+	if f.IgnoreRunning {
+		p.IgnoreRunningProcesses = true
+	}
+	if f.BypassBlacklist {
+		p.DisableBlacklist = true
+	}
+	if f.BypassAllowList {
+		p.DisableAllowList = true
+	}
+	if f.BypassAgeFloor {
+		p.BypassAgeFloor = true
+	}
+	if f.FollowSymlinks {
+		p.FollowSymlinks = true
+	}
+	if f.AllowCrossFS {
+		p.AllowCrossFS = true
+	}
+	if f.AllowRootHome {
+		p.AllowRootHome = true
+	}
+	return p
 }
 
 func translatorForCommand(cmd *cobra.Command, fallback *i18n.Translator) *i18n.Translator {
@@ -43,9 +82,27 @@ func translatorForCommand(cmd *cobra.Command, fallback *i18n.Translator) *i18n.T
 	return i18n.New(i18n.Detect(""))
 }
 
+func applyGlobalFlags(cmd *cobra.Command, f *CleanFlags) {
+	if cmd == nil || f == nil {
+		return
+	}
+	if v, err := cmd.Flags().GetString("lang"); err == nil && v != "" {
+		f.Lang = v
+	}
+	if v, err := cmd.Flags().GetBool("quiet"); err == nil && v {
+		f.Quiet = true
+	}
+	if v, err := cmd.Flags().GetBool("no-color"); err == nil && v {
+		f.NoColor = true
+	}
+}
+
 func resolveConfigDirForScope(override string, scope model.Scope, home string) string {
 	if override != "" {
 		return override
+	}
+	if envDir := strings.TrimSpace(os.Getenv("BEAV_CONFIG_DIR")); envDir != "" {
+		return envDir
 	}
 	configHome := home
 	if scope == model.ScopeSystem || configHome == "" {
@@ -58,7 +115,18 @@ func loadCleanContext(f CleanFlags, tr *i18n.Translator) (*cleanContext, error) 
 	if tr == nil {
 		tr = i18n.New(i18n.LangEN)
 	}
-	scope, home, targetUID, err := determineScope(f, tr)
+	// Check early config when running as root so config.safety.allow_root_home / bypass_all can authorize /root.
+	earlyFlags := f
+	if !earlyFlags.System && !earlyFlags.All && os.Getuid() == 0 && !earlyFlags.AllowRootHome && !earlyFlags.Unsafe {
+		home, _ := os.UserHomeDir()
+		earlyDir := resolveConfigDirForScope(f.ConfigDir, model.ScopeUser, home)
+		if earlyCfg, cfgErr := config.LoadWithHome(earlyDir, home); cfgErr == nil {
+			if earlyCfg.Safety.BypassAll || earlyCfg.Safety.AllowRootHome {
+				earlyFlags.AllowRootHome = true
+			}
+		}
+	}
+	scope, home, targetUID, err := determineScope(earlyFlags, tr)
 	if err != nil {
 		return nil, ExitError{code: 1, err: err}
 	}
@@ -67,6 +135,11 @@ func loadCleanContext(f CleanFlags, tr *i18n.Translator) (*cleanContext, error) 
 	if err != nil {
 		return nil, ExitError{code: 2, err: fmt.Errorf("%s: %w", tr.Text("config load", "加载配置失败"), err)}
 	}
+	policy := effectivePolicy(f, cfg)
+	if policy.BypassAll {
+		f.IncludeHeavy = true
+		f.ForceNoAge = true
+	}
 	var builtinList []registry.Loaded
 	if !f.BuiltinDisabled {
 		builtinList, err = registry.LoadBuiltin(cleaners.Builtin)
@@ -74,11 +147,11 @@ func loadCleanContext(f CleanFlags, tr *i18n.Translator) (*cleanContext, error) 
 			return nil, ExitError{code: 2, err: fmt.Errorf("%s: %w", tr.Text("builtin load", "加载内置清理项失败"), err)}
 		}
 	}
-	userList, err := registry.LoadUserDir(filepath.Join(cfgDir, "cleaners.d"))
+	userList, err := registry.LoadUserDirWithPolicy(filepath.Join(cfgDir, "cleaners.d"), policy)
 	if err != nil {
 		return nil, ExitError{code: 2, err: fmt.Errorf("%s: %w", tr.Text("user cleaners", "加载自定义清理项失败"), err)}
 	}
-	merged, err := registry.MergeByID(builtinList, userList)
+	merged, err := registry.MergeByIDWithPolicy(builtinList, userList, policy)
 	if err != nil {
 		return nil, ExitError{code: 2, err: err}
 	}
@@ -86,7 +159,7 @@ func loadCleanContext(f CleanFlags, tr *i18n.Translator) (*cleanContext, error) 
 	if err != nil {
 		return nil, ExitError{code: 2, err: err}
 	}
-	if err := validateCleanersForRun(merged, scope, home, f); err != nil {
+	if err := validateCleanersForRunWithPolicy(merged, scope, home, f, policy); err != nil {
 		return nil, ExitError{code: 2, err: err}
 	}
 	return &cleanContext{
@@ -95,6 +168,7 @@ func loadCleanContext(f CleanFlags, tr *i18n.Translator) (*cleanContext, error) 
 		TargetUID: targetUID,
 		CfgDir:    cfgDir,
 		Cfg:       cfg,
+		Policy:    policy,
 		Merged:    merged,
 	}, nil
 }
@@ -108,6 +182,11 @@ func loadCatalog(cfgDir string, f CleanFlags, tr *i18n.Translator) (*config.Conf
 	if err != nil {
 		return nil, nil, resolvedDir, ExitError{code: 2, err: fmt.Errorf("%s: %w", tr.Text("config load", "加载配置失败"), err)}
 	}
+	policy := effectivePolicy(f, cfg)
+	if policy.BypassAll {
+		f.IncludeHeavy = true
+		f.ForceNoAge = true
+	}
 	var builtin []registry.Loaded
 	if !f.BuiltinDisabled {
 		builtin, err = registry.LoadBuiltin(cleaners.Builtin)
@@ -115,11 +194,11 @@ func loadCatalog(cfgDir string, f CleanFlags, tr *i18n.Translator) (*config.Conf
 			return nil, nil, resolvedDir, ExitError{code: 2, err: fmt.Errorf("%s: %w", tr.Text("builtin load", "加载内置清理项失败"), err)}
 		}
 	}
-	user, err := registry.LoadUserDir(filepath.Join(resolvedDir, "cleaners.d"))
+	user, err := registry.LoadUserDirWithPolicy(filepath.Join(resolvedDir, "cleaners.d"), policy)
 	if err != nil {
 		return nil, nil, resolvedDir, ExitError{code: 2, err: fmt.Errorf("%s: %w", tr.Text("user cleaners", "加载自定义清理项失败"), err)}
 	}
-	merged, err := registry.MergeByID(builtin, user)
+	merged, err := registry.MergeByIDWithPolicy(builtin, user, policy)
 	if err != nil {
 		return nil, nil, resolvedDir, ExitError{code: 2, err: err}
 	}
@@ -361,6 +440,10 @@ func writeAlignedTable(w io.Writer, headers []string, rows [][]string) {
 // cleaners in the target scope and streams progress for the TUI workbench.
 // runReadOnlyScan 在目标作用域内对所有启用清理器执行严格只读的预演扫描，并向 TUI 流式发送进度。
 func runReadOnlyScan(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config) (<-chan tui.ScanProgress, context.CancelFunc) {
+	return runReadOnlyScanWithPolicy(ctx, merged, scope, home, targetUID, cfg, safety.DefaultPolicy())
+}
+
+func runReadOnlyScanWithPolicy(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, policy safety.Policy) (<-chan tui.ScanProgress, context.CancelFunc) {
 	scanCtx, cancel := context.WithCancel(ctx)
 	ch := make(chan tui.ScanProgress, 16)
 
@@ -389,7 +472,7 @@ func runReadOnlyScan(ctx context.Context, merged []model.Cleaner, scope model.Sc
 			return
 		}
 
-		eng := newCleanEngine(home, targetUID, safety.NewWhitelist(cfg.MergedWhitelist()))
+		eng := newCleanEngineWithPolicy(home, targetUID, safety.NewWhitelist(cfg.MergedWhitelist()), policy)
 		completed := 0
 		var activeSamples []tui.FileSample
 		var activeCmd []string
@@ -453,6 +536,7 @@ func runReadOnlyScan(ctx context.Context, merged []model.Cleaner, scope model.Sc
 			Scope:        scope,
 			DryRun:       true, // Read-only TUI scan is unconditionally dry-run.
 			IncludeHeavy: true,
+			BypassAll:    policy.BypassAll,
 			Emitter:      emit,
 		})
 		if errors.Is(runErr, context.Canceled) {
@@ -484,13 +568,17 @@ func insertSample(samples []tui.FileSample, s tui.FileSample, limit int) []tui.F
 }
 
 func runTUIExec(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, f CleanFlags, selectedIDs []string) (<-chan tui.ExecProgress, context.CancelFunc) {
+	return runTUIExecWithPolicy(ctx, merged, scope, home, targetUID, cfg, effectivePolicy(f, cfg), f, selectedIDs)
+}
+
+func runTUIExecWithPolicy(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, policy safety.Policy, f CleanFlags, selectedIDs []string) (<-chan tui.ExecProgress, context.CancelFunc) {
 	execCtx, cancel := context.WithCancel(ctx)
 	ch := make(chan tui.ExecProgress, 16)
 
 	execFlags := f
 	execFlags.DryRun = false
 	execFlags.Only = append([]string(nil), selectedIDs...)
-	execFlags.IncludeHeavy = false
+	execFlags.IncludeHeavy = policy.BypassAll
 
 	send := func(p tui.ExecProgress) {
 		select {
@@ -506,7 +594,7 @@ func runTUIExec(ctx context.Context, merged []model.Cleaner, scope model.Scope, 
 		var errDetail string
 		logPath := operationLogPath(home, targetUID)
 
-		res, _, runErr := runCleanPassWithSink(execCtx, merged, scope, home, targetUID, cfg, execFlags, false, func(ev model.Event) {
+		res, _, runErr := runCleanPassWithSink(execCtx, merged, scope, home, targetUID, cfg, policy, execFlags, false, func(ev model.Event) {
 			switch ev.Event {
 			case model.EvStart:
 				errDetail = ""

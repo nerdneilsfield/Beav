@@ -16,8 +16,9 @@ func NewInfoCmd(tr *i18n.Translator) *cobra.Command {
 	var builtinDisabled bool
 
 	cmd := &cobra.Command{
-		Use:   "info <cleaner-id>",
-		Short: tr.Text("Inspect details, safety rules, and targets for one cleaner", "查看单个清理项的说明、安全规则与清理目标"),
+		Use:     "info <cleaner-id>",
+		GroupID: "inspect",
+		Short:   tr.Text("Inspect details, safety rules, and targets for one cleaner", "查看单个清理项的说明、安全规则与清理目标"),
 		Long: tr.Text(
 			"Print the full description, effective age threshold, impact level, target paths or native command profile, and copy-ready commands for one cleaner.",
 			"显示单个清理项的详细说明、生效保留期、影响级别、目标路径或原生命令策略，以及常用操作命令。",

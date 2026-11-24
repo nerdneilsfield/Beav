@@ -133,6 +133,13 @@ func (e Entry) UID() uint32 { return e.stat.Uid }
 // MountID returns the stable Linux mount ID captured for the entry.
 func (e Entry) MountID() uint64 { return e.mountID }
 
+// WalkerOptions controls symlink and mount-boundary behavior during traversal.
+// WalkerOptions 控制遍历期间的符号链接与跨文件系统边界行为。
+type WalkerOptions struct {
+	FollowSymlinks bool
+	AllowCrossFS   bool
+}
+
 // Walker provides safe filesystem traversal anchored at a root directory.
 // Walker 提供以根目录为锚点的安全文件系统遍历功能。
 type Walker struct {
@@ -140,12 +147,23 @@ type Walker struct {
 	rootDev     uint64
 	rootMountID uint64
 	rootAbs     string
+	opts        WalkerOptions
 }
 
 // OpenWalker opens a new Walker rooted at the given directory path.
 // OpenWalker 打开一个以给定目录路径为根的新 Walker。
 func OpenWalker(root string) (*Walker, error) {
-	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	return OpenWalkerWithOptions(root, WalkerOptions{})
+}
+
+// OpenWalkerWithOptions opens a Walker with configurable symlink and cross-fs options.
+// OpenWalkerWithOptions 使用可配置的符号链接与跨文件系统选项打开 Walker。
+func OpenWalkerWithOptions(root string, opts WalkerOptions) (*Walker, error) {
+	flags := unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC
+	if !opts.FollowSymlinks {
+		flags |= unix.O_NOFOLLOW
+	}
+	fd, err := unix.Open(root, flags, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -156,16 +174,25 @@ func OpenWalker(root string) (*Walker, error) {
 	}
 	mountID, err := mountIDForFD(fd)
 	if err != nil {
-		_ = unix.Close(fd)
-		return nil, err
+		if !opts.AllowCrossFS {
+			_ = unix.Close(fd)
+			return nil, err
+		}
+		mountID = 0
 	}
 	abs, _ := filepath.Abs(root)
-	return &Walker{rootFD: fd, rootDev: uint64(st.Dev), rootMountID: mountID, rootAbs: abs}, nil
+	return &Walker{rootFD: fd, rootDev: uint64(st.Dev), rootMountID: mountID, rootAbs: abs, opts: opts}, nil
 }
 
 // OpenWalkerFD opens a new Walker using an existing directory file descriptor.
 // OpenWalkerFD 使用现有的目录文件描述符打开一个新的 Walker。
 func OpenWalkerFD(fd int, absPath string) (*Walker, error) {
+	return OpenWalkerFDWithOptions(fd, absPath, WalkerOptions{})
+}
+
+// OpenWalkerFDWithOptions opens a Walker from an existing fd using configurable options.
+// OpenWalkerFDWithOptions 使用可配置选项从现有目录文件描述符打开 Walker。
+func OpenWalkerFDWithOptions(fd int, absPath string, opts WalkerOptions) (*Walker, error) {
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
 		_ = unix.Close(fd)
@@ -177,10 +204,13 @@ func OpenWalkerFD(fd int, absPath string) (*Walker, error) {
 	}
 	mountID, err := mountIDForFD(fd)
 	if err != nil {
-		_ = unix.Close(fd)
-		return nil, err
+		if !opts.AllowCrossFS {
+			_ = unix.Close(fd)
+			return nil, err
+		}
+		mountID = 0
 	}
-	return &Walker{rootFD: fd, rootDev: uint64(st.Dev), rootMountID: mountID, rootAbs: absPath}, nil
+	return &Walker{rootFD: fd, rootDev: uint64(st.Dev), rootMountID: mountID, rootAbs: absPath, opts: opts}, nil
 }
 
 // Close releases the file descriptor held by the Walker.
@@ -231,20 +261,29 @@ func (w *Walker) walkDir(parentFD int, rel string, fn WalkFunc) (bool, error) {
 		if err := unix.Fstatat(parentFD, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 			continue
 		}
-		if uint64(st.Dev) != w.rootDev {
+		if !w.opts.AllowCrossFS && uint64(st.Dev) != w.rootDev {
 			return false, ErrCrossFS
 		}
-		mountID, err := mountIDAt(parentFD, name)
-		if err != nil {
-			return false, err
-		}
-		if mountID != w.rootMountID {
-			return false, ErrCrossFS
+		var mountID uint64
+		if !w.opts.AllowCrossFS {
+			var mErr error
+			mountID, mErr = mountIDAt(parentFD, name)
+			if mErr != nil {
+				return false, mErr
+			}
+			if mountID != w.rootMountID {
+				return false, ErrCrossFS
+			}
 		}
 		entryRel := filepath.Join(rel, name)
 		mode := st.Mode & unix.S_IFMT
 		switch mode {
 		case unix.S_IFLNK:
+			if !w.opts.FollowSymlinks {
+				continue
+			}
+			// When FollowSymlinks is enabled, allow deleting the symlink itself via UnlinkIfUnchanged.
+			fn(Entry{RelPath: entryRel, stat: st, mountID: mountID})
 			continue
 		case unix.S_IFREG, unix.S_IFDIR:
 		default:
@@ -281,19 +320,25 @@ func (w *Walker) reopenLeaf(rel string) (int, string, error) {
 		return -1, "", err
 	}
 	for i := 0; i < len(parts)-1; i++ {
-		next, err := unix.Openat(cur, parts[i], unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		openFlags := unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC
+		if !w.opts.FollowSymlinks {
+			openFlags |= unix.O_NOFOLLOW
+		}
+		next, err := unix.Openat(cur, parts[i], openFlags, 0)
 		_ = unix.Close(cur)
 		if err != nil {
 			return -1, "", err
 		}
-		mountID, mountErr := mountIDForFD(next)
-		if mountErr != nil {
-			_ = unix.Close(next)
-			return -1, "", mountErr
-		}
-		if mountID != w.rootMountID {
-			_ = unix.Close(next)
-			return -1, "", ErrCrossFS
+		if !w.opts.AllowCrossFS {
+			mountID, mountErr := mountIDForFD(next)
+			if mountErr != nil {
+				_ = unix.Close(next)
+				return -1, "", mountErr
+			}
+			if mountID != w.rootMountID {
+				_ = unix.Close(next)
+				return -1, "", ErrCrossFS
+			}
 		}
 		cur = next
 	}
@@ -316,18 +361,22 @@ func (w *Walker) UnlinkIfUnchanged(e Entry) error {
 	if err := unix.Fstatat(parentFD, leaf, &cur, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return err
 	}
-	if cur.Dev != w.rootDev {
-		return ErrCrossFS
+	if !w.opts.AllowCrossFS {
+		if cur.Dev != w.rootDev {
+			return ErrCrossFS
+		}
+		if e.mountID != w.rootMountID {
+			return ErrChanged
+		}
+		if mountID, err := mountIDAt(parentFD, leaf); err != nil {
+			return err
+		} else if mountID != w.rootMountID {
+			return ErrCrossFS
+		}
 	}
-	if e.mountID != w.rootMountID {
-		return ErrChanged
-	}
-	if mountID, err := mountIDAt(parentFD, leaf); err != nil {
-		return err
-	} else if mountID != w.rootMountID {
-		return ErrCrossFS
-	}
-	if (cur.Mode&unix.S_IFMT) != unix.S_IFREG || cur.Nlink != 1 || cur.Ino != e.stat.Ino || cur.Dev != e.stat.Dev ||
+	curFmt := cur.Mode & unix.S_IFMT
+	allowedFmt := curFmt == unix.S_IFREG || (w.opts.FollowSymlinks && curFmt == unix.S_IFLNK)
+	if !allowedFmt || cur.Nlink != 1 || cur.Ino != e.stat.Ino || cur.Dev != e.stat.Dev ||
 		cur.Size != e.stat.Size || cur.Nlink != e.stat.Nlink ||
 		cur.Mtim.Sec != e.stat.Mtim.Sec || cur.Mtim.Nsec != e.stat.Mtim.Nsec ||
 		cur.Ctim.Sec != e.stat.Ctim.Sec || cur.Ctim.Nsec != e.stat.Ctim.Nsec {
@@ -352,16 +401,18 @@ func (w *Walker) RemoveEmptyDirIfMatch(e Entry) error {
 	if err := unix.Fstatat(parentFD, leaf, &cur, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return err
 	}
-	if cur.Dev != w.rootDev {
-		return ErrCrossFS
-	}
-	if e.mountID != w.rootMountID {
-		return ErrChanged
-	}
-	if mountID, err := mountIDAt(parentFD, leaf); err != nil {
-		return err
-	} else if mountID != w.rootMountID {
-		return ErrCrossFS
+	if !w.opts.AllowCrossFS {
+		if cur.Dev != w.rootDev {
+			return ErrCrossFS
+		}
+		if e.mountID != w.rootMountID {
+			return ErrChanged
+		}
+		if mountID, err := mountIDAt(parentFD, leaf); err != nil {
+			return err
+		} else if mountID != w.rootMountID {
+			return ErrCrossFS
+		}
 	}
 	if (cur.Mode & unix.S_IFMT) != unix.S_IFDIR {
 		return ErrChanged
@@ -432,13 +483,26 @@ func readdirnames(fd int) ([]string, error) {
 // OpenAnchoredDirFD safely opens a directory path anchored within safeRoot, rejecting symlinks and cross-fs traversals.
 // OpenAnchoredDirFD 安全地打开锚定在 safeRoot 内的目录路径，拒绝符号链接和跨文件系统遍历。
 func OpenAnchoredDirFD(safeRoot, target string) (int, error) {
+	return OpenAnchoredDirFDWithOptions(safeRoot, target, WalkerOptions{})
+}
+
+// OpenAnchoredDirFDWithOptions opens target anchored inside safeRoot with configurable symlink and cross-fs options.
+// OpenAnchoredDirFDWithOptions 使用可配置的符号链接与跨文件系统选项在 safeRoot 内打开目标目录。
+func OpenAnchoredDirFDWithOptions(safeRoot, target string, opts WalkerOptions) (int, error) {
 	safeRoot = filepath.Clean(safeRoot)
 	target = filepath.Clean(target)
-	if target != safeRoot && !strings.HasPrefix(target, safeRoot+string(filepath.Separator)) {
+	if safeRoot != "/" && target != safeRoot && !strings.HasPrefix(target, safeRoot+string(filepath.Separator)) {
+		return -1, ErrNotInsideRoot
+	}
+	if safeRoot == "/" && !filepath.IsAbs(target) {
 		return -1, ErrNotInsideRoot
 	}
 
-	cur, err := unix.Open(safeRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	rootFlags := unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC
+	if !opts.FollowSymlinks {
+		rootFlags |= unix.O_NOFOLLOW
+	}
+	cur, err := unix.Open(safeRoot, rootFlags, 0)
 	if err != nil {
 		return -1, err
 	}
@@ -447,18 +511,25 @@ func OpenAnchoredDirFD(safeRoot, target string) (int, error) {
 		_ = unix.Close(cur)
 		return -1, err
 	}
-	rootMountID, err := mountIDForFD(cur)
-	if err != nil {
-		_ = unix.Close(cur)
-		return -1, err
+	var rootMountID uint64
+	if !opts.AllowCrossFS {
+		rootMountID, err = mountIDForFD(cur)
+		if err != nil {
+			_ = unix.Close(cur)
+			return -1, err
+		}
 	}
 	if target == safeRoot {
 		return cur, nil
 	}
 
-	rest := strings.TrimPrefix(target, safeRoot+string(filepath.Separator))
+	rest := strings.TrimPrefix(target, safeRoot)
+	rest = strings.TrimPrefix(rest, string(filepath.Separator))
 	for _, part := range strings.Split(rest, string(filepath.Separator)) {
-		if part == "" || part == "." || part == ".." {
+		if part == "" {
+			continue
+		}
+		if part == "." || part == ".." {
 			_ = unix.Close(cur)
 			return -1, ErrNotDir
 		}
@@ -468,27 +539,42 @@ func OpenAnchoredDirFD(safeRoot, target string) (int, error) {
 			return -1, err
 		}
 		if (st.Mode & unix.S_IFMT) == unix.S_IFLNK {
-			_ = unix.Close(cur)
-			return -1, ErrSymlink
+			if !opts.FollowSymlinks {
+				_ = unix.Close(cur)
+				return -1, ErrSymlink
+			}
+			// Stat following symlink to verify it points to a directory.
+			var targetSt unix.Stat_t
+			if err := unix.Fstatat(cur, part, &targetSt, 0); err != nil {
+				_ = unix.Close(cur)
+				return -1, err
+			}
+			st = targetSt
 		}
-		if st.Dev != rootSt.Dev {
-			_ = unix.Close(cur)
-			return -1, ErrCrossFS
-		}
-		mountID, err := mountIDAt(cur, part)
-		if err != nil {
-			_ = unix.Close(cur)
-			return -1, err
-		}
-		if mountID != rootMountID {
-			_ = unix.Close(cur)
-			return -1, ErrCrossFS
+		if !opts.AllowCrossFS {
+			if st.Dev != rootSt.Dev {
+				_ = unix.Close(cur)
+				return -1, ErrCrossFS
+			}
+			mountID, err := mountIDAt(cur, part)
+			if err != nil && !opts.FollowSymlinks {
+				_ = unix.Close(cur)
+				return -1, err
+			}
+			if err == nil && mountID != rootMountID {
+				_ = unix.Close(cur)
+				return -1, ErrCrossFS
+			}
 		}
 		if (st.Mode & unix.S_IFMT) != unix.S_IFDIR {
 			_ = unix.Close(cur)
 			return -1, ErrNotDir
 		}
-		next, err := unix.Openat(cur, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		nextFlags := unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC
+		if !opts.FollowSymlinks {
+			nextFlags |= unix.O_NOFOLLOW
+		}
+		next, err := unix.Openat(cur, part, nextFlags, 0)
 		_ = unix.Close(cur)
 		if err != nil {
 			return -1, err
@@ -574,8 +660,14 @@ func OpenAnchoredDirFDFromFD(rootFD int, safeRoot, target string) (int, error) {
 // OpenAnchoredFile safely opens a file anchored within safeRoot, rejecting symlinks and cross-fs traversals.
 // OpenAnchoredFile 安全地打开锚定在 safeRoot 内的文件，拒绝符号链接和跨文件系统遍历。
 func OpenAnchoredFile(safeRoot, target string) (*Walker, Entry, error) {
+	return OpenAnchoredFileWithOptions(safeRoot, target, WalkerOptions{})
+}
+
+// OpenAnchoredFileWithOptions opens a file anchored within safeRoot using configurable options.
+// OpenAnchoredFileWithOptions 使用可配置选项在 safeRoot 内打开文件。
+func OpenAnchoredFileWithOptions(safeRoot, target string, opts WalkerOptions) (*Walker, Entry, error) {
 	parent := filepath.Dir(filepath.Clean(target))
-	parentFD, err := OpenAnchoredDirFD(safeRoot, parent)
+	parentFD, err := OpenAnchoredDirFDWithOptions(safeRoot, parent, opts)
 	if err != nil {
 		return nil, Entry{}, err
 	}
@@ -585,28 +677,31 @@ func OpenAnchoredFile(safeRoot, target string) (*Walker, Entry, error) {
 		_ = unix.Close(parentFD)
 		return nil, Entry{}, err
 	}
-	mountID, err := mountIDAt(parentFD, leaf)
-	if err != nil {
-		_ = unix.Close(parentFD)
-		return nil, Entry{}, err
-	}
-	rootMountID, err := mountIDForFD(parentFD)
-	if err != nil {
-		_ = unix.Close(parentFD)
-		return nil, Entry{}, err
-	}
-	if mountID != rootMountID {
-		_ = unix.Close(parentFD)
-		return nil, Entry{}, ErrCrossFS
+	var mountID, rootMountID uint64
+	if !opts.AllowCrossFS {
+		mountID, err = mountIDAt(parentFD, leaf)
+		if err != nil {
+			_ = unix.Close(parentFD)
+			return nil, Entry{}, err
+		}
+		rootMountID, err = mountIDForFD(parentFD)
+		if err != nil {
+			_ = unix.Close(parentFD)
+			return nil, Entry{}, err
+		}
+		if mountID != rootMountID {
+			_ = unix.Close(parentFD)
+			return nil, Entry{}, ErrCrossFS
+		}
 	}
 	mode := st.Mode & unix.S_IFMT
-	if mode == unix.S_IFLNK {
+	if mode == unix.S_IFLNK && !opts.FollowSymlinks {
 		_ = unix.Close(parentFD)
 		return nil, Entry{}, ErrSymlink
 	}
-	if mode != unix.S_IFREG {
+	if mode != unix.S_IFREG && !(opts.FollowSymlinks && mode == unix.S_IFLNK) {
 		_ = unix.Close(parentFD)
 		return nil, Entry{}, errors.New("not a regular file")
 	}
-	return &Walker{rootFD: parentFD, rootDev: uint64(st.Dev), rootMountID: rootMountID, rootAbs: parent}, Entry{RelPath: leaf, stat: st, mountID: mountID}, nil
+	return &Walker{rootFD: parentFD, rootDev: uint64(st.Dev), rootMountID: rootMountID, rootAbs: parent, opts: opts}, Entry{RelPath: leaf, stat: st, mountID: mountID}, nil
 }

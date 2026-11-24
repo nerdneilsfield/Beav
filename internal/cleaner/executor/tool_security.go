@@ -40,15 +40,24 @@ func (e *ToolPruneExecutor) resolveCheckedRoots(_ model.Cleaner, profile toolPro
 			return nil, fmt.Errorf("%w: %s", errKeepListIntersection, root)
 		}
 		if profile.System {
-			if !fixedSystemRoot(profile.Binary, root) {
+			if !e.Policy.BypassAll && !fixedSystemRoot(profile.Binary, root) {
 				return nil, fmt.Errorf("affected root %q is not fixed for profile", root)
 			}
 		} else {
-			if !pathWithin(root, identity.Home) || root == filepath.Clean(identity.Home) || safety.Blacklisted(root, identity.Home) {
+			if (!e.Policy.EffectiveDisableAllowList() && (!pathWithin(root, identity.Home) || root == filepath.Clean(identity.Home))) ||
+				safety.BlacklistedWithPolicy(root, identity.Home, e.Policy) {
 				return nil, fmt.Errorf("affected root %q is outside target home", root)
 			}
 		}
-		fd, err := safety.OpenAnchoredDirFD(rootAnchor(identity.Home, profile.System), root)
+		walkOpts := safety.WalkerOptions{
+			FollowSymlinks: e.Policy.EffectiveFollowSymlinks(),
+			AllowCrossFS:   e.Policy.EffectiveAllowCrossFS(),
+		}
+		anchor := rootAnchor(identity.Home, profile.System)
+		if e.Policy.EffectiveDisableAllowList() {
+			anchor = "/"
+		}
+		fd, err := safety.OpenAnchoredDirFDWithOptions(anchor, root, walkOpts)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s: %v", errRootUnavailable, root, err)
 		}
@@ -58,20 +67,20 @@ func (e *ToolPruneExecutor) resolveCheckedRoots(_ model.Cleaner, profile toolPro
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s: %v", errRootUnavailable, root, err)
 		}
-		if st.Uid != identity.UID && !profile.System {
+		if !e.Policy.BypassAll && st.Uid != identity.UID && !profile.System {
 			return nil, fmt.Errorf("affected root %q is not target-owned", root)
 		}
-		if profile.System && st.Uid != 0 {
+		if !e.Policy.BypassAll && profile.System && st.Uid != 0 {
 			return nil, fmt.Errorf("affected system root %q is not root-owned", root)
 		}
-		snapshot, snapshotErr := snapshotPath(root)
+		snapshot, snapshotErr := e.snapshotRoot(root)
 		if snapshotErr != nil {
 			return nil, fmt.Errorf("%w: %s: %v", errRootUnavailable, root, snapshotErr)
 		}
 		if snapshot != snapshotFromStat(&st) {
 			return nil, fmt.Errorf("%w: affected root %q changed during validation", errRootUnavailable, root)
 		}
-		if profile.System && snapshot.mode&0o022 != 0 {
+		if !e.Policy.BypassAll && profile.System && snapshot.mode&0o022 != 0 {
 			return nil, fmt.Errorf("affected system root %q is group/world writable", root)
 		}
 		checked = append(checked, checkedRoot{path: root, snapshot: snapshot})
@@ -135,18 +144,41 @@ func snapshotFromStat(st *unix.Stat_t) pathSnapshot {
 }
 
 func snapshotPath(path string) (pathSnapshot, error) {
+	return snapshotPathWithSymlinks(path, false)
+}
+
+func snapshotPathWithSymlinks(path string, followSymlinks bool) (pathSnapshot, error) {
 	var st unix.Stat_t
-	if err := unix.Lstat(path, &st); err != nil {
+	var err error
+	if followSymlinks {
+		err = unix.Stat(path, &st)
+	} else {
+		err = unix.Lstat(path, &st)
+	}
+	if err != nil {
 		return pathSnapshot{}, err
 	}
-	if st.Mode&unix.S_IFMT == unix.S_IFLNK {
+	if !followSymlinks && st.Mode&unix.S_IFMT == unix.S_IFLNK {
 		return pathSnapshot{}, fmt.Errorf("path %q is a symlink", path)
 	}
 	return snapshotFromStat(&st), nil
 }
 
+func (e *ToolPruneExecutor) snapshotRoot(path string) (pathSnapshot, error) {
+	return snapshotPathWithSymlinks(path, e.Policy.EffectiveFollowSymlinks())
+}
+
+func (e *ToolPruneExecutor) snapshotBinary(path string) (pathSnapshot, error) {
+	// User-scope tools or bypass/symlink mode may point to symlinked binaries (e.g. brew/nix/nvm).
+	return snapshotPathWithSymlinks(path, e.Policy.EffectiveFollowSymlinks() || e.Policy.BypassAll)
+}
+
 func (s pathSnapshot) revalidate(path string) error {
-	current, err := snapshotPath(path)
+	return s.revalidateWithSymlinks(path, false)
+}
+
+func (s pathSnapshot) revalidateWithSymlinks(path string, followSymlinks bool) error {
+	current, err := snapshotPathWithSymlinks(path, followSymlinks)
 	if err != nil {
 		return err
 	}
@@ -227,10 +259,22 @@ func resolveTrustedProfileBinary(name string, searchPath []string) (string, erro
 }
 
 func resolveProfileBinaryWithTrust(name string, searchPath []string, trusted bool) (string, error) {
+	return resolveProfileBinaryOpts(name, searchPath, trusted, false)
+}
+
+func resolveProfileBinaryOpts(name string, searchPath []string, trusted, allowSymlinks bool) (string, error) {
 	for _, dir := range searchPath {
 		candidate := filepath.Join(dir, name)
-		info, err := os.Lstat(candidate)
-		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		var (
+			info os.FileInfo
+			err  error
+		)
+		if allowSymlinks {
+			info, err = os.Stat(candidate)
+		} else {
+			info, err = os.Lstat(candidate)
+		}
+		if err != nil || (!allowSymlinks && info.Mode()&os.ModeSymlink != 0) || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 			continue
 		}
 		abs, err := filepath.Abs(candidate)
@@ -256,23 +300,33 @@ func (e *ToolPruneExecutor) resolveBinary(profile toolProfile, homes ...string) 
 	if e.binaryResolver != nil {
 		return e.binaryResolver(profile, searchPath)
 	}
+	allowSymlinks := e.Policy.EffectiveFollowSymlinks() || e.Policy.BypassAll
 	if profile.System {
-		return resolveTrustedProfileBinary(profile.Binary, searchPath)
+		return resolveProfileBinaryOpts(profile.Binary, searchPath, e.trustedBinary(profile), allowSymlinks)
 	}
-	return resolveProfileBinary(profile.Binary, searchPath)
+	if len(e.SearchPath) == 0 && e.Policy.BypassAll {
+		if pathEnv := os.Getenv("PATH"); pathEnv != "" {
+			searchPath = cleanSearchPath(append(searchPath, filepath.SplitList(pathEnv)...))
+		}
+	}
+	return resolveProfileBinaryOpts(profile.Binary, searchPath, false, allowSymlinks)
 }
 
 func (e *ToolPruneExecutor) trustedBinary(profile toolProfile) bool {
+	if e.Policy.BypassAll || e.Policy.FollowSymlinks {
+		return false
+	}
 	return profile.System && e.binaryResolver == nil
 }
 
 func (e *ToolPruneExecutor) validateToolState(profile toolProfile, roots []checkedRoot, binary string, binaryState pathSnapshot) error {
+	follow := e.Policy.EffectiveFollowSymlinks()
 	for _, root := range roots {
-		if err := root.snapshot.revalidate(root.path); err != nil {
+		if err := root.snapshot.revalidateWithSymlinks(root.path, follow); err != nil {
 			return fmt.Errorf("affected root %q changed: %w", root.path, err)
 		}
-		if profile.System {
-			current, err := snapshotPath(root.path)
+		if profile.System && !e.Policy.BypassAll {
+			current, err := snapshotPathWithSymlinks(root.path, follow)
 			if err != nil {
 				return fmt.Errorf("affected system root %q unavailable: %w", root.path, err)
 			}
@@ -281,7 +335,7 @@ func (e *ToolPruneExecutor) validateToolState(profile toolProfile, roots []check
 			}
 		}
 	}
-	if err := binaryState.revalidate(binary); err != nil {
+	if err := binaryState.revalidateWithSymlinks(binary, follow || e.Policy.BypassAll); err != nil {
 		return fmt.Errorf("profile binary %q changed: %w", binary, err)
 	}
 	if e.trustedBinary(profile) {

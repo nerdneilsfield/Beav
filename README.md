@@ -1,260 +1,156 @@
 <div align="center">
   <h1>🦫 Beav</h1>
-  <p><strong>Clean Linux caches without guessing what is safe to delete.</strong></p>
+  <p><strong>Clean Linux developer, AI, container, and system caches with configurable safety policies.</strong></p>
   <p>
     <a href="https://github.com/nerdneilsfield/Beav/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nerdneilsfield/Beav/ci.yml?branch=master&style=flat-square&label=CI&logo=github" alt="CI"></a>
     <a href="https://github.com/nerdneilsfield/Beav/releases"><img src="https://img.shields.io/github/v/release/nerdneilsfield/Beav?style=flat-square&include_prereleases&label=release" alt="Release"></a>
     <img src="https://img.shields.io/badge/Go-1.24%2B-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.24+">
     <img src="https://img.shields.io/badge/platform-Linux-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux">
     <a href="LICENSE"><img src="https://img.shields.io/github/license/nerdneilsfield/Beav?style=flat-square" alt="License"></a>
-    <a href="README_ZH.md"><img src="https://img.shields.io/badge/lang-中文-red?style=flat-square" alt="中文"></a>
+    <a href="README_ZH.md"><img src="https://img.shields.io/badge/lang-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue?style=flat-square" alt="简体中文"></a>
   </p>
 </div>
 
 ---
 
-Beav is a Linux disk cleaner for caches, stale downloads, logs, build output, and other files that can be recreated. It knows about the tools that produced those files, so it can use Homebrew, uv, Hugging Face, package-manager, and container cleanup commands when a plain directory sweep would be unsafe.
+Beav scans and reclaims disk space across Linux desktop, developer, GPU/AI, container, and system caches. When a cache belongs to a tool with its own store semantics—such as `uv`, `npm`, `cargo`, `rustup`, Hugging Face, `nix`, Docker, or Podman—Beav invokes the tool's native cleanup interface or an atomic cache cleaner rather than blindly removing directories.
 
-Personal files are outside its job. Browser profiles, credentials, project trees, container volumes, and ordinary files in `Downloads` are not cleanup targets.
+By default, personal directories, credentials, and live tool processes are protected. Every safety boundary (allow-lists, blacklists, age floors, process locks, symlink/mount rules, and custom `type: command` cleaners) can also be configured or bypassed via CLI flags, `config.yaml`, or the TUI—only literal `/` remains unconditionally protected.
 
-## Homebrew / Scoop
+## Highlights
+
+- **Tool-aware cleanup**: Native prune support for package managers, runtimes, container engines, and atomic cleanup for Hugging Face and Torch caches.
+- **4-tab TUI workbench**: Scan and clean (`[1] Clean`), browse directory sizes with `gdu` integration (`[2] Analyze`), inspect operation logs (`[3] History`), and edit safety rules live (`[4] Safety & Config`).
+- **Complete CLI suite**: `scan`, `clean`, `purge`, `analyze`, `doctor`, `history`, `list`, `info`, `tags`, `config`, `version`, `help`, and shell completion.
+- **Configurable safety**: Conservative defaults out of the box, with per-flag overrides (`--allow-path`, `--bypass-*`, `--unsafe`) and persistent rules under `safety:` in `config.yaml`.
+- **Script-friendly output**: `spinner`, `plain`, `quiet` (`-q`), and JSON Lines (`--output json`) modes with predictable exit codes (`0`-`4`).
+
+## Installation
+
+Install via Homebrew or download a static binary archive from [Releases](https://github.com/nerdneilsfield/Beav/releases):
 
 ```bash
-# macOS / Linux
 brew install --cask nerdneilsfield/apps/beav
+```
+
+To verify your installation:
+
+```bash
+beav version
+beav doctor
 ```
 
 ## Quick start
 
-Download a Linux archive from [Releases](https://github.com/nerdneilsfield/Beav/releases), extract `beav`, and place it somewhere on your `PATH`. To build from source instead, use Go 1.24 or newer:
+In an interactive terminal (TTY), running `beav` with no arguments starts the read-only scan and 4-tab TUI workbench:
+
+```bash
+beav               # launch 4-tab TUI workbench (user scope)
+sudo beav --system # launch TUI for system caches
+```
+
+For direct CLI workflows:
+
+```bash
+beav scan                     # read-only preview of matching caches
+beav clean                    # preview and prompt before deleting in TTY
+beav clean --only langs -y    # clean language caches without prompting
+beav purge /tmp/build-* -y    # clean arbitrary paths without creating a cleaner YAML
+```
+
+Language switches automatically between English and Chinese (`BEAV_LANG`, `LC_ALL`, `LC_MESSAGES`, `LANG`), or can be set per command with `--lang en` or `--lang zh`.
+
+## 4-tab TUI workbench
+
+Switch tabs with `1`-`4` or `[` / `]`, press `?` for full keybindings, and press `q` to quit:
+
+| Tab | Purpose | Key actions |
+| --- | --- | --- |
+| `[1] Clean` | Interactive cleaner list with disk bar, proportional sizes, and scrollable detail pane | `Space` select, `a` safe all, `A` all incl. heavy, `o` sort, `t` tag filter, `m` age preset, `b` toggle bypass, `Enter`/`c` run |
+| `[2] Analyze` | Built-in directory size browser with optional deletion | `Enter`/`Backspace` navigate, `o` sort, `d` delete, `g` launch full `gdu` explorer |
+| `[3] History` | Browse and filter recorded deletions from `operations.log` | `/` filter, `r` reload, `X` clear logs |
+| `[4] Safety & Config` | Toggle safety policy flags and edit custom allow/deny prefixes live | `Space` toggle, `+` add path, `x` remove path, `w` save `config.yaml`, `R` apply and rescan |
+
+You can also open directly on a specific tab with `beav tui --tab analyze` (or `clean`, `history`, `config`).
+
+## Essential CLI commands
+
+| Command | Aliases | Description |
+| --- | --- | --- |
+| `beav tui` | — | Launch multi-view TUI workbench (`--tab <name>`) |
+| `beav scan` | — | Strictly read-only preview (`--only`, `--skip`, `--min-age`, `--output json`) |
+| `beav clean` | — | Run selected cleaners (`--dry-run`, `-y`, `--include-heavy`, `--system`, `--all`) |
+| `beav purge <path...>` | — | Clean specified paths or globs directly (`--force-no-age`, `--dry-run`, `-y`) |
+| `beav analyze [path]` | — | Launch `gdu` disk explorer (`--allow-delete` / `--unsafe` enables deletion) |
+| `beav doctor` | `status`, `check` | Diagnose system environment, disk usage, config state, and tool availability (`--json`) |
+| `beav history` | `log`, `logs` | Inspect or clear deletion history (`-n`, `--cleaner`, `--all`, `--clear`, `--json`) |
+| `beav list` | `ls` | List cleaners (`--ids`, `--heavy`, `--scope`) |
+| `beav info <id>` | — | Show cleaner paths, profile, impact, and notes |
+| `beav tags` | — | List tags and cleaner counts (`--json`) |
+| `beav config ...` | — | `init`, `show`, `edit`, `path`, `validate`, `reset`, `enable`, `disable`, `whitelist`, `safety` |
+| `beav version` | `ver` | Show build metadata, runtime, config dir, and cleaner count (`-s`, `--json`) |
+| `beav help [topic]` | — | Grouped command list or topic (`safety`, `exit-codes`, `env`, `examples`) |
+
+See [CLI and TUI Reference](docs/cli-and-tui.md) for all flags, environment variables, JSONL events, and exit codes.
+
+## What Beav cleans
+
+| Scope | Examples |
+| --- | --- |
+| Editors | VS Code / Insiders / VSCodium, Cursor, Zed, JetBrains IDEs, Neovim caches and logs |
+| Browsers | Cache subdirectories for Firefox, Chrome, Chromium, Edge, Brave, Vivaldi (profiles and logins preserved) |
+| Language tools | `npm`, `pnpm`, `yarn`, `bun`, `deno`, `node-gyp`, `pip`, `uv`, `Poetry`, `Conda`, `Cargo`, `rustup`, `Go`, `Gradle`, `Maven`, `Coursier` |
+| Dev tools | `pre-commit`, `ccache`, `sccache`, `clangd`, `zig`, `Bazel`, `Cypress`, `Playwright`, `mise` |
+| AI & GPU | Incomplete Hugging Face downloads, old HF Datasets Arrow caches, Torch Hub weights, `vLLM`, `FlashInfer`, Mesa/NVIDIA shader caches, `Triton`, `TorchInductor` |
+| Desktop & Cloud | Trash, thumbnails, font caches, Flatpak caches/unused runtimes, partial downloads, `minikube`, `helm`, `k9s`, `kubectl`, `gcloud`, Azure CLI logs |
+| Containers & System | Docker, Podman (rootless and system verified separately), `apt`, `dnf`, `pacman`, `zypper`, `systemd` journals, `/tmp`, `/var/tmp`, `/var/cache`, Nix GC |
+
+## Configurable safety and bypass
+
+Default rules protect personal directories (`Documents`, `Desktop`, `Downloads`, `Pictures`, `Videos`, `Music`, `.ssh`, `.gnupg`, `.password-store`), system directories (`/etc`, `/boot`, `/usr`, `/proc`, `/sys`, `/dev`, `/run`, container runtime storage), mount boundaries, symlink traversal, active processes, `/root` when running as `root`, and age floors on sensitive caches.
+
+You can relax or replace any restriction (except literal `/`) per command or persistently:
+
+> [!WARNING]
+> Bypassing safety checks (`--unsafe`, `--bypass-allow-list`, `--bypass-blacklist`, `--bypass-age-floor`, `--follow-symlinks`) removes protections against unintended deletion. Preview targets with `beav scan` or `--dry-run` before running destructive commands.
+
+```bash
+# Append a custom allowed root for one run
+beav purge /opt/build-cache --allow-path /opt/build-cache --dry-run
+
+# Bypass all configurable checks for one run
+beav clean --unsafe --min-age=0d
+
+# Configure persistent safety rules via CLI
+beav config safety show
+beav config safety set allow_command_cleaners true
+beav config safety allow-add /opt/build-cache
+```
+
+Configuration lives in `~/.config/beav/config.yaml` and custom cleaners live in `~/.config/beav/cleaners.d/` (both `type: paths` and gated `type: command` are supported). Read [Safety Policy, Bypass Controls, and Configuration](docs/safety-and-config.md) for the complete schema and policy reference.
+
+## Documentation index
+
+- [CLI and TUI Reference](docs/cli-and-tui.md) — subcommands, flags, 4-tab shortcuts, env vars, JSONL output, exit codes
+- [Safety and Configuration](docs/safety-and-config.md) — default bounds, bypass flags, `config.yaml` `safety:` schema, custom `paths` and `command` cleaners
+
+## Development
+
+Requires Go 1.24+:
 
 ```bash
 git clone https://github.com/nerdneilsfield/Beav.git
 cd Beav
 make build
-./bin/beav version
-```
-
-Running `beav` with no subcommand in an interactive terminal launches a full-screen read-only scan and selection workbench:
-
-```bash
-beav               # scan read-only, review sizes & sample files, toggle items, confirm before deleting
-sudo beav --system # open the interactive workbench for system caches
-```
-
-Prefer plain CLI commands? Start with a read-only scan:
-
-```bash
-beav scan          # read-only preview, never deletes anything
-beav clean         # terminal: previews first, deletes only after y
-beav clean --yes   # skip the prompt and clean safe items directly
-```
-
-Pipes and CI have no terminal, so `beav clean` there still runs directly and script behavior is unchanged.
-
-Beav does not invoke `sudo` for you. System cleanup is a separate, explicit command:
-
-```bash
-sudo beav clean --system
-```
-
-To clean the original user's home and the system in one run:
-
-```bash
-sudo beav clean --all
-```
-
-To explore directory sizes interactively in read-only mode (powered by `gdu`, press `q` to quit):
-
-```bash
-beav analyze [PATH]
-```
-
-Interface text automatically follows your locale (`BEAV_LANG`, `LC_ALL`, `LC_MESSAGES`, `LANG`) between English and Simplified Chinese, or can be forced via `--lang en` / `--lang zh`.
-
-## What Beav cleans
-
-The built-in registry covers these areas:
-
-| Area | Examples |
-|---|---|
-| Editors | VS Code / Insiders / VSCodium, Cursor, Zed, JetBrains IDEs, Neovim cache and state |
-| Browsers | Firefox, Chrome, Chromium, Edge, Brave, and Vivaldi cache directories; profiles and login data stay in place |
-| Language tools | npm, pnpm, yarn (Classic & Berry), bun, deno, node-gyp, Electron, pip, uv, Poetry, Conda, PDM/Hatch/pipx, Corepack, Cargo, Go (`GOCACHE`, gopls, `GOMODCACHE`), Gradle, Maven, Coursier |
-| Developer tools | pre-commit, ccache, sccache, clangd, zig, Bazel, Cypress, Playwright, mise |
-| AI and GPU | interrupted Hugging Face downloads, old HF Datasets Arrow units, Torch Hub checkpoints, vLLM & FlashInfer, Mesa & NVIDIA shaders, NVIDIA compute cache, Triton, TorchInductor |
-| Desktop | Trash, thumbnail cache, fontconfig cache, Flatpak app caches and unused runtimes, old partial-download files |
-| Kubernetes | minikube image cache, Helm, k9s, and kubectl cache |
-| Cloud tools | old gcloud and Azure CLI logs |
-| Containers | Docker and Podman prune operations, with rootless and system daemons kept separate |
-| System | apt, dnf, pacman, zypper, systemd journal (rotate + vacuum), `/tmp`, `/var/tmp`, `/var/cache` (man, fontconfig, PackageKit), Nix garbage collection |
-
-Inspect the exact list of cleaners, impact levels (`safe` / `heavy`), effective retention ages, and per-cleaner details locally:
-
-```bash
-beav list
-beav list --heavy
-beav info lang-rustup
-```
-
-Some entries are skipped when their tool is missing, the relevant process is running, the files are too recent, or Beav cannot prove that the target is safe. A skip is not treated as a deletion failure.
-
-## Safety boundaries
-
-Cache cleanup is easy until a path comes from an environment variable, a symlink changes during the run, or `sudo` points at the wrong home directory. Beav checks those cases before it removes a file.
-
-- Every path must stay below an approved root such as the target home, `/var/cache`, `/var/log`, `/tmp`, or `/var/tmp`.
-- Known credential locations and personal-data directories are blacklisted. This includes `~/.ssh`, `~/.gnupg`, `~/.password-store`, `~/.kube/config`, and `~/.docker/config.json`. Built-in browser cleaners point only at cache subdirectories, not profiles.
-- Generic cleaners cannot enter `Documents`, `Desktop`, `Downloads`, `Pictures`, `Videos`, or `Music`. The Downloads cleaner is deliberately narrow: it looks only one level deep and recognizes partial-download suffixes.
-- Files are checked individually against an age threshold. Beav does not decide that an entire directory is old because its parent timestamp is old.
-- Directory traversal is anchored with `openat` and `O_NOFOLLOW`. Mount boundaries, symlink substitutions, and file identity changes stop the deletion.
-- Running applications, open file descriptors, and lock markers can hold a cleaner back. Inspection errors fail closed for processes owned by the target user.
-- Heavy cleaners require `--include-heavy`, an exact cleaner ID or tag in `--only`, or manual selection in the TUI. `--yes`, prefixes, and `--all` never authorize heavy cleaners automatically.
-
-There is no hidden privilege escalation. A non-root `--system` request is refused with a hint; a root login cannot clean `/root` unless `--allow-root-home` is present. Under `sudo --all`, Beav cross-checks `SUDO_UID`, `SUDO_USER`, and the home directory owner before selecting the user scope.
-
-<details>
-<summary><strong>How deletion is checked</strong></summary>
-
-For path-based cleaners, Beav opens each component relative to a trusted directory descriptor. It rejects symlinks, checks the filesystem device, protects directories containing `.git`, applies the per-file age rule, and compares `(inode, device, size, mtime)` again immediately before `unlinkat`.
-
-Native cleanup profiles are closed definitions compiled into Beav. YAML may select a known profile, but it cannot inject a command, argument list, environment, or arbitrary root. Managed Hugging Face and Torch cache units use rename-first deletion and a recovery journal so an interrupted run can be recovered without trusting a stale pathname.
-
-Rootless Docker and Podman cleaners also verify the daemon mode, socket owner, and socket location. System cleaners refuse to use a rootless daemon.
-
-</details>
-
-## Useful commands
-
-```bash
-# Scan one family of cleaners without deleting
-beav scan --only langs --verbose
-
-# Inspect details and commands for one cleaner
-beav info lang-uv
-
-# Run one exact cleaner
-beav clean --only lang-uv
-
-# Keep browser caches out of this run
-beav clean --skip browser
-
-# Use a 30-day global threshold
-beav clean --min-age=30d
-
-# Override selected tags
-beav clean --min-age=langs=14d,logs=30d
-
-# Permit enabled heavy cleaners
-beav clean --include-heavy
-
-# Emit JSON Lines for a script
-beav scan --output json
-```
-
-`--only` and `--skip` accept cleaner IDs, ID prefixes, or tags. Heavy entries are the partial exception: an exact full ID or an exact tag in `--only` authorizes one implicitly, while ID prefixes never do. Built-in minimum floors still apply to sensitive profiles, so a command-line age cannot make interrupted downloads or managed caches newer than their safety floor eligible.
-
-The binary prints the complete flag list:
-
-```bash
-beav clean --help
-```
-
-## Configuration
-
-Inspect current config, create a starter file, open it in `$VISUAL`/`$EDITOR`, or manage protected whitelist paths:
-
-```bash
-beav config show
-beav config init
-beav config edit
-beav config whitelist add ~/.cache/keep-this
-beav config whitelist remove ~/.cache/keep-this
-```
-
-Turn one cleaner off for good, or bring it back, without editing YAML:
-
-```bash
-beav config disable lang-pip
-beav config enable lang-pip
-```
-
-The default path is `~/.config/beav/config.yaml`. Command-line flags take precedence over this file, and the file takes precedence over built-in defaults.
-
-```yaml
-defaults:
-  min_age_days: 14
-  output: spinner # auto | spinner | plain | json
-
-overrides:
-  editor-vscode:
-    min_age_days: 3
-  browser-chromium:
-    enabled: false
-
-whitelist:
-  - ~/.cache/keep-this
-```
-
-Extra cleaner files can be placed in `~/.config/beav/cleaners.d/`. A simple path cleaner looks like this:
-
-```yaml
-- id: lang-zola
-  name: Zola build cache
-  scope: user
-  type: paths
-  min_age_days: 14
-  paths:
-    - ~/.cache/zola/**
-  tags: [langs, static-site]
-```
-
-Custom YAML still goes through registry and path-safety validation. `type: command` is rejected. Closed executor types such as `tool_prune`, `debris`, and `managed_cache` accept built-in profile names only.
-
-## Output and automation
-
-Terminal output uses a spinner when stdout is a TTY and plain text when it is not. Choose JSONL explicitly when another program will read the result:
-
-```bash
-beav scan --output json | jq -c 'select(.event == "finish" or .event == "summary")'
-```
-
-A dry run reports candidates in `files_candidate` and `bytes_candidate`; actual deletion fields remain zero. Some native tools do not report exact byte counts. In that case the summary sets `metrics_incomplete` and names the unmeasured cleaners rather than inventing a number.
-
-Exit codes are stable for scripts:
-
-| Code | Meaning |
-|---:|---|
-| `0` | Selected cleaners completed without error events |
-| `1` | Invalid usage, unknown selector/ID, or refused privilege request |
-| `2` | Configuration, registry, or path validation failed |
-| `3` | At least one cleaner emitted an error event |
-| `4` | Interrupted by a signal |
-
-## What Beav leaves alone
-
-Beav does not remove old kernels, container volumes, arbitrary files from Downloads, browser history, recent-file lists, or remote caches. It also avoids application data whose cache semantics are not clear enough to encode safely, including Ollama and ModelScope data today.
-
-Nix cleanup calls native garbage collection without deleting generations. Conda cleanup is limited to index caches, tarballs, and logs. Rust toolchain cleanup keeps the default toolchain, the newest member of each release line (stable, beta, nightly, and each `major.minor`), and linked toolchains. There is no general-purpose shell-command cleaner.
-
-These limits are intentional. If a directory may contain the only copy of someone's work, it needs a purpose-built design rather than another glob.
-
-## Contributing
-
-For a new path cleaner, start with a YAML file and include a conservative age. Native-tool or managed-cache support usually needs a closed profile plus tests because its safety rules belong in Go, not user-supplied arguments.
-
-Run the checks before opening a change:
-
-```bash
 make test
 make race
 make lint
 ```
 
-The [design notes](docs/superpowers/specs/2026-04-26-beav-design.md) document the original safety model. The [implementation plan](docs/superpowers/plans/2026-04-26-beav-implementation.md) records how the first release was built.
+Design notes from the initial architecture remain in [design spec](docs/superpowers/specs/2026-04-26-beav-design.md) and [implementation plan](docs/superpowers/plans/2026-04-26-beav-implementation.md).
 
-## Credits and license
+## Acknowledgments and license
 
-Beav was inspired by [Mole](https://github.com/tw93/mole). Its disk browser is powered by [gdu](https://github.com/dundee/gdu), and the terminal interface uses the [Charm](https://charm.sh/) libraries.
+Inspired by [Mole](https://github.com/tw93/mole). Disk usage exploration uses [gdu](https://github.com/dundee/gdu), and the terminal UI is built with [Charm](https://charm.sh/).
 
-Released under the [MIT License](LICENSE).
+Licensed under the [MIT License](LICENSE).

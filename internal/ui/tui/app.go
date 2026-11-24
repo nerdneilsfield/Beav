@@ -10,7 +10,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/dengqi/beav/internal/cleaner/model"
+	"github.com/dengqi/beav/internal/cleaner/safety"
+	"github.com/dengqi/beav/internal/config"
 	"github.com/dengqi/beav/internal/i18n"
+	"github.com/dengqi/beav/internal/oplog"
+	"golang.org/x/sys/unix"
 )
 
 // ScopeInfo describes the target cleaning scope displayed in the TUI header and hints.
@@ -77,11 +81,16 @@ type ExecProgress struct {
 	Err               error
 }
 
-// Hooks connects the TUI to the CLI's read-only scanner and cleaner executor.
-// Hooks 将交互界面与底层的只读扫描及执行逻辑解耦衔接。
+// Hooks connects the TUI to the CLI's read-only scanner, executor, config, and history.
+// Hooks 将交互界面与底层的只读扫描、执行、配置及历史记录逻辑衔接。
 type Hooks struct {
-	StartScan func(ctx context.Context) (<-chan ScanProgress, context.CancelFunc)
-	StartExec func(ctx context.Context, selectedIDs []string) (<-chan ExecProgress, context.CancelFunc)
+	StartScan            func(ctx context.Context) (<-chan ScanProgress, context.CancelFunc)
+	StartExec            func(ctx context.Context, selectedIDs []string) (<-chan ExecProgress, context.CancelFunc)
+	StartScanWithOptions func(ctx context.Context, policy safety.Policy, minAgeOverride string) (<-chan ScanProgress, context.CancelFunc)
+	StartExecWithOptions func(ctx context.Context, policy safety.Policy, minAgeOverride string, selectedIDs []string) (<-chan ExecProgress, context.CancelFunc)
+	SaveConfig           func(cfg *config.Config) error
+	ReadHistory          func() ([]oplog.Entry, error)
+	ClearHistory         func() error
 }
 
 // Options configures a TUI workbench session.
@@ -89,6 +98,12 @@ type Hooks struct {
 type Options struct {
 	Translator *i18n.Translator
 	Scope      ScopeInfo
+	Version    string
+	ConfigDir  string
+	Config     *config.Config
+	Policy     safety.Policy
+	LogPath    string
+	InitialTab int
 	Hooks      Hooks
 }
 
@@ -100,6 +115,24 @@ const (
 	phaseConfirm
 	phaseExecuting
 	phaseDone
+)
+
+type activeTab int
+
+const (
+	tabClean activeTab = iota
+	tabAnalyze
+	tabHistory
+	tabConfig
+)
+
+type cleanSortMode int
+
+const (
+	cleanSortSize cleanSortMode = iota
+	cleanSortName
+	cleanSortFiles
+	cleanSortImpact
 )
 
 type rowKind int
@@ -131,14 +164,29 @@ type scanClosedMsg struct{}
 type execMsg ExecProgress
 type execClosedMsg struct{}
 
+type fsStat struct {
+	total uint64
+	used  uint64
+	avail uint64
+	valid bool
+}
+
 type workbenchModel struct {
-	ctx    context.Context
-	tr     *i18n.Translator
-	scope  ScopeInfo
-	hooks  Hooks
-	phase  phase
-	width  int
-	height int
+	ctx       context.Context
+	tr        *i18n.Translator
+	scope     ScopeInfo
+	version   string
+	configDir string
+	cfg       *config.Config
+	policy    safety.Policy
+	logPath   string
+	hooks     Hooks
+
+	activeTab activeTab
+	phase     phase
+	width     int
+	height    int
+	diskStat  fsStat
 
 	spin                 spinner.Model
 	filterInput          textinput.Model
@@ -146,9 +194,17 @@ type workbenchModel struct {
 	showHelp             bool
 	showSkipped          bool
 	narrowDetailExpanded bool
+	detailFocused        bool
+	detailScroll         int
 	confirmDeleteFocused bool
 	statusMsg            string
 	err                  error
+
+	sortMode       cleanSortMode
+	tagFilterIdx   int
+	tagOptions     []string
+	agePresetIdx   int
+	minAgeOverride string
 
 	scans      []CleanerScan
 	scanByID   map[string]CleanerScan
@@ -174,7 +230,37 @@ type workbenchModel struct {
 	execOrder     []string
 	execItems     map[string]ExecProgress
 	execSummary   ExecProgress
+
+	// Analyze tab state.
+	diskPath          string
+	diskLoading       bool
+	diskErr           error
+	diskStatus        string
+	diskEntries       []diskEntry
+	diskTotal         int64
+	diskCursor        int
+	diskOffset        int
+	diskSort          diskSortMode
+	diskConfirmDelete string
+
+	// History tab state.
+	histEntries      []oplog.Entry
+	histErr          error
+	histOffset       int
+	histFilter       textinput.Model
+	histFiltering    bool
+	histConfirmClear bool
+
+	// Config tab state.
+	cfgCursor    int
+	cfgOffset    int
+	cfgStatus    string
+	cfgAdding    bool
+	cfgAddTarget configListTarget
+	cfgAddInput  textinput.Model
 }
+
+var agePresets = []string{"", "0d", "3d", "7d", "14d", "30d"}
 
 func newWorkbenchModel(ctx context.Context, opts Options) workbenchModel {
 	tr := opts.Translator
@@ -194,20 +280,67 @@ func newWorkbenchModel(ctx context.Context, opts Options) workbenchModel {
 	ti.CharLimit = 64
 	ti.Width = 36
 
+	histTi := textinput.New()
+	histTi.Prompt = "/ "
+	histTi.Placeholder = tr.Text("filter history by cleaner or path...", "按清理项或路径搜索历史...")
+	histTi.CharLimit = 64
+	histTi.Width = 36
+
+	cfgTi := textinput.New()
+	cfgTi.Prompt = "+ "
+	cfgTi.Placeholder = tr.Text("e.g. ~/.cache/custom or /opt/cache", "例如 ~/.cache/custom 或 /opt/cache")
+	cfgTi.CharLimit = 128
+	cfgTi.Width = 42
+
+	tab := tabClean
+	if opts.InitialTab >= int(tabClean) && opts.InitialTab <= int(tabConfig) {
+		tab = activeTab(opts.InitialTab)
+	}
+
 	return workbenchModel{
 		ctx:         ctx,
 		tr:          tr,
 		scope:       opts.Scope,
+		version:     opts.Version,
+		configDir:   opts.ConfigDir,
+		cfg:         opts.Config,
+		policy:      opts.Policy,
+		logPath:     opts.LogPath,
 		hooks:       opts.Hooks,
+		activeTab:   tab,
 		phase:       phaseScanning,
 		width:       100,
 		height:      30,
+		diskStat:    readFSStat(opts.Scope.Home),
 		spin:        sp,
 		filterInput: ti,
+		histFilter:  histTi,
+		cfgAddInput: cfgTi,
+		tagOptions:  []string{""},
 		scanByID:    map[string]CleanerScan{},
 		selected:    map[string]bool{},
 		execItems:   map[string]ExecProgress{},
+		diskPath:    opts.Scope.Home,
 	}
+}
+
+func readFSStat(path string) fsStat {
+	if path == "" {
+		path = "/"
+	}
+	var fs unix.Statfs_t
+	if err := unix.Statfs(path, &fs); err != nil || fs.Blocks == 0 {
+		return fsStat{}
+	}
+	bsize := uint64(fs.Bsize) //nolint:gosec // Linux statfs block size is positive.
+	total := fs.Blocks * bsize
+	free := fs.Bfree * bsize
+	avail := fs.Bavail * bsize
+	var used uint64
+	if total >= free {
+		used = total - free
+	}
+	return fsStat{total: total, used: used, avail: avail, valid: true}
 }
 
 // Run starts the full-screen Bubble Tea TUI workbench and blocks until the user exits.
@@ -226,12 +359,17 @@ func Run(ctx context.Context, opts Options) error {
 }
 
 func (m workbenchModel) Init() tea.Cmd {
-	nextM, cmd := m.startScan()
-	_ = nextM
-	// Note: Init cannot return a modified model, so Run/StartScan relies on initial scanCmd
-	// created cleanly below via beginScanCmd if Hooks are invoked in Init; however in Bubble Tea,
-	// Init creates channels before Update runs, so we wrap channel start inside tea.Cmd!
-	return tea.Batch(m.spin.Tick, cmd)
+	_, scanCmd := m.startScan()
+	cmds := []tea.Cmd{m.spin.Tick, scanCmd}
+	if m.activeTab == tabAnalyze {
+		var diskCmd tea.Cmd
+		_, diskCmd = m.startDiskScan(m.diskPath)
+		cmds = append(cmds, diskCmd)
+	}
+	if m.activeTab == tabHistory {
+		cmds = append(cmds, m.loadHistoryCmd())
+	}
+	return tea.Batch(cmds...)
 }
 
 type scanStartedMsg struct {
@@ -258,6 +396,7 @@ func (m workbenchModel) startScan() (workbenchModel, tea.Cmd) {
 	m.rows = nil
 	m.cursor = 0
 	m.listOffset = 0
+	m.detailScroll = 0
 	m.scanTotal = 0
 	m.scanCompleted = 0
 	m.currentID = ""
@@ -268,7 +407,13 @@ func (m workbenchModel) startScan() (workbenchModel, tea.Cmd) {
 
 	hooks := m.hooks
 	ctx := m.ctx
+	policy := m.policy
+	ageOverride := m.minAgeOverride
 	return m, func() tea.Msg {
+		if hooks.StartScanWithOptions != nil {
+			ch, cancel := hooks.StartScanWithOptions(ctx, policy, ageOverride)
+			return scanStartedMsg{ch: ch, cancel: cancel}
+		}
 		if hooks.StartScan == nil {
 			return scanMsg(ScanProgress{Done: true})
 		}
@@ -310,7 +455,7 @@ func (m workbenchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if m.phase == phaseScanning || m.phase == phaseExecuting {
+		if m.phase == phaseScanning || m.phase == phaseExecuting || m.diskLoading {
 			var cmd tea.Cmd
 			m.spin, cmd = m.spin.Update(msg)
 			return m, cmd
@@ -346,7 +491,43 @@ func (m workbenchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.execCancel = nil
 			}
 			m.phase = phaseDone
+			m.diskStat = readFSStat(m.scope.Home)
 		}
+		return m, nil
+
+	case diskScanDoneMsg:
+		m.diskLoading = false
+		m.diskPath = msg.path
+		m.diskErr = msg.err
+		m.diskEntries = msg.entries
+		m.diskTotal = msg.total
+		m.sortDiskEntries()
+		m.diskCursor = 0
+		m.diskOffset = 0
+		return m, nil
+
+	case diskDeleteDoneMsg:
+		if msg.err != nil {
+			m.diskStatus = msg.err.Error()
+			return m, nil
+		}
+		m.diskStatus = m.tr.Textf("Deleted: %s", "已删除：%s", msg.path)
+		m.diskStat = readFSStat(m.scope.Home)
+		return m.startDiskScan(m.diskPath)
+
+	case historyLoadedMsg:
+		m.histEntries = msg.entries
+		m.histErr = msg.err
+		m.histOffset = 0
+		return m, nil
+
+	case historyClearedMsg:
+		if msg.err != nil {
+			m.histErr = msg.err
+			return m, nil
+		}
+		m.histEntries = nil
+		m.histOffset = 0
 		return m, nil
 
 	case tea.KeyMsg:
@@ -411,12 +592,25 @@ func (m workbenchModel) finishScan() (workbenchModel, tea.Cmd) {
 	}
 	m.scanCh = nil
 	m.selected = map[string]bool{}
+	tagSet := map[string]bool{}
 	for _, s := range m.scans {
 		if isActionableScan(s) && s.Cleaner.EffectiveImpact() != model.ImpactHeavy {
 			m.selected[s.Cleaner.ID] = true
 		} else {
 			m.selected[s.Cleaner.ID] = false
 		}
+		for _, t := range s.Cleaner.Tags {
+			tagSet[t] = true
+		}
+	}
+	tags := make([]string, 0, len(tagSet)+1)
+	for t := range tagSet {
+		tags = append(tags, t)
+	}
+	sort.Strings(tags)
+	m.tagOptions = append([]string{""}, tags...)
+	if m.tagFilterIdx >= len(m.tagOptions) {
+		m.tagFilterIdx = 0
 	}
 	m.phase = phaseReview
 	m.rebuildRows()
@@ -448,6 +642,7 @@ func (m workbenchModel) handleExecProgress(p ExecProgress) (workbenchModel, tea.
 		}
 		m.execCh = nil
 		m.phase = phaseDone
+		m.diskStat = readFSStat(m.scope.Home)
 		return m, nil
 	}
 	if m.execCh != nil {
@@ -456,10 +651,61 @@ func (m workbenchModel) handleExecProgress(p ExecProgress) (workbenchModel, tea.
 	return m, nil
 }
 
+func (m workbenchModel) isTypingInput() bool {
+	return m.filtering || m.histFiltering || m.cfgAdding ||
+		m.diskConfirmDelete != "" || m.histConfirmClear ||
+		m.phase == phaseConfirm || m.phase == phaseExecuting || m.showHelp
+}
+
+func (m workbenchModel) switchTab(target activeTab) (workbenchModel, tea.Cmd) {
+	if target == m.activeTab {
+		return m, nil
+	}
+	m.activeTab = target
+	switch target {
+	case tabAnalyze:
+		if !m.diskLoading && len(m.diskEntries) == 0 && m.diskErr == nil {
+			return m.startDiskScan(m.diskPath)
+		}
+	case tabHistory:
+		return m, m.loadHistoryCmd()
+	}
+	return m, nil
+}
+
 func (m workbenchModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	if key == "ctrl+c" {
 		return m.quitAll()
+	}
+
+	if !m.isTypingInput() {
+		switch key {
+		case "1":
+			return m.switchTab(tabClean)
+		case "2":
+			return m.switchTab(tabAnalyze)
+		case "3":
+			return m.switchTab(tabHistory)
+		case "4":
+			return m.switchTab(tabConfig)
+		case "[":
+			prev := (int(m.activeTab) + 3) % 4
+			return m.switchTab(activeTab(prev))
+		case "]":
+			next := (int(m.activeTab) + 1) % 4
+			return m.switchTab(activeTab(next))
+		}
+	}
+
+	if m.activeTab == tabAnalyze {
+		return m.handleAnalyzeKey(msg)
+	}
+	if m.activeTab == tabHistory {
+		return m.handleHistoryKey(msg)
+	}
+	if m.activeTab == tabConfig {
+		return m.handleConfigKey(msg)
 	}
 
 	switch m.phase {
@@ -491,7 +737,6 @@ func (m workbenchModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case phaseExecuting:
-		// Wait until execution finishes unless ctrl+c was pressed (handled above).
 		return m, nil
 
 	case phaseDone:
@@ -556,9 +801,26 @@ func (m workbenchModel) handleReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showHelp = true
 		return m, nil
 	case "up", "k":
-		m.moveCursor(-1)
+		if m.detailFocused {
+			if m.detailScroll > 0 {
+				m.detailScroll--
+			}
+		} else {
+			m.moveCursor(-1)
+		}
 	case "down", "j":
-		m.moveCursor(1)
+		if m.detailFocused {
+			m.detailScroll++
+		} else {
+			m.moveCursor(1)
+		}
+	case "J", "ctrl+d":
+		m.detailScroll += 3
+	case "K", "ctrl+u":
+		m.detailScroll -= 3
+		if m.detailScroll < 0 {
+			m.detailScroll = 0
+		}
 	case "pgup":
 		m.moveCursor(-m.listPageSize())
 	case "pgdown":
@@ -571,10 +833,39 @@ func (m workbenchModel) handleReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.toggleCurrentRow()
 	case "a":
 		m.toggleAllSafe()
+	case "A":
+		m.toggleAllIncludingHeavy()
 	case "s":
 		m.showSkipped = !m.showSkipped
 		m.rebuildRows()
-	case "d", "tab":
+	case "o":
+		m.sortMode = (m.sortMode + 1) % 4
+		m.rebuildRows()
+	case "t":
+		if len(m.tagOptions) > 1 {
+			m.tagFilterIdx = (m.tagFilterIdx + 1) % len(m.tagOptions)
+			m.rebuildRows()
+		}
+	case "m":
+		m.agePresetIdx = (m.agePresetIdx + 1) % len(agePresets)
+		m.minAgeOverride = agePresets[m.agePresetIdx]
+		if m.minAgeOverride == "0d" {
+			m.policy.BypassAgeFloor = true
+		}
+		nextM, cmd := m.startScan()
+		return nextM, tea.Batch(nextM.spin.Tick, cmd)
+	case "b":
+		m.policy.BypassAll = !m.policy.BypassAll
+		m.syncPolicyToConfig()
+		nextM, cmd := m.startScan()
+		return nextM, tea.Batch(nextM.spin.Tick, cmd)
+	case "tab":
+		if m.width < 96 {
+			m.narrowDetailExpanded = !m.narrowDetailExpanded
+		} else {
+			m.detailFocused = !m.detailFocused
+		}
+	case "d":
 		m.narrowDetailExpanded = !m.narrowDetailExpanded
 	case "r":
 		nextM, cmd := m.startScan()
@@ -620,8 +911,14 @@ func (m workbenchModel) beginExecution() (workbenchModel, tea.Cmd) {
 
 	hooks := m.hooks
 	ctx := m.ctx
+	policy := m.policy
+	ageOverride := m.minAgeOverride
 	idsCopy := append([]string(nil), selectedIDs...)
 	cmd := func() tea.Msg {
+		if hooks.StartExecWithOptions != nil {
+			ch, cancel := hooks.StartExecWithOptions(ctx, policy, ageOverride, idsCopy)
+			return execStartedMsg{ch: ch, cancel: cancel}
+		}
 		if hooks.StartExec == nil {
 			return execMsg(ExecProgress{Done: true})
 		}
@@ -641,8 +938,14 @@ func (m *workbenchModel) toggleCurrentRow() {
 		m.rebuildRows()
 		return
 	}
-	if row.kind != rowItem || row.section == sectionSkipped {
+	if row.kind != rowItem {
 		return
+	}
+	if row.section == sectionSkipped {
+		if !m.policy.BypassAll {
+			m.statusMsg = m.tr.Text("Skipped item: press b to enable Bypass All or switch to Tab 4 to configure rules.", "该项已被跳过：可按 b 启用全局绕过，或按 4 前往安全配置页放宽限制。")
+			return
+		}
 	}
 	m.selected[row.id] = !m.selected[row.id]
 	m.statusMsg = ""
@@ -667,6 +970,32 @@ func (m *workbenchModel) toggleAllSafe() {
 	m.statusMsg = ""
 }
 
+func (m *workbenchModel) toggleAllIncludingHeavy() {
+	var ids []string
+	allSelected := true
+	for _, s := range m.scans {
+		if !isActionableScan(s) {
+			continue
+		}
+		ids = append(ids, s.Cleaner.ID)
+		if !m.selected[s.Cleaner.ID] {
+			allSelected = false
+		}
+	}
+	target := !allSelected
+	for _, id := range ids {
+		m.selected[id] = target
+	}
+	m.statusMsg = ""
+}
+
+func (m workbenchModel) activeTagFilter() string {
+	if m.tagFilterIdx <= 0 || m.tagFilterIdx >= len(m.tagOptions) {
+		return ""
+	}
+	return m.tagOptions[m.tagFilterIdx]
+}
+
 func (m *workbenchModel) rebuildRows() {
 	var prevID string
 	var prevKind rowKind
@@ -677,9 +1006,13 @@ func (m *workbenchModel) rebuildRows() {
 	}
 
 	filter := strings.ToLower(strings.TrimSpace(m.filterInput.Value()))
+	activeTag := m.activeTagFilter()
 	var safeItems, heavyItems, skippedItems []CleanerScan
 	for _, s := range m.scans {
 		if filter != "" && !m.matchesFilter(s.Cleaner, filter) {
+			continue
+		}
+		if activeTag != "" && !cleanerHasTag(s.Cleaner, activeTag) {
 			continue
 		}
 		switch {
@@ -694,13 +1027,29 @@ func (m *workbenchModel) rebuildRows() {
 
 	sortActionable := func(list []CleanerScan) {
 		sort.Slice(list, func(i, j int) bool {
-			if list[i].BytesCandidate != list[j].BytesCandidate {
-				return list[i].BytesCandidate > list[j].BytesCandidate
+			a, b := list[i], list[j]
+			switch m.sortMode {
+			case cleanSortName:
+				return strings.ToLower(m.tr.CleanerName(a.Cleaner)) < strings.ToLower(m.tr.CleanerName(b.Cleaner))
+			case cleanSortFiles:
+				if a.FilesCandidate != b.FilesCandidate {
+					return a.FilesCandidate > b.FilesCandidate
+				}
+				return a.Cleaner.ID < b.Cleaner.ID
+			case cleanSortImpact:
+				if a.Cleaner.EffectiveImpact() != b.Cleaner.EffectiveImpact() {
+					return a.Cleaner.EffectiveImpact() == model.ImpactHeavy
+				}
+				return a.BytesCandidate > b.BytesCandidate
+			default:
+				if a.BytesCandidate != b.BytesCandidate {
+					return a.BytesCandidate > b.BytesCandidate
+				}
+				if a.FilesCandidate != b.FilesCandidate {
+					return a.FilesCandidate > b.FilesCandidate
+				}
+				return a.Cleaner.ID < b.Cleaner.ID
 			}
-			if list[i].FilesCandidate != list[j].FilesCandidate {
-				return list[i].FilesCandidate > list[j].FilesCandidate
-			}
-			return list[i].Cleaner.ID < list[j].Cleaner.ID
 		})
 	}
 	sortActionable(safeItems)
@@ -768,7 +1117,17 @@ func (m *workbenchModel) rebuildRows() {
 			}
 		}
 	}
+	m.detailScroll = 0
 	m.ensureCursorVisible()
+}
+
+func cleanerHasTag(c model.Cleaner, want string) bool {
+	for _, t := range c.Tags {
+		if strings.EqualFold(t, want) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m workbenchModel) matchesFilter(c model.Cleaner, q string) bool {
@@ -838,6 +1197,9 @@ func (m *workbenchModel) moveCursor(delta int) {
 			remaining--
 		}
 	}
+	if lastValid != m.cursor {
+		m.detailScroll = 0
+	}
 	m.cursor = lastValid
 	m.ensureCursorVisible()
 }
@@ -862,6 +1224,7 @@ func (m *workbenchModel) jumpCursor(start bool) {
 			}
 		}
 	}
+	m.detailScroll = 0
 	m.ensureCursorVisible()
 }
 
@@ -873,13 +1236,21 @@ func (m workbenchModel) listPageSize() int {
 	return h - 1
 }
 
+func (m workbenchModel) tabContentHeight() int {
+	avail := m.height - 7
+	if avail < 8 {
+		avail = 8
+	}
+	return avail
+}
+
 func (m workbenchModel) listViewportHeight() int {
-	avail := m.height - 9
+	avail := m.height - 11
 	if m.width < 96 {
 		if m.narrowDetailExpanded {
-			avail = m.height/2 - 6
+			avail = m.height/2 - 7
 		} else {
-			avail = m.height - 17
+			avail = m.height - 19
 		}
 	}
 	if avail < 6 {
@@ -911,7 +1282,7 @@ func (m *workbenchModel) ensureCursorVisible() {
 func (m workbenchModel) selectedCount() int {
 	n := 0
 	for _, s := range m.scans {
-		if isActionableScan(s) && m.selected[s.Cleaner.ID] {
+		if m.selected[s.Cleaner.ID] && (isActionableScan(s) || m.policy.BypassAll) {
 			n++
 		}
 	}
@@ -921,7 +1292,7 @@ func (m workbenchModel) selectedCount() int {
 func (m workbenchModel) orderedSelectedIDs() []string {
 	var safeIDs, heavyIDs []string
 	for _, s := range m.scans {
-		if !isActionableScan(s) || !m.selected[s.Cleaner.ID] {
+		if !m.selected[s.Cleaner.ID] || (!isActionableScan(s) && !m.policy.BypassAll) {
 			continue
 		}
 		if s.Cleaner.EffectiveImpact() == model.ImpactHeavy {
@@ -935,7 +1306,7 @@ func (m workbenchModel) orderedSelectedIDs() []string {
 
 func (m workbenchModel) selectionTotals() (count int, bytes int64, files int64, heavy []CleanerScan, native []CleanerScan) {
 	for _, s := range m.scans {
-		if !isActionableScan(s) || !m.selected[s.Cleaner.ID] {
+		if !m.selected[s.Cleaner.ID] || (!isActionableScan(s) && !m.policy.BypassAll) {
 			continue
 		}
 		count++

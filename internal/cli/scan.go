@@ -10,8 +10,9 @@ import (
 func NewScanCmd(tr *i18n.Translator) *cobra.Command {
 	var f CleanFlags
 	cmd := &cobra.Command{
-		Use:   "scan",
-		Short: tr.Text("Scan and preview reclaimable caches without deleting anything", "只读扫描并预览可清理缓存（绝不删除文件）"),
+		Use:     "scan",
+		GroupID: "core",
+		Short:   tr.Text("Scan and preview reclaimable caches without deleting anything", "只读扫描并预览可清理缓存（绝不删除文件）"),
 		Long: tr.Text(
 			"Scan caches in read-only mode and display estimated reclaimable sizes.\n"+
 				"Nothing is modified or deleted. Run `beav list` to inspect all cleaner IDs and tags.",
@@ -30,9 +31,7 @@ func NewScanCmd(tr *i18n.Translator) *cobra.Command {
 		),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			localTr := translatorForCommand(cmd, tr)
-			if langFlag, err := cmd.Flags().GetString("lang"); err == nil && langFlag != "" {
-				f.Lang = langFlag
-			}
+			applyGlobalFlags(cmd, &f)
 			f.DryRun = true
 			return runCleanWithTranslator(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), f, localTr)
 		},
@@ -42,14 +41,9 @@ func NewScanCmd(tr *i18n.Translator) *cobra.Command {
 	cmd.Flags().StringSliceVar(&f.Only, "only", nil, tr.Text("scan matching cleaner IDs, tags, or ID prefixes; heavy requires an exact full ID or tag", "仅扫描匹配的清理项 ID、标签或 ID 前缀；重度清理项需完整 ID 或标签"))
 	cmd.Flags().BoolVar(&f.IncludeHeavy, "include-heavy", false, tr.Text("include heavy cleaners in scan", "在扫描中包含重度清理项"))
 	cmd.Flags().StringSliceVar(&f.Skip, "skip", nil, tr.Text("skip matching cleaner IDs, tags, or ID prefixes", "跳过匹配的清理项 ID、标签或 ID 前缀"))
-	cmd.Flags().StringVar(&f.MinAge, "min-age", "", tr.Text("override min age, for example 14d or tag=3d", "覆盖最小保留天数，如 14d 或 langs=3d"))
 	cmd.Flags().BoolVar(&f.ForceNoAge, "force-no-age", false, tr.Text("allow cleaners that explicitly have no age filter", "允许执行未设置保留天数过滤的清理项"))
 	cmd.Flags().StringVar(&f.Output, "output", "", tr.Text("output mode: spinner, plain, or json", "输出格式：spinner、plain 或 json"))
 	cmd.Flags().BoolVarP(&f.Verbose, "verbose", "v", false, tr.Text("show candidate file samples and all skipped cleaners", "显示候选文件样本与全部跳过项明细"))
-	cmd.Flags().BoolVar(&f.AllowRootHome, "allow-root-home", false, tr.Text("allow scanning /root when running as root", "以 root 运行时允许扫描 /root 目录"))
-	cmd.Flags().StringVar(&f.UserOverride, "user", "", tr.Text("target user for --all", "配合 --all 指定目标用户名"))
-	cmd.Flags().StringVar(&f.ConfigDir, "config-dir", "", tr.Text("override config directory", "覆盖默认配置目录"))
-	cmd.Flags().BoolVar(&f.BuiltinDisabled, "builtin-disabled", false, "skip embedded cleaners")
-	_ = cmd.Flags().MarkHidden("builtin-disabled")
+	addScopeAndPolicyFlags(cmd, &f, tr)
 	return cmd
 }

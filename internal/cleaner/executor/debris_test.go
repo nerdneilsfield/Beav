@@ -655,7 +655,18 @@ func TestHuggingFaceDebrisIgnoresCleanerHeldRootDescriptor(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reserved.Close()
-	rootFD := int(reserved.Fd()) + 2
+	slot1, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot2, err := os.Open(os.DevNull)
+	if err != nil {
+		_ = slot1.Close()
+		t.Fatal(err)
+	}
+	rootFD := int(slot2.Fd())
+	_ = slot2.Close()
+	_ = slot1.Close()
 	root := filepath.Join(home, ".cache", "huggingface")
 	if err := os.Symlink(root, filepath.Join(fdRoot, strconv.Itoa(rootFD))); err != nil {
 		t.Fatal(err)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dengqi/beav/internal/cleaner/model"
+	"github.com/dengqi/beav/internal/cleaner/safety"
 	"golang.org/x/sys/unix"
 )
 
@@ -29,6 +30,7 @@ type ContainerTarget struct {
 // ContainerExecutor 实现了用于容器清理的 Executor 接口。
 type ContainerExecutor struct {
 	target ContainerTarget
+	policy safety.Policy
 }
 
 // NewContainerExecutor creates a new ContainerExecutor, optionally with a custom target.
@@ -41,8 +43,18 @@ func NewContainerExecutor(target ...ContainerTarget) *ContainerExecutor {
 	return &ContainerExecutor{target: t}
 }
 
+// NewContainerExecutorWithPolicy creates a ContainerExecutor configured with a safety Policy.
+// NewContainerExecutorWithPolicy 使用指定安全策略创建 ContainerExecutor。
+func NewContainerExecutorWithPolicy(target ContainerTarget, policy safety.Policy) *ContainerExecutor {
+	return &ContainerExecutor{target: target, policy: policy}
+}
+
 func containerArgv(runtime, target string, ageDays int) ([]string, error) {
-	if target == "volume" {
+	return containerArgvWithPolicy(runtime, target, ageDays, false)
+}
+
+func containerArgvWithPolicy(runtime, target string, ageDays int, allowUnsafe bool) ([]string, error) {
+	if target == "volume" && !allowUnsafe {
 		return nil, fmt.Errorf("volume target not in v1")
 	}
 	until := "until=" + strconv.Itoa(ageDays*24) + "h"
@@ -53,7 +65,12 @@ func containerArgv(runtime, target string, ageDays int) ([]string, error) {
 			return []string{"docker", target, "prune", "-f", "--filter", until}, nil
 		case "image":
 			return []string{"docker", "image", "prune", "-af", "--filter", until}, nil
+		case "volume":
+			return []string{"docker", "volume", "prune", "-f"}, nil
 		case "system":
+			if allowUnsafe {
+				return []string{"docker", "system", "prune", "-af", "--filter", until}, nil
+			}
 			return nil, fmt.Errorf("docker system target not in v1; use individual targets")
 		}
 	case "podman":
@@ -62,6 +79,8 @@ func containerArgv(runtime, target string, ageDays int) ([]string, error) {
 			return []string{"podman", target, "prune", "-f", "--filter", until}, nil
 		case "image":
 			return []string{"podman", "image", "prune", "-af", "--filter", until}, nil
+		case "volume":
+			return []string{"podman", "volume", "prune", "-f"}, nil
 		case "system":
 			return []string{"podman", "system", "prune", "-f", "--filter", until}, nil
 		}
@@ -93,23 +112,25 @@ func (ce *ContainerExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bo
 		return nil
 	}
 	rootlessDaemon := daemonRootless(ctx, runtime)
-	if c.Scope == model.ScopeUser && (!rootlessDaemon || !verifyRootlessSocket(ctx, runtime, ce.target.UID, ce.target.Home)) {
-		emit(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: "runtime_not_rootless", TS: time.Now()})
-		emitFinish(emit, c.ID, "skipped", 0, start)
-		return nil
+	if !ce.policy.BypassAll {
+		if c.Scope == model.ScopeUser && (!rootlessDaemon || !verifyRootlessSocket(ctx, runtime, ce.target.UID, ce.target.Home)) {
+			emit(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: "runtime_not_rootless", TS: time.Now()})
+			emitFinish(emit, c.ID, "skipped", 0, start)
+			return nil
+		}
+		if c.Scope == model.ScopeSystem && rootlessDaemon {
+			emit(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: "runtime_not_rootless", Detail: "system-scope cleaner detected rootless daemon", TS: time.Now()})
+			emitFinish(emit, c.ID, "skipped", 0, start)
+			return nil
+		}
 	}
-	if c.Scope == model.ScopeSystem && rootlessDaemon {
-		emit(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: "runtime_not_rootless", Detail: "system-scope cleaner detected rootless daemon", TS: time.Now()})
-		emitFinish(emit, c.ID, "skipped", 0, start)
-		return nil
-	}
-	if (target == "builder" || target == "image") && runtimeBusy(ctx, runtime) {
+	if !ce.policy.EffectiveIgnoreRunning() && (target == "builder" || target == "image") && runtimeBusy(ctx, runtime) {
 		emit(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: "runtime_busy", TS: time.Now()})
 		emitFinish(emit, c.ID, "skipped", 0, start)
 		return nil
 	}
 
-	argv, err := containerArgv(runtime, target, *c.MinAgeDays)
+	argv, err := containerArgvWithPolicy(runtime, target, *c.MinAgeDays, ce.policy.BypassAll)
 	if err != nil {
 		emit(model.Event{Event: model.EvError, CleanerID: c.ID, Reason: "internal", Detail: err.Error(), TS: time.Now()})
 		emitFinish(emit, c.ID, "error", 1, start)

@@ -49,9 +49,19 @@ const TypeContainerPrune ExecutorType = "container_prune"
 // ParseExecutorType parses a string into an ExecutorType.
 // ParseExecutorType 将字符串解析为 ExecutorType。
 func ParseExecutorType(s string) (ExecutorType, bool) {
+	return ParseExecutorTypeWithOptions(s, false)
+}
+
+// ParseExecutorTypeWithOptions parses an executor type, optionally allowing TypeCommand.
+// ParseExecutorTypeWithOptions 解析执行器类型，并可选择允许 TypeCommand。
+func ParseExecutorTypeWithOptions(s string, allowCommand bool) (ExecutorType, bool) {
 	switch ExecutorType(s) {
 	case TypePaths, TypeJournalVacuum, TypePkgCache, TypeContainerPrune, TypeToolPrune, TypeDebris, TypeManagedCache, TypeRustupPrune:
 		return ExecutorType(s), true
+	case TypeCommand:
+		if allowCommand {
+			return TypeCommand, true
+		}
 	}
 	return "", false
 }
@@ -261,6 +271,15 @@ type Cleaner struct {
 	// RustupPrune is the closed Rust toolchain profile configuration.
 	// RustupPrune 是受限 Rust 工具链 profile 配置。
 	RustupPrune *RustupCfg `yaml:"rustup_prune"`
+	// Command is an optional custom command (or shell snippet) for type: command cleaners.
+	// Command 是用于 type: command 清理器的自定义命令或 Shell 语句。
+	Command string `yaml:"command"`
+	// Args are optional explicit arguments for Command; when empty, Command runs via sh -c.
+	// Args 是 Command 的可选显式参数列表；为空时通过 sh -c 执行 Command。
+	Args []string `yaml:"args"`
+	// DryRunCommand is an optional preview command for type: command cleaners.
+	// DryRunCommand 是 type: command 清理器的可选只读预览命令。
+	DryRunCommand string `yaml:"dry_run_command"`
 }
 
 // UnmarshalYAML preserves the safe default for legacy YAML that omits impact.
@@ -301,6 +320,7 @@ func validateCleanerYAMLFields(value *yaml.Node) error {
 		"paths": {}, "path_resolvers": {}, "exclude": {}, "running_processes": {},
 		"needs_root": {}, "tags": {}, "pkg_cache": {}, "container_prune": {},
 		"tool_prune": {}, "debris": {}, "managed_cache": {}, "rustup_prune": {},
+		"command": {}, "args": {}, "dry_run_command": {},
 	}
 	for i := 0; i+1 < len(resolved.Content); i += 2 {
 		keyNode, err := resolveYAMLAlias(resolved.Content[i], map[*yaml.Node]bool{})

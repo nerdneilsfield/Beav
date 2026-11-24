@@ -44,6 +44,7 @@ type DebrisExecutor struct {
 	Home      string
 	Whitelist *safety.Whitelist
 	TargetUID uint32
+	Policy    safety.Policy
 
 	procRoot       string
 	env            func(string) string
@@ -132,6 +133,14 @@ var debrisProfileRegistry = map[string]debrisProfile{
 	},
 }
 
+// NewDebrisExecutorWithPolicy creates a profile-backed debris executor with a safety Policy.
+// NewDebrisExecutorWithPolicy 使用指定的安全策略创建 debris 执行器。
+func NewDebrisExecutorWithPolicy(home string, wl *safety.Whitelist, policy safety.Policy, targetUID ...uint32) *DebrisExecutor {
+	e := NewDebrisExecutor(home, wl, targetUID...)
+	e.Policy = policy
+	return e
+}
+
 // Run executes one closed debris profile.
 func (e *DebrisExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, emit func(model.Event)) error {
 	start := e.now()
@@ -147,7 +156,7 @@ func (e *DebrisExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 	if err != nil {
 		return e.finishDebrisSkip(emit, c, start, "root_unavailable", err.Error())
 	}
-	if c.Profile() != "desktop-download-partials" && safety.Blacklisted(root, e.Home) {
+	if c.Profile() != "desktop-download-partials" && safety.BlacklistedWithPolicy(root, e.Home, e.Policy) {
 		return e.finishDebrisSkip(emit, c, start, "boundary_violation", "debris root is blacklisted")
 	}
 	rootFD, err := e.openDebrisRoot(root)
@@ -165,42 +174,50 @@ func (e *DebrisExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 		}
 		return e.finishDebrisSkip(emit, c, start, reason, err.Error())
 	}
-	if e.procVisibility != nil {
-		if visibilityErr := e.procVisibility(e.procRoot, e.TargetUID); visibilityErr != nil {
-			_ = unix.Close(rootFD)
-			return e.finishDebrisSkip(emit, c, start, "proc_inspection_failed", visibilityErr.Error())
-		}
-	}
-	if len(profile.processes) > 0 {
-		busy, checkErr := e.processCheck(profile.processes, e.procRoot)
-		if checkErr != nil {
-			_ = unix.Close(rootFD)
-			return e.finishDebrisSkip(emit, c, start, "proc_inspection_failed", checkErr.Error())
-		}
-		if busy {
-			_ = unix.Close(rootFD)
-			return e.finishDebrisSkip(emit, c, start, string(model.SkipReasonRunningProcess), "profile owner process is running")
-		}
-	}
-	if profile.locks {
-		busy, checkErr := inspectHuggingFaceBusyFD(rootFD, root, e.procRoot)
-		if busy || checkErr != nil {
-			_ = unix.Close(rootFD)
-			detail := "cache lock or open descriptor indicates activity"
-			if checkErr != nil {
-				detail = "cache inspection failed closed: " + checkErr.Error()
+	if !e.Policy.EffectiveIgnoreRunning() {
+		if e.procVisibility != nil {
+			if visibilityErr := e.procVisibility(e.procRoot, e.TargetUID); visibilityErr != nil {
+				_ = unix.Close(rootFD)
+				return e.finishDebrisSkip(emit, c, start, "proc_inspection_failed", visibilityErr.Error())
 			}
-			return e.finishDebrisSkip(emit, c, start, "cache_busy", detail)
+		}
+		if len(profile.processes) > 0 {
+			busy, checkErr := e.processCheck(profile.processes, e.procRoot)
+			if checkErr != nil {
+				_ = unix.Close(rootFD)
+				return e.finishDebrisSkip(emit, c, start, "proc_inspection_failed", checkErr.Error())
+			}
+			if busy {
+				_ = unix.Close(rootFD)
+				return e.finishDebrisSkip(emit, c, start, string(model.SkipReasonRunningProcess), "profile owner process is running")
+			}
+		}
+		if profile.locks {
+			busy, checkErr := inspectHuggingFaceBusyFD(rootFD, root, e.procRoot)
+			if busy || checkErr != nil {
+				_ = unix.Close(rootFD)
+				detail := "cache lock or open descriptor indicates activity"
+				if checkErr != nil {
+					detail = "cache inspection failed closed: " + checkErr.Error()
+				}
+				return e.finishDebrisSkip(emit, c, start, "cache_busy", detail)
+			}
 		}
 	}
 
-	w, err := safety.OpenWalkerFD(rootFD, root)
+	walkOpts := safety.WalkerOptions{
+		FollowSymlinks: e.Policy.EffectiveFollowSymlinks(),
+		AllowCrossFS:   e.Policy.EffectiveAllowCrossFS(),
+	}
+	w, err := safety.OpenWalkerFDWithOptions(rootFD, root, walkOpts)
 	if err != nil {
 		return e.finishDebrisSkip(emit, c, start, "root_unavailable", err.Error())
 	}
 	defer w.Close()
 	minAge := profile.minAgeDays
-	if requested := c.AgeOrDefault(14); requested > minAge {
+	if e.Policy.EffectiveBypassAgeFloor() {
+		minAge = c.AgeOrDefault(0)
+	} else if requested := c.AgeOrDefault(14); requested > minAge {
 		minAge = requested
 	}
 	threshold := e.now().Add(-time.Duration(minAge) * 24 * time.Hour)
@@ -224,8 +241,7 @@ func (e *DebrisExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 		if field == safety.TimeFieldCtime {
 			stamp = entry.CtimeTime()
 		}
-		// Profile floors are mandatory; NoAgeFilter cannot lower them.
-		if stamp.After(threshold) {
+		if !(c.NoAgeFilter && e.Policy.EffectiveBypassAgeFloor()) && stamp.After(threshold) {
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: filepath.Join(root, entry.RelPath), Reason: string(model.SkipReasonAgeTooRecent), TS: e.now()})
 			return
 		}
@@ -234,14 +250,16 @@ func (e *DebrisExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonWhitelisted), TS: e.now()})
 			return
 		}
-		open, openErr := safety.OpenDescriptorMatches(abs, entry.Dev(), entry.Ino(), e.procRoot)
-		if openErr != nil {
-			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: openErr.Error(), TS: e.now()})
-			return
-		}
-		if open {
-			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "open_file", TS: e.now()})
-			return
+		if !e.Policy.EffectiveIgnoreRunning() {
+			open, openErr := safety.OpenDescriptorMatches(abs, entry.Dev(), entry.Ino(), e.procRoot)
+			if openErr != nil {
+				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: openErr.Error(), TS: e.now()})
+				return
+			}
+			if open {
+				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "open_file", TS: e.now()})
+				return
+			}
 		}
 		if dryRun {
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonDryRun), Size: entry.Size(), TS: e.now()})
@@ -486,10 +504,24 @@ func sameDebrisIdentity(a, b debrisIdentity) bool {
 func (e *DebrisExecutor) openDebrisRoot(root string) (int, error) {
 	home := filepath.Clean(e.Home)
 	root = filepath.Clean(root)
-	if home == "." || !filepath.IsAbs(home) || !debrisPathWithin(root, home) || root == home {
+	if !e.Policy.EffectiveDisableAllowList() && (home == "." || !filepath.IsAbs(home) || !debrisPathWithin(root, home) || root == home) {
 		return -1, fmt.Errorf("debris root is outside target home")
 	}
-	homeFD, err := safety.OpenAnchoredDirFD(home, home)
+	walkOpts := safety.WalkerOptions{
+		FollowSymlinks: e.Policy.EffectiveFollowSymlinks(),
+		AllowCrossFS:   e.Policy.EffectiveAllowCrossFS(),
+	}
+	if e.Policy.BypassAll {
+		fd, err := safety.OpenAnchoredDirFDWithOptions("/", root, walkOpts)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return -1, fmt.Errorf("%w: %v", errDebrisRootUnavailable, err)
+			}
+			return -1, err
+		}
+		return fd, nil
+	}
+	homeFD, err := safety.OpenAnchoredDirFDWithOptions(home, home, walkOpts)
 	if err != nil {
 		return -1, fmt.Errorf("%w: target home: %v", errDebrisRootUnavailable, err)
 	}
@@ -498,7 +530,7 @@ func (e *DebrisExecutor) openDebrisRoot(root string) (int, error) {
 	if err != nil {
 		return -1, fmt.Errorf("%w: target home identity: %v", errDebrisRootUnavailable, err)
 	}
-	if homeID.Mode != unix.S_IFDIR || homeID.UID != e.TargetUID || homeID.MntID == 0 {
+	if homeID.Mode != unix.S_IFDIR || homeID.UID != e.TargetUID || (!walkOpts.AllowCrossFS && homeID.MntID == 0) {
 		return -1, fmt.Errorf("debris target home ownership/type/mount identity invalid")
 	}
 	selected, err := e.pathIdentity(root)
@@ -508,38 +540,42 @@ func (e *DebrisExecutor) openDebrisRoot(root string) (int, error) {
 		}
 		return -1, fmt.Errorf("%w: selected root identity: %v", errDebrisRootChanged, err)
 	}
-	if selected.Mode == unix.S_IFLNK {
+	if selected.Mode == unix.S_IFLNK && !walkOpts.FollowSymlinks {
 		return -1, safety.ErrSymlink
 	}
-	if selected.Mode != unix.S_IFDIR {
+	if selected.Mode != unix.S_IFDIR && !(walkOpts.FollowSymlinks && selected.Mode == unix.S_IFLNK) {
 		return -1, fmt.Errorf("debris root is not a directory")
 	}
 	if selected.UID != e.TargetUID {
 		return -1, fmt.Errorf("debris root owner differs from target UID")
 	}
-	if selected.Dev != homeID.Dev {
-		return -1, safety.ErrCrossFS
-	}
-	if selected.MntID == 0 || selected.MntID != homeID.MntID {
-		return -1, errDebrisRootChanged
+	if !walkOpts.AllowCrossFS {
+		if selected.Dev != homeID.Dev {
+			return -1, safety.ErrCrossFS
+		}
+		if selected.MntID == 0 || selected.MntID != homeID.MntID {
+			return -1, errDebrisRootChanged
+		}
 	}
 	if e.beforeRootOpen != nil {
 		if err := e.beforeRootOpen(root); err != nil {
 			return -1, fmt.Errorf("%w: pre-open hook: %v", errDebrisRootChanged, err)
 		}
 	}
-	fd, err := safety.OpenAnchoredDirFDFromFD(homeFD, home, root)
+	fd, err := safety.OpenAnchoredDirFDWithOptions(home, root, walkOpts)
 	if err != nil {
 		return -1, err
 	}
-	opened, err := e.fdIdentity(fd)
-	if err != nil {
-		_ = unix.Close(fd)
-		return -1, fmt.Errorf("%w: opened root identity: %v", errDebrisRootChanged, err)
-	}
-	if !sameDebrisIdentity(selected, opened) || opened.MntID != homeID.MntID {
-		_ = unix.Close(fd)
-		return -1, errDebrisRootChanged
+	if !walkOpts.FollowSymlinks && !walkOpts.AllowCrossFS {
+		opened, err := e.fdIdentity(fd)
+		if err != nil {
+			_ = unix.Close(fd)
+			return -1, fmt.Errorf("%w: opened root identity: %v", errDebrisRootChanged, err)
+		}
+		if !sameDebrisIdentity(selected, opened) || opened.MntID != homeID.MntID {
+			_ = unix.Close(fd)
+			return -1, errDebrisRootChanged
+		}
 	}
 	return fd, nil
 }

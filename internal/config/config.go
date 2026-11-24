@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/dengqi/beav/internal/cleaner/safety"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,11 +21,50 @@ type Override struct {
 	MinAgeDays *int  `yaml:"min_age_days,omitempty"`
 }
 
+// SafetyConfig configures safety boundaries and bypass controls in config.yaml.
+// SafetyConfig 在 config.yaml 中配置安全边界与绕过选项。
+type SafetyConfig struct {
+	BypassAll              bool     `yaml:"bypass_all,omitempty"`
+	AllowList              []string `yaml:"allow_list,omitempty"`
+	ReplaceAllowList       bool     `yaml:"replace_allow_list,omitempty"`
+	DisableAllowList       bool     `yaml:"disable_allow_list,omitempty"`
+	Blacklist              []string `yaml:"blacklist,omitempty"`
+	ReplaceBlacklist       bool     `yaml:"replace_blacklist,omitempty"`
+	DisableBlacklist       bool     `yaml:"disable_blacklist,omitempty"`
+	IgnoreRunningProcesses bool     `yaml:"ignore_running_processes,omitempty"`
+	BypassAgeFloor         bool     `yaml:"bypass_age_floor,omitempty"`
+	FollowSymlinks         bool     `yaml:"follow_symlinks,omitempty"`
+	AllowCrossFS           bool     `yaml:"allow_cross_fs,omitempty"`
+	AllowRootHome          bool     `yaml:"allow_root_home,omitempty"`
+	AllowCommandCleaners   bool     `yaml:"allow_command_cleaners,omitempty"`
+}
+
+// ToPolicy converts SafetyConfig into a runtime safety.Policy.
+// ToPolicy 将 SafetyConfig 转换为运行时 safety.Policy。
+func (s SafetyConfig) ToPolicy() safety.Policy {
+	return safety.Policy{
+		BypassAll:              s.BypassAll,
+		AllowList:              append([]string(nil), s.AllowList...),
+		ReplaceAllowList:       s.ReplaceAllowList,
+		DisableAllowList:       s.DisableAllowList,
+		Blacklist:              append([]string(nil), s.Blacklist...),
+		ReplaceBlacklist:       s.ReplaceBlacklist,
+		DisableBlacklist:       s.DisableBlacklist,
+		IgnoreRunningProcesses: s.IgnoreRunningProcesses,
+		BypassAgeFloor:         s.BypassAgeFloor,
+		FollowSymlinks:         s.FollowSymlinks,
+		AllowCrossFS:           s.AllowCrossFS,
+		AllowRootHome:          s.AllowRootHome,
+		AllowCommandCleaners:   s.AllowCommandCleaners,
+	}
+}
+
 type Config struct {
 	Dir             string
 	Defaults        Defaults            `yaml:"defaults"`
 	Overrides       map[string]Override `yaml:"overrides"`
 	Whitelist       []string            `yaml:"whitelist"`
+	Safety          SafetyConfig        `yaml:"safety,omitempty"`
 	rawWhitelist    []string
 	hasRawWhitelist bool
 	configExists    bool
@@ -233,7 +273,8 @@ func (c *Config) Save() error {
 		Defaults  Defaults            `yaml:"defaults"`
 		Overrides map[string]Override `yaml:"overrides,omitempty"`
 		Whitelist []string            `yaml:"whitelist,omitempty"`
-	}{c.Defaults, c.Overrides, c.RawWhitelist()})
+		Safety    SafetyConfig        `yaml:"safety,omitempty"`
+	}{c.Defaults, c.Overrides, c.RawWhitelist(), c.Safety})
 }
 
 func expand(p, home string) (string, error) {

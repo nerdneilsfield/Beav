@@ -12,6 +12,7 @@ var (
 	colorBorder  = lipgloss.Color("#3f3f46")
 	colorFocus   = lipgloss.Color("#0ea5e9")
 	colorSelect  = lipgloss.Color("#1e293b")
+	colorBarFill = lipgloss.Color("#0284c7")
 
 	styleTitle = lipgloss.NewStyle().
 			Bold(true).
@@ -21,6 +22,12 @@ var (
 				Bold(true).
 				Foreground(lipgloss.Color("#0f172a")).
 				Background(colorPrimary).
+				Padding(0, 1)
+
+	styleBadgeBypass = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#ffffff")).
+				Background(colorDanger).
 				Padding(0, 1)
 
 	styleBadgeExec = lipgloss.NewStyle().
@@ -63,6 +70,31 @@ var (
 	styleActiveRow = lipgloss.NewStyle().
 			Background(colorSelect).
 			Bold(true)
+
+	styleTabActive = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#0f172a")).
+			Background(colorPrimary).
+			Padding(0, 1)
+
+	styleTabInactive = lipgloss.NewStyle().
+				Foreground(colorSubtle).
+				Background(lipgloss.Color("#27272a")).
+				Padding(0, 1)
+
+	stylePill = lipgloss.NewStyle().
+			Foreground(colorSubtle).
+			Background(lipgloss.Color("#1e293b")).
+			Padding(0, 1)
+
+	stylePillWarn = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#fef2f2")).
+			Background(lipgloss.Color("#991b1b")).
+			Padding(0, 1)
+
+	styleBar = lipgloss.NewStyle().
+			Foreground(colorBarFill)
 
 	stylePane = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).

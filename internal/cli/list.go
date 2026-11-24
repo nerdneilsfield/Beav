@@ -18,12 +18,15 @@ func NewListCmd(tr *i18n.Translator) *cobra.Command {
 	var onlyHeavy bool
 	var onlyDisabled bool
 	var showJSON bool
+	var onlyIDs bool
 	var configDir string
 	var builtinDisabled bool
 
 	cmd := &cobra.Command{
-		Use:   "list",
-		Short: tr.Text("List all cleaners with IDs, impact levels, effective age, and state", "列出全部清理项及其 ID、影响级别、保留期和状态"),
+		Use:     "list",
+		Aliases: []string{"ls"},
+		GroupID: "inspect",
+		Short:   tr.Text("List all cleaners with IDs, impact levels, effective age, and state", "列出全部清理项及其 ID、影响级别、保留期和状态"),
 		Long: tr.Text(
 			"Display built-in and custom cleaners along with their effective retention age and enabled state.\n"+
 				"Use the cleaner ID or any tag with `beav scan --only`, `beav clean --only`, or `beav info <id>`.",
@@ -72,6 +75,12 @@ func NewListCmd(tr *i18n.Translator) *cobra.Command {
 				filtered = append(filtered, c)
 			}
 
+			if onlyIDs {
+				for _, c := range filtered {
+					fmt.Fprintln(cmd.OutOrStdout(), c.ID)
+				}
+				return nil
+			}
 			if showJSON {
 				out := map[string]any{
 					"defaults": cfg.Defaults,
@@ -130,6 +139,7 @@ func NewListCmd(tr *i18n.Translator) *cobra.Command {
 	cmd.Flags().StringVar(&tagFilter, "tag", "", tr.Text("filter by tag (for example langs, ai, browser)", "按标签筛选（如 langs、ai、browser）"))
 	cmd.Flags().BoolVar(&onlyHeavy, "heavy", false, tr.Text("show only heavy cleaners", "仅显示重度清理项"))
 	cmd.Flags().BoolVar(&onlyDisabled, "disabled", false, tr.Text("show only disabled cleaners", "仅显示已禁用的清理项"))
+	cmd.Flags().BoolVar(&onlyIDs, "ids", false, tr.Text("print only matching cleaner IDs", "仅输出清理项 ID（便于脚本调用）"))
 	cmd.Flags().BoolVar(&showJSON, "json", false, tr.Text("output machine-readable JSON", "输出机器可读 JSON"))
 	cmd.Flags().StringVar(&configDir, "config-dir", "", tr.Text("override config directory", "覆盖默认配置目录"))
 	cmd.Flags().BoolVar(&builtinDisabled, "builtin-disabled", false, "skip embedded cleaners")

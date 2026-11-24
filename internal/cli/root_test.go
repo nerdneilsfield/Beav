@@ -20,7 +20,7 @@ func TestNoArgsNonTTYPrintsHelp(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := buf.String()
-	for _, sub := range []string{"beav", "scan", "clean", "list", "info", "config", "analyze"} {
+	for _, sub := range []string{"beav", "tui", "scan", "clean", "purge", "list", "info", "tags", "doctor", "history", "config", "analyze"} {
 		if !strings.Contains(got, sub) {
 			t.Errorf("help missing %q in %q", sub, got)
 		}
@@ -61,7 +61,7 @@ func TestLocalizedCobraHelpTreeZH(t *testing.T) {
 		t.Fatal(err)
 	}
 	rootHelp := buf.String()
-	for _, want := range []string{"用法：", "可用命令：", "选项：", "查看任意命令的帮助信息", "显示 beav 的帮助信息"} {
+	for _, want := range []string{"用法：", "核心清理命令：", "浏览与诊断命令：", "配置与工具命令：", "帮助主题：", "选项：", "查看任意命令的帮助信息", "显示 beav 的帮助信息"} {
 		if !strings.Contains(rootHelp, want) {
 			t.Fatalf("ZH root help missing %q in:\n%s", want, rootHelp)
 		}
@@ -102,5 +102,19 @@ func TestLocalizedCobraHelpTreeZH(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "显示 clean 的帮助信息") {
 		t.Fatalf("ZH `help clean` missing localized help flag description: %s", buf.String())
+	}
+
+	for _, topic := range []string{"safety", "exit-codes", "env", "examples"} {
+		buf.Reset()
+		cmd = NewRootCmdWithLang("t", "t", "t", i18n.LangEN)
+		cmd.SetArgs([]string{"help", topic})
+		cmd.SetOut(&buf)
+		cmd.SetErr(&buf)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("help %s failed: %v", topic, err)
+		}
+		if len(strings.TrimSpace(buf.String())) == 0 {
+			t.Fatalf("help %s produced empty output", topic)
+		}
 	}
 }

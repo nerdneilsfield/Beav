@@ -290,3 +290,35 @@ func (p *Plain) renderSummary(e model.Event) {
 func (p *Plain) Close() error {
 	return nil
 }
+
+// Quiet renders only error events and the final summary line.
+// Quiet 仅输出错误事件与最终汇总行。
+type Quiet struct {
+	mu sync.Mutex
+	w  io.Writer
+	tr *i18n.Translator
+}
+
+// NewQuietRenderer creates a minimal renderer for --quiet mode.
+// NewQuietRenderer 创建一个用于 --quiet 模式的极简渲染器。
+func NewQuietRenderer(w io.Writer, tr *i18n.Translator) *Quiet {
+	return &Quiet{w: w, tr: resolveTranslator(tr)}
+}
+
+// Render prints errors and final summary only.
+// Render 仅打印错误与最终汇总。
+func (q *Quiet) Render(e model.Event) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	switch e.Event {
+	case model.EvError:
+		fmt.Fprintf(q.w, "%s\n", q.tr.Textf("%s - error - %s", "%s - 错误 - %s", e.CleanerID, e.Detail))
+	case model.EvSummary:
+		p := &Plain{w: q.w, tr: q.tr}
+		p.renderSummary(e)
+	}
+}
+
+// Close satisfies the ui.Renderer interface.
+// Close 实现 ui.Renderer 接口。
+func (q *Quiet) Close() error { return nil }

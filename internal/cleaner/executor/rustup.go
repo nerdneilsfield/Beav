@@ -35,6 +35,7 @@ type RustupExecutor struct {
 	Home      string
 	Whitelist *safety.Whitelist
 	TargetUID uint32
+	Policy    safety.Policy
 
 	procRoot       string
 	env            func(string) string
@@ -63,6 +64,14 @@ func NewRustupExecutor(home string, wl *safety.Whitelist, targetUID ...uint32) *
 		fdIdentity:     readManagedFDIdentity,
 		now:            time.Now,
 	}
+}
+
+// NewRustupExecutorWithPolicy creates a closed Rust toolchain executor with a safety Policy.
+// NewRustupExecutorWithPolicy 使用指定安全策略创建 Rust 工具链执行器。
+func NewRustupExecutorWithPolicy(home string, wl *safety.Whitelist, policy safety.Policy, targetUID ...uint32) *RustupExecutor {
+	e := NewRustupExecutor(home, wl, targetUID...)
+	e.Policy = policy
+	return e
 }
 
 // Run executes the closed lang-rustup profile.
@@ -101,14 +110,14 @@ func (e *RustupExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 	if c.Scope != model.ScopeUser {
 		return skip("profile_scope_mismatch", "rustup profiles are user-scoped")
 	}
-	if c.NoAgeFilter {
+	if c.NoAgeFilter && !e.Policy.EffectiveBypassAgeFloor() {
 		return skip("no_age_filter_unsupported", "rustup requires an age floor")
 	}
 	root := e.resolveToolchainsRoot()
-	if root == "" || !managedPathWithin(root, filepath.Clean(e.Home)) {
+	if root == "" || (!e.Policy.EffectiveDisableAllowList() && !managedPathWithin(root, filepath.Clean(e.Home))) {
 		return skip("root_unavailable", "rustup toolchains root is outside target home")
 	}
-	if safety.Blacklisted(root, e.Home) {
+	if safety.BlacklistedWithPolicy(root, e.Home, e.Policy) {
 		return skip("root_unavailable", "rustup root is blacklisted")
 	}
 	parentFD, rootFD, rootIdentity, defaultToolchain, err := e.openRustupRoot(root)
@@ -125,19 +134,23 @@ func (e *RustupExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 	defer unix.Close(rootFD)
 	defer unix.Close(parentFD)
 
-	if e.procVisibility != nil {
-		if err := e.procVisibility(e.procRoot, e.TargetUID); err != nil {
-			return skip("proc_inspection_failed", err.Error())
+	if !e.Policy.EffectiveIgnoreRunning() {
+		if e.procVisibility != nil {
+			if err := e.procVisibility(e.procRoot, e.TargetUID); err != nil {
+				return skip("proc_inspection_failed", err.Error())
+			}
 		}
-	}
-	if busy, checkErr := e.processCheck(rustupOwnerProcesses, e.procRoot); checkErr != nil {
-		return skip("proc_inspection_failed", checkErr.Error())
-	} else if busy {
-		return skip(string(model.SkipReasonRunningProcess), "Rust toolchain owner process is running")
+		if busy, checkErr := e.processCheck(rustupOwnerProcesses, e.procRoot); checkErr != nil {
+			return skip("proc_inspection_failed", checkErr.Error())
+		} else if busy {
+			return skip(string(model.SkipReasonRunningProcess), "Rust toolchain owner process is running")
+		}
 	}
 
 	minAge := managedCacheMinAgeDays
-	if requested := c.AgeOrDefault(managedCacheMinAgeDays); requested > minAge {
+	if e.Policy.EffectiveBypassAgeFloor() {
+		minAge = c.AgeOrDefault(0)
+	} else if requested := c.AgeOrDefault(managedCacheMinAgeDays); requested > minAge {
 		minAge = requested
 	}
 
@@ -195,7 +208,7 @@ func (e *RustupExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonWhitelisted), TS: e.now()})
 			continue
 		}
-		if !managedIdentityOldEnough(unit.identity, minAge, e.now()) {
+		if !(c.NoAgeFilter && e.Policy.EffectiveBypassAgeFloor()) && !managedIdentityOldEnoughWithFloor(unit.identity, minAge, e.Policy.EffectiveBypassAgeFloor(), e.now()) {
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonAgeTooRecent), TS: e.now()})
 			continue
 		}
@@ -269,10 +282,18 @@ func (e *RustupExecutor) openRustupRoot(root string) (int, int, managedIdentity,
 	home := filepath.Clean(e.Home)
 	root = filepath.Clean(root)
 	rustupHome := filepath.Dir(root)
-	if !filepath.IsAbs(home) || !managedPathWithin(rustupHome, home) {
+	walkOpts := safety.WalkerOptions{
+		FollowSymlinks: e.Policy.EffectiveFollowSymlinks(),
+		AllowCrossFS:   e.Policy.EffectiveAllowCrossFS(),
+	}
+	if !e.Policy.EffectiveDisableAllowList() && (!filepath.IsAbs(home) || !managedPathWithin(rustupHome, home)) {
 		return -1, -1, managedIdentity{}, "", fmt.Errorf("rustup home outside target home")
 	}
-	homeFD, err := safety.OpenAnchoredDirFD(home, home)
+	anchor := home
+	if e.Policy.EffectiveDisableAllowList() {
+		anchor = "/"
+	}
+	homeFD, err := safety.OpenAnchoredDirFDWithOptions(anchor, anchor, walkOpts)
 	if err != nil {
 		return -1, -1, managedIdentity{}, "", fmt.Errorf("home: %v", err)
 	}
@@ -281,10 +302,10 @@ func (e *RustupExecutor) openRustupRoot(root string) (int, int, managedIdentity,
 	if err != nil {
 		return -1, -1, managedIdentity{}, "", fmt.Errorf("home identity: %v", err)
 	}
-	if homeIdentity.Mode != unix.S_IFDIR || homeIdentity.UID != e.TargetUID {
+	if !e.Policy.BypassAll && anchor != "/" && (homeIdentity.Mode != unix.S_IFDIR || homeIdentity.UID != e.TargetUID) {
 		return -1, -1, managedIdentity{}, "", fmt.Errorf("target home ownership/type invalid")
 	}
-	rustupFD, err := safety.OpenAnchoredDirFDFromFD(homeFD, home, rustupHome)
+	rustupFD, err := safety.OpenAnchoredDirFDWithOptions(anchor, rustupHome, walkOpts)
 	if err != nil {
 		return -1, -1, managedIdentity{}, "", fmt.Errorf("rustup home: %v", err)
 	}
@@ -292,7 +313,7 @@ func (e *RustupExecutor) openRustupRoot(root string) (int, int, managedIdentity,
 	defaultToolchain := e.readDefaultToolchain(rustupFD)
 	// parentFD addresses the toolchains directory itself; toolchain leaves
 	// are unlinked relative to it.
-	parentFD, err := safety.OpenAnchoredDirFDFromFD(rustupFD, rustupHome, root)
+	parentFD, err := safety.OpenAnchoredDirFDWithOptions(rustupHome, root, walkOpts)
 	if err != nil {
 		return -1, -1, managedIdentity{}, "", fmt.Errorf("toolchains parent: %v", err)
 	}
@@ -306,10 +327,10 @@ func (e *RustupExecutor) openRustupRoot(root string) (int, int, managedIdentity,
 	if err != nil {
 		return -1, -1, managedIdentity{}, "", fmt.Errorf("toolchains identity: %v", err)
 	}
-	if opened.Mode != unix.S_IFDIR || opened.UID != e.TargetUID {
+	if !e.Policy.BypassAll && (opened.Mode != unix.S_IFDIR || opened.UID != e.TargetUID) {
 		return -1, -1, managedIdentity{}, "", fmt.Errorf("toolchains root ownership/type invalid")
 	}
-	if opened.Dev != homeIdentity.Dev || opened.MountID != homeIdentity.MountID {
+	if !walkOpts.AllowCrossFS && anchor != "/" && (opened.Dev != homeIdentity.Dev || opened.MountID != homeIdentity.MountID) {
 		return -1, -1, managedIdentity{}, "", safety.ErrCrossFS
 	}
 	rootFD, err := unix.Dup(parentFD)

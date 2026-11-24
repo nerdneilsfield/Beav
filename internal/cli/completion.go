@@ -13,6 +13,7 @@ func NewCompletionCmd(root *cobra.Command, tr *i18n.Translator) *cobra.Command {
 	}
 	return &cobra.Command{
 		Use:       "completion [bash|zsh|fish]",
+		GroupID:   "util",
 		Short:     tr.Text("Generate shell completion script", "生成 Shell 自动补全脚本"),
 		ValidArgs: []string{"bash", "zsh", "fish"},
 		Args:      cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),

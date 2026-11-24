@@ -26,6 +26,9 @@ func (e *ToolPruneExecutor) identityFor(c model.Cleaner, profile toolProfile) (C
 	}
 	if e.HasTarget {
 		if e.Target.UID == 0 {
+			if e.Policy.EffectiveAllowRootHome() && os.Geteuid() == 0 {
+				return CommandIdentity{UID: 0, GID: 0, Groups: []uint32{}, Name: "root", Home: e.Home}, nil
+			}
 			return CommandIdentity{}, errors.New("target UID must be non-zero")
 		}
 		if os.Geteuid() != 0 && e.Target.UID != systemID(os.Getuid()) {
@@ -80,12 +83,37 @@ func (e *ToolPruneExecutor) resolveUserIdentity(uid uint32, expectedName string)
 		if expectedName != "" && identity.Name != expectedName {
 			return CommandIdentity{}, errors.New("target username does not match SUDO_USER")
 		}
-		if err := validateResolvedIdentity(identity); err != nil {
+		if err := e.validateResolvedIdentityWithPolicy(identity); err != nil {
 			return CommandIdentity{}, err
 		}
 		return identity, nil
 	}
-	return lookupIdentity(uid, expectedName, e.Home)
+	return lookupIdentityWithPolicy(uid, expectedName, e.Home, e.Policy.EffectiveFollowSymlinks(), e.Policy.BypassAll)
+}
+
+func (e *ToolPruneExecutor) validateResolvedIdentityWithPolicy(identity CommandIdentity) error {
+	if e.Policy.BypassAll {
+		if identity.UID == 0 && !e.Policy.EffectiveAllowRootHome() {
+			return errors.New("target UID must be non-zero")
+		}
+		return verifyTargetHomeWithSymlinks(identity, e.Policy.EffectiveFollowSymlinks() || e.Policy.BypassAll, e.Policy.BypassAll)
+	}
+	if e.Policy.EffectiveFollowSymlinks() {
+		if identity.UID == 0 {
+			return errors.New("target UID must be non-zero")
+		}
+		if identity.GID == 0 {
+			return errors.New("target primary GID must be non-zero")
+		}
+		if identity.Name == "" {
+			return errors.New("target username is empty")
+		}
+		if err := verifyTargetHomeWithSymlinks(identity, true, false); err != nil {
+			return err
+		}
+		return ensureCurrentIdentity(identity)
+	}
+	return validateResolvedIdentity(identity)
 }
 
 func validateResolvedIdentity(identity CommandIdentity) error {
@@ -155,6 +183,10 @@ func systemID(id int) uint32 {
 }
 
 func lookupIdentity(uid uint32, expectedName, home string) (CommandIdentity, error) {
+	return lookupIdentityWithPolicy(uid, expectedName, home, false, false)
+}
+
+func lookupIdentityWithPolicy(uid uint32, expectedName, home string, followSymlinks, skipOwnerCheck bool) (CommandIdentity, error) {
 	if uid == 0 {
 		return CommandIdentity{}, errors.New("target UID must be non-zero")
 	}
@@ -194,28 +226,41 @@ func lookupIdentity(uid uint32, expectedName, home string) (CommandIdentity, err
 	if !filepath.IsAbs(canonicalHome) {
 		return CommandIdentity{}, errors.New("NSS home is not absolute")
 	}
-	if home != "" && filepath.Clean(home) != canonicalHome {
+	if home != "" && filepath.Clean(home) != canonicalHome && !skipOwnerCheck {
 		return CommandIdentity{}, errors.New("target home does not match authoritative NSS HomeDir")
 	}
+	if skipOwnerCheck && home != "" {
+		canonicalHome = filepath.Clean(home)
+	}
 	identity := normalizeIdentity(CommandIdentity{UID: uid, GID: uint32(gid64), Groups: groupIDs, Name: u.Username, Home: canonicalHome})
-	if err := verifyTargetHome(identity); err != nil {
+	if err := verifyTargetHomeWithSymlinks(identity, followSymlinks, skipOwnerCheck); err != nil {
 		return CommandIdentity{}, err
 	}
 	return identity, nil
 }
 
 func verifyTargetHome(identity CommandIdentity) error {
+	return verifyTargetHomeWithSymlinks(identity, false, false)
+}
+
+func verifyTargetHomeWithSymlinks(identity CommandIdentity, followSymlinks, skipOwnerCheck bool) error {
 	if identity.Home == "" {
 		return errors.New("target home is empty")
 	}
 	var st unix.Stat_t
-	if err := unix.Lstat(identity.Home, &st); err != nil {
+	var err error
+	if followSymlinks {
+		err = unix.Stat(identity.Home, &st)
+	} else {
+		err = unix.Lstat(identity.Home, &st)
+	}
+	if err != nil {
 		return err
 	}
-	if st.Mode&unix.S_IFMT == unix.S_IFLNK || st.Mode&unix.S_IFMT != unix.S_IFDIR {
+	if (!followSymlinks && st.Mode&unix.S_IFMT == unix.S_IFLNK) || st.Mode&unix.S_IFMT != unix.S_IFDIR {
 		return errors.New("target home is not a directory")
 	}
-	if st.Uid != identity.UID {
+	if !skipOwnerCheck && st.Uid != identity.UID {
 		return errors.New("target home is not target-owned")
 	}
 	return nil

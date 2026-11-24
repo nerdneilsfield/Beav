@@ -273,6 +273,8 @@ func (t *Translator) SkipPhrase(reason string) string {
 		return t.Text("target user identity unavailable", "无法确认目标用户身份")
 	case "profile_scope_mismatch":
 		return t.Text("cleaner scope does not match profile", "清理项作用域与规则不匹配")
+	case "command_disabled":
+		return t.Text("custom command cleaners disabled", "自定义命令清理项未启用")
 	default:
 		return strings.ReplaceAll(reason, "_", " ")
 	}
@@ -292,6 +294,8 @@ func (t *Translator) SkipRemedy(reason string) string {
 		return t.Text("use sudo beav clean --system for rootful daemon", "系统级守护进程请运行 sudo beav clean --system")
 	case string(model.SkipReasonAgeTooRecent):
 		return t.Text("lower --min-age to include newer files", "可调小 --min-age 以包含较新文件")
+	case "command_disabled":
+		return t.Text("set safety.allow_command_cleaners=true or pass --unsafe", "配置 safety.allow_command_cleaners=true 或加 --unsafe 启用")
 	default:
 		return ""
 	}

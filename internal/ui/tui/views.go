@@ -11,23 +11,48 @@ import (
 )
 
 func (m workbenchModel) View() string {
+	switch m.activeTab {
+	case tabAnalyze:
+		return m.renderFramedShell(m.renderHeaderBadge(), m.renderAnalyzeTab())
+	case tabHistory:
+		return m.renderFramedShell(m.renderHeaderBadge(), m.renderHistoryTab())
+	case tabConfig:
+		return m.renderFramedShell(m.renderHeaderBadge(), m.renderConfigTab())
+	}
+
 	switch m.phase {
 	case phaseScanning:
-		return m.renderScanningView()
+		return m.renderFramedShell(m.renderHeaderBadge(), m.renderScanningView())
 	case phaseReview:
 		if m.showHelp {
 			return m.renderHelpView()
 		}
-		return m.renderReviewView()
+		return m.renderFramedShell(m.renderHeaderBadge(), m.renderReviewView())
 	case phaseConfirm:
 		return m.renderConfirmView()
 	case phaseExecuting:
-		return m.renderExecutingView()
+		return m.renderFramedShell(styleBadgeExec.Render(m.tr.Text("CLEANING", "正在清理")), m.renderExecutingView())
 	case phaseDone:
-		return m.renderDoneView()
+		return m.renderFramedShell(styleBadgeDone.Render(m.tr.Text("DONE", "清理完成")), m.renderDoneView())
 	default:
 		return ""
 	}
+}
+
+func (m workbenchModel) renderHeaderBadge() string {
+	if m.policy.BypassAll {
+		return styleBadgeBypass.Render(m.tr.Text("BYPASS ALL", "全局绕过"))
+	}
+	if m.phase == phaseScanning {
+		return styleBadgeReadOnly.Render(m.tr.Text("READ-ONLY SCAN", "只读扫描"))
+	}
+	return styleBadgeReadOnly.Render(m.tr.Text("WORKBENCH", "清理工作台"))
+}
+
+func (m workbenchModel) renderFramedShell(badge, content string) string {
+	header := m.renderHeader(badge)
+	tabs := m.renderTabBar()
+	return lipgloss.NewStyle().Padding(0, 1).Render(header + "\n" + tabs + "\n" + content)
 }
 
 func (m workbenchModel) renderHeader(badge string) string {
@@ -35,14 +60,52 @@ func (m workbenchModel) renderHeader(badge string) string {
 	if m.scope.Home != "" && m.scope.Scope != model.ScopeSystem {
 		scopeDesc += " (" + m.scope.Home + ")"
 	}
-	title := styleTitle.Render("Beav") + "  " + badge + "  " + styleSubtle.Render(scopeDesc)
-	return title
+	if m.scope.IsRoot {
+		scopeDesc += " [root]"
+	}
+	ver := ""
+	if m.version != "" {
+		ver = " " + styleMuted.Render(m.version)
+	}
+	left := styleTitle.Render("Beav") + ver + "  " + badge + "  " + styleSubtle.Render(scopeDesc)
+
+	right := ""
+	if m.diskStat.valid && m.diskStat.total > 0 {
+		pct := float64(m.diskStat.used) * 100 / float64(m.diskStat.total)
+		right = styleSubtle.Render(m.tr.Textf("Disk: %s free (%.0f%% used)", "磁盘可用：%s（已用 %.0f%%）", humanize.Bytes(m.diskStat.avail), pct))
+	}
+	if right == "" {
+		return left
+	}
+	gap := m.width - 4 - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 2 {
+		return left
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+func (m workbenchModel) renderTabBar() string {
+	labels := []struct {
+		tab   activeTab
+		label string
+	}{
+		{tabClean, m.tr.Text("1 Clean", "1 清理")},
+		{tabAnalyze, m.tr.Text("2 Analyze", "2 磁盘分析")},
+		{tabHistory, m.tr.Text("3 History", "3 历史")},
+		{tabConfig, m.tr.Text("4 Safety & Config", "4 安全与配置")},
+	}
+	parts := make([]string, 0, len(labels))
+	for _, it := range labels {
+		if m.activeTab == it.tab {
+			parts = append(parts, styleTabActive.Render(it.label))
+		} else {
+			parts = append(parts, styleTabInactive.Render(it.label))
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func (m workbenchModel) renderScanningView() string {
-	badge := styleBadgeReadOnly.Render(m.tr.Text("READ-ONLY SCAN", "只读扫描"))
-	header := m.renderHeader(badge)
-
 	pct := 0
 	if m.scanTotal > 0 {
 		pct = m.scanCompleted * 100 / m.scanTotal
@@ -61,7 +124,7 @@ func (m workbenchModel) renderScanningView() string {
 	if filled > barWidth {
 		filled = barWidth
 	}
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+	bar := styleBar.Render(strings.Repeat("█", filled)) + styleMuted.Render(strings.Repeat("░", barWidth-filled))
 
 	cur := m.currentName
 	if m.currentID != "" {
@@ -76,7 +139,7 @@ func (m workbenchModel) renderScanningView() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(header + "\n\n")
+	b.WriteString("\n")
 	fmt.Fprintf(&b, "%s %s\n\n", m.spin.View(), m.tr.Text("Scanning caches without modifying any files...", "正在执行只读扫描，不会修改或删除任何文件..."))
 	fmt.Fprintf(&b, "[%s] %d/%d (%d%%)\n", bar, m.scanCompleted, m.scanTotal, pct)
 	b.WriteString(styleSubtle.Render(fitWidth(m.tr.Textf("Current: %s", "当前项目：%s", cur), maxInt(20, m.width-6))) + "\n\n")
@@ -90,13 +153,12 @@ func (m workbenchModel) renderScanningView() string {
 		b.WriteString(m.tr.Textf(" + %d native", " + %d 个原生命令", m.scanNativeCount))
 	}
 	b.WriteString("\n\n")
-	b.WriteString(styleMuted.Render(m.tr.Text("Press q or Esc to cancel scan.", "按 q 或 Esc 取消扫描。")))
+	b.WriteString(styleMuted.Render(m.tr.Text("Press q or Esc to cancel scan, or 2-4 to switch tabs.", "按 q 或 Esc 取消扫描，按 2-4 可切换其他功能页。")))
 
-	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
+	return lipgloss.NewStyle().Padding(1, 1).Render(b.String())
 }
 
-func (m workbenchModel) renderReviewView() string {
-	badge := styleBadgeReadOnly.Render(m.tr.Text("REVIEW PLAN", "清理清单"))
+func (m workbenchModel) renderReviewToolbar() string {
 	count, selBytes, selFiles, _, selNative := m.selectionTotals()
 	summary := m.tr.Textf("%d selected · %s (%s)",
 		"已选 %d 项 · %s（%s）",
@@ -107,8 +169,40 @@ func (m workbenchModel) renderReviewView() string {
 	if len(selNative) > 0 {
 		summary += m.tr.Textf(" + %d native", " + %d 个原生命令", len(selNative))
 	}
-	header := m.renderHeader(badge) + "\n" + styleSubtle.Render(summary)
 
+	sortLabel := map[cleanSortMode]string{
+		cleanSortSize:   m.tr.Text("size↓", "大小↓"),
+		cleanSortName:   m.tr.Text("name", "名称"),
+		cleanSortFiles:  m.tr.Text("files↓", "文件数↓"),
+		cleanSortImpact: m.tr.Text("impact", "影响"),
+	}[m.sortMode]
+
+	tagLabel := m.activeTagFilter()
+	if tagLabel == "" {
+		tagLabel = m.tr.Text("all", "全部")
+	}
+	ageLabel := m.minAgeOverride
+	if ageLabel == "" {
+		ageLabel = m.tr.Text("default", "默认")
+	}
+
+	bypassPill := stylePill.Render(m.tr.Text("b bypass:OFF", "b 绕过:关"))
+	if m.policy.BypassAll {
+		bypassPill = stylePillWarn.Render(m.tr.Text("b BYPASS:ON", "b 全局绕过:开"))
+	}
+
+	pills := strings.Join([]string{
+		stylePill.Render(m.tr.Text("o sort:", "o 排序:") + sortLabel),
+		stylePill.Render(m.tr.Text("t tag:", "t 标签:") + tagLabel),
+		stylePill.Render(m.tr.Text("m age:", "m 留存:") + ageLabel),
+		bypassPill,
+	}, " ")
+
+	return styleSubtle.Render(summary) + "   " + pills
+}
+
+func (m workbenchModel) renderReviewView() string {
+	toolbar := m.renderReviewToolbar()
 	notice := m.reviewNoticeLine()
 
 	var body string
@@ -122,8 +216,12 @@ func (m workbenchModel) renderReviewView() string {
 			rightW = 30
 		}
 		paneH := m.listViewportHeight() + 3
-		leftPane := styleFocusedPane.Width(leftW).Height(paneH).Render(m.renderListPane(leftW - 4))
-		rightPane := stylePane.Width(rightW).Height(paneH).Render(m.renderDetailPane(rightW-4, paneH-2))
+		leftStyle, rightStyle := styleFocusedPane, stylePane
+		if m.detailFocused {
+			leftStyle, rightStyle = stylePane, styleFocusedPane
+		}
+		leftPane := leftStyle.Width(leftW).Height(paneH).Render(m.renderListPane(leftW - 4))
+		rightPane := rightStyle.Width(rightW).Height(paneH).Render(m.renderDetailPane(rightW-4, paneH-2))
 		body = lipgloss.JoinHorizontal(lipgloss.Top, leftPane, " ", rightPane)
 	} else {
 		fullW := maxInt(36, m.width-2)
@@ -138,7 +236,7 @@ func (m workbenchModel) renderReviewView() string {
 	}
 
 	footer := m.renderReviewFooter()
-	parts := []string{header}
+	parts := []string{toolbar}
 	if notice != "" {
 		parts = append(parts, notice)
 	}
@@ -150,7 +248,7 @@ func (m workbenchModel) renderReviewView() string {
 		parts = append(parts, styleWarnText.Render(m.statusMsg))
 	}
 	parts = append(parts, body, footer)
-	return lipgloss.NewStyle().Padding(0, 1).Render(strings.Join(parts, "\n"))
+	return strings.Join(parts, "\n")
 }
 
 func (m workbenchModel) reviewNoticeLine() string {
@@ -183,10 +281,20 @@ func (m workbenchModel) reviewNoticeLine() string {
 	return styleWarnText.Render(fitWidth("! "+strings.Join(notes, "  |  "), maxInt(20, m.width-4)))
 }
 
+func (m workbenchModel) maxActionableBytes() int64 {
+	var maxB int64
+	for _, s := range m.scans {
+		if isActionableScan(s) && s.BytesCandidate > maxB {
+			maxB = s.BytesCandidate
+		}
+	}
+	return maxB
+}
+
 func (m workbenchModel) renderListPane(innerWidth int) string {
 	if len(m.rows) == 0 {
-		if m.filterInput.Value() != "" {
-			return styleMuted.Render(m.tr.Text("No cleaners match the current filter. Press Esc to clear.", "没有匹配当前筛选条件的清理项，按 Esc 清除筛选。"))
+		if m.filterInput.Value() != "" || m.activeTagFilter() != "" {
+			return styleMuted.Render(m.tr.Text("No cleaners match the current filter/tag. Press Esc or t to clear.", "没有匹配当前筛选条件的清理项，按 Esc 或 t 重置。"))
 		}
 		return styleMuted.Render(m.tr.Text("No cleaners found for this scope.", "当前作用域下没有可用的清理项。"))
 	}
@@ -196,6 +304,7 @@ func (m workbenchModel) renderListPane(innerWidth int) string {
 	if end > len(m.rows) {
 		end = len(m.rows)
 	}
+	maxBytes := m.maxActionableBytes()
 	var lines []string
 	for idx := m.listOffset; idx < end; idx++ {
 		r := m.rows[idx]
@@ -216,13 +325,13 @@ func (m workbenchModel) renderListPane(innerWidth int) string {
 			}
 		case rowItem:
 			s := m.scanByID[r.id]
-			lines = append(lines, m.renderItemRow(s, r.section, focused, innerWidth))
+			lines = append(lines, m.renderItemRow(s, r.section, focused, innerWidth, maxBytes))
 		}
 	}
 	return strings.Join(lines, "\n")
 }
 
-func (m workbenchModel) renderItemRow(s CleanerScan, section rowSection, focused bool, innerWidth int) string {
+func (m workbenchModel) renderItemRow(s CleanerScan, section rowSection, focused bool, innerWidth int, maxBytes int64) string {
 	pointer := "  "
 	if focused {
 		pointer = "> "
@@ -230,12 +339,12 @@ func (m workbenchModel) renderItemRow(s CleanerScan, section rowSection, focused
 
 	var check string
 	switch {
+	case m.selected[s.Cleaner.ID]:
+		check = styleBadgeSafe.Render("[x]")
 	case section == sectionSkipped && s.Status == "error":
 		check = styleDangerText.Render("[!]")
 	case section == sectionSkipped:
 		check = styleMuted.Render("[-]")
-	case m.selected[s.Cleaner.ID]:
-		check = styleBadgeSafe.Render("[x]")
 	default:
 		check = styleSubtle.Render("[ ]")
 	}
@@ -256,25 +365,32 @@ func (m workbenchModel) renderItemRow(s CleanerScan, section rowSection, focused
 		right = m.tr.Text("native", "原生命令")
 	}
 
+	bar := ""
+	if section != sectionSkipped && maxBytes > 0 && innerWidth >= 46 {
+		bar = " " + renderRatioBar(s.BytesCandidate, maxBytes, 5)
+	}
+
 	badge := ""
 	if s.Cleaner.EffectiveImpact() == model.ImpactHeavy && section != sectionSkipped {
 		badge = " " + styleBadgeHeavy.Render(m.tr.Text("[heavy]", "[重度]"))
+	} else if s.Cleaner.Type == model.TypeCommand {
+		badge = " " + styleWarnText.Render("[cmd]")
 	}
 
 	name := m.tr.CleanerName(s.Cleaner)
-	// Prefix cell width: pointer(2) + check(3) + space(1) = 6
-	reservedRight := lipgloss.Width(right) + lipgloss.Width(badge) + 2
+	reservedRight := lipgloss.Width(right) + lipgloss.Width(badge) + lipgloss.Width(bar) + 2
 	nameWidth := innerWidth - 6 - reservedRight
-	if nameWidth < 12 {
-		nameWidth = 12
+	if nameWidth < 10 {
+		nameWidth = 10
 	}
 	trimmedName := fitWidth(name, nameWidth)
 	leftPart := fmt.Sprintf("%s%s %s%s", pointer, check, trimmedName, badge)
-	gap := innerWidth - lipgloss.Width(leftPart) - lipgloss.Width(right)
+	rightPart := right + bar
+	gap := innerWidth - lipgloss.Width(leftPart) - lipgloss.Width(rightPart)
 	if gap < 1 {
 		gap = 1
 	}
-	line := leftPart + strings.Repeat(" ", gap) + styleSubtle.Render(right)
+	line := leftPart + strings.Repeat(" ", gap) + styleSubtle.Render(rightPart)
 	if focused {
 		return styleActiveRow.Width(innerWidth).Render(line)
 	}
@@ -298,6 +414,9 @@ func (m workbenchModel) renderDetailPane(innerWidth, maxLines int) string {
 	var lines []string
 	lines = append(lines, styleTitle.Render(fitWidth(m.tr.CleanerName(c), innerWidth)))
 	lines = append(lines, styleMuted.Render(fitWidth(fmt.Sprintf("ID: %s  |  %s%s", c.ID, m.tr.Text("Scope: ", "作用域："), m.tr.ScopeLabel(c.Scope)), innerWidth)))
+	if len(c.Tags) > 0 {
+		lines = append(lines, styleMuted.Render(fitWidth(m.tr.Text("Tags: ", "标签：")+strings.Join(c.Tags, ", "), innerWidth)))
+	}
 
 	if desc := m.tr.CleanerDesc(c); desc != "" {
 		lines = append(lines, "")
@@ -316,6 +435,10 @@ func (m workbenchModel) renderDetailPane(innerWidth, maxLines int) string {
 		ageText,
 		m.tr.ExecutorTypeLabel(c.Type),
 	), innerWidth))
+
+	if len(c.Paths) > 0 {
+		lines = append(lines, styleMuted.Render(fitWidth(m.tr.Text("Targets: ", "目标路径：")+strings.Join(c.Paths, ", "), innerWidth)))
+	}
 
 	if c.EffectiveImpact() == model.ImpactHeavy {
 		if note := m.tr.HeavyNote(c); note != "" {
@@ -338,7 +461,7 @@ func (m workbenchModel) renderDetailPane(innerWidth, maxLines int) string {
 			lines = append(lines, wrapText(m.tr.Text("Tip: ", "建议：")+remedy, innerWidth)...)
 		}
 		if s.SkipDetail != "" {
-			lines = append(lines, styleMuted.Render(fitWidth(s.SkipDetail, innerWidth)))
+			lines = append(lines, wrapText(s.SkipDetail, innerWidth)...)
 		}
 	}
 
@@ -367,7 +490,25 @@ func (m workbenchModel) renderDetailPane(innerWidth, maxLines int) string {
 	}
 
 	if maxLines > 0 && len(lines) > maxLines {
-		lines = lines[:maxLines]
+		start := m.detailScroll
+		maxStart := len(lines) - maxLines + 1
+		if start > maxStart {
+			start = maxStart
+		}
+		if start < 0 {
+			start = 0
+		}
+		end := start + maxLines - 1
+		if end > len(lines) {
+			end = len(lines)
+		}
+		visible := append([]string(nil), lines[start:end]...)
+		visible = append(visible, styleMuted.Render(m.tr.Textf(
+			"[scroll %d-%d/%d · J/K or Tab]",
+			"[滚动 %d-%d/%d · J/K 或 Tab]",
+			start+1, end, len(lines),
+		)))
+		return strings.Join(visible, "\n")
 	}
 	return strings.Join(lines, "\n")
 }
@@ -378,15 +519,15 @@ func (m workbenchModel) renderReviewFooter() string {
 		hints = m.tr.Text("Type to filter  |  Enter apply  |  Esc clear & cancel", "输入关键词搜索  |  Enter 应用  |  Esc 清除并退出")
 	} else {
 		hints = m.tr.Text(
-			"↑/↓ Move  Space Toggle  a All safe  s Show skipped  / Filter  r Rescan  Enter Clean  ? Help  q Quit",
-			"↑/↓ 移动  空格 勾选  a 全选常规  s 显示跳过  / 搜索  r 重扫  Enter 清理  ? 帮助  q 退出",
+			"Space Toggle  a Safe  A All+Heavy  s Skipped  o Sort  t Tag  m Age  b Bypass  / Search  Enter Clean  ? Help  q Quit",
+			"空格 勾选  a 常规  A 全选含重度  s 跳过项  o 排序  t 标签  m 留存天数  b 绕过  / 搜索  Enter 清理  ? 帮助  q 退出",
 		)
 	}
 	out := styleSubtle.Render(fitWidth(hints, maxInt(20, m.width-4)))
 	if !m.scope.IsRoot && m.scope.Scope == model.ScopeUser {
 		sysHint := m.tr.Text(
-			"Tip: system caches require `sudo beav --system`",
-			"提示：清理系统级缓存（apt、journal、Docker 等）请运行 `sudo beav --system`",
+			"Tip: 1-4 switch tabs (Clean / Analyze / History / Safety & Config) | system caches: `sudo beav --system`",
+			"提示：1-4 切换工作台标签（清理 / 磁盘分析 / 历史 / 安全与配置）| 系统缓存需 `sudo beav --system`",
 		)
 		out += "\n" + styleMuted.Render(fitWidth(sysHint, maxInt(20, m.width-4)))
 	}
@@ -402,6 +543,9 @@ func (m workbenchModel) renderConfirmView() string {
 	b.WriteString(m.tr.Textf("Estimated reclaimable: %s (%s)\n", "预计可释放：%s（%s）\n",
 		humanBytes(selBytes), m.tr.Plural(selFiles, "file", "files", "个文件")))
 
+	if m.policy.BypassAll {
+		b.WriteString("\n" + styleDangerText.Render(m.tr.Text("WARNING: Bypass All mode is active!", "警告：当前处于全局绕过（Bypass All）模式！")) + "\n")
+	}
 	if len(heavy) > 0 {
 		b.WriteString("\n" + styleWarnText.Render(m.tr.Text("Heavy cleaners manually selected:", "已手动勾选的重度清理项：")) + "\n")
 		for _, s := range heavy {
@@ -435,18 +579,15 @@ func (m workbenchModel) renderConfirmView() string {
 }
 
 func (m workbenchModel) renderExecutingView() string {
-	badge := styleBadgeExec.Render(m.tr.Text("CLEANING", "正在清理"))
-	header := m.renderHeader(badge)
-
 	var b strings.Builder
-	b.WriteString(header + "\n\n")
+	b.WriteString("\n")
 	fmt.Fprintf(&b, "%s %s (%d/%d)\n\n",
 		m.spin.View(),
 		m.tr.Text("Running selected cleaners...", "正在清理已选项目..."),
 		m.execCompleted, m.execTotal,
 	)
 
-	maxRows := maxInt(6, m.height-10)
+	maxRows := maxInt(6, m.height-12)
 	shown := 0
 	for _, id := range m.execOrder {
 		if shown >= maxRows {
@@ -476,15 +617,12 @@ func (m workbenchModel) renderExecutingView() string {
 		shown++
 	}
 
-	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
+	return lipgloss.NewStyle().Padding(0, 1).Render(b.String())
 }
 
 func (m workbenchModel) renderDoneView() string {
-	badge := styleBadgeDone.Render(m.tr.Text("DONE", "清理完成"))
-	header := m.renderHeader(badge)
-
 	var b strings.Builder
-	b.WriteString(header + "\n\n")
+	b.WriteString("\n")
 	if m.err != nil {
 		b.WriteString(styleDangerText.Render(m.tr.Textf("Completed with error: %v\n\n", "清理过程出错：%v\n\n", m.err)))
 	}
@@ -508,41 +646,45 @@ func (m workbenchModel) renderDoneView() string {
 		b.WriteString(styleMuted.Render(m.tr.Textf("Operation log: %s\n", "操作日志：%s\n", m.execSummary.LogPath)))
 	}
 
-	b.WriteString("\n" + styleSubtle.Render(m.tr.Text("Press r to rescan, or q / Enter to exit.", "按 r 重新扫描，按 q 或 Enter 退出。")))
-	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
+	b.WriteString("\n" + styleSubtle.Render(m.tr.Text("Press r to rescan, 3 for history, or q / Enter to exit.", "按 r 重新扫描，按 3 查看历史记录，按 q 或 Enter 退出。")))
+	return lipgloss.NewStyle().Padding(0, 1).Render(b.String())
 }
 
 func (m workbenchModel) renderHelpView() string {
 	var b strings.Builder
-	b.WriteString(styleTitle.Render(m.tr.Text("Beav TUI Help", "Beav 交互操作说明")) + "\n\n")
+	b.WriteString(styleTitle.Render(m.tr.Text("Beav TUI Workbench Help", "Beav 交互工作台操作说明")) + "\n\n")
 	b.WriteString(m.tr.Text(
-		"Navigation & Selection:\n"+
+		"Tabs & Navigation:\n"+
+			"  1 / 2 / 3 / 4        Switch tabs (Clean / Analyze / History / Safety & Config)\n"+
+			"  [ / ]                Previous / next tab\n"+
 			"  ↑/↓, j/k, PgUp/PgDn  Move cursor\n"+
+			"  Tab / J / K          Focus / scroll right detail pane\n"+
 			"  Space                Toggle current cleaner (or expand skipped group)\n"+
-			"  a                    Select / deselect all safe cleaners (never selects heavy)\n"+
+			"  a / A                Toggle safe cleaners / Toggle ALL including heavy\n"+
+			"  o / t / m            Cycle sort order / tag filter / min-age preset\n"+
+			"  b                    Toggle Bypass All mode and rescan\n"+
 			"  s                    Show / hide skipped and empty cleaners\n"+
 			"  /                    Search by name, ID, or tag (Esc clears)\n"+
 			"  r                    Re-run read-only scan\n"+
 			"  Enter / c            Proceed to confirmation dialog\n"+
-			"  q / Ctrl+C           Quit without deleting\n\n"+
-			"Labels:\n"+
-			"  [heavy]  Large reusable caches or tool versions; never selected automatically.\n"+
-			"  native   Runs the tool's own cleanup command; byte total may not be measurable beforehand.\n",
-		"操作快捷键：\n"+
+			"  q / Ctrl+C           Quit without deleting\n",
+		"标签页与操作快捷键：\n"+
+			"  1 / 2 / 3 / 4        切换视图（清理 / 磁盘分析 / 历史 / 安全与配置）\n"+
+			"  [ / ]                上一个 / 下一个标签页\n"+
 			"  ↑/↓、j/k、PgUp/PgDn  移动光标\n"+
+			"  Tab / J / K          切换焦点或滚动右侧详情面板\n"+
 			"  空格 / Space         勾选或取消当前清理项（在折叠行上展开跳过项）\n"+
-			"  a                    全选/取消全选常规项（绝不会自动勾选重度项）\n"+
+			"  a / A                全选常规项 / 全选全部项（包含重度项）\n"+
+			"  o / t / m            切换排序方式 / 标签筛选 / 留存天数预设\n"+
+			"  b                    一键切换全局绕过（Bypass All）并重扫\n"+
 			"  s                    显示/隐藏已跳过与无需清理的项目\n"+
 			"  /                    按名称、ID 或标签搜索（Esc 清除筛选）\n"+
 			"  r                    重新执行只读扫描\n"+
 			"  Enter / c            进入最终删除确认界面\n"+
-			"  q / Ctrl+C           退出且不删除任何文件\n\n"+
-			"标记说明：\n"+
-			"  [重度]    体积较大的可重建数据或旧版工具链，默认不勾选，需手动确认。\n"+
-			"  原生命令  调用工具自带清理命令（如 uv、apt、docker），执行前无法估算可释放空间。\n",
+			"  q / Ctrl+C           退出且不删除任何文件\n",
 	))
 	b.WriteString("\n" + styleMuted.Render(m.tr.Text("Press ?, Esc, or Enter to close help.", "按 ?、Esc 或 Enter 关闭帮助。")))
-	modal := styleHelpModal.MaxWidth(maxInt(50, m.width-6)).Render(b.String())
+	modal := styleHelpModal.MaxWidth(maxInt(54, m.width-6)).Render(b.String())
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 }
 

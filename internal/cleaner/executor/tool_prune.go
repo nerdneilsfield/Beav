@@ -71,11 +71,20 @@ func WithToolTimeout(timeout time.Duration) ToolPruneOption {
 	}
 }
 
+// WithToolPolicy configures the safety Policy for ToolPruneExecutor.
+// WithToolPolicy 为 ToolPruneExecutor 配置安全策略。
+func WithToolPolicy(policy safety.Policy) ToolPruneOption {
+	return func(e *ToolPruneExecutor) {
+		e.Policy = policy
+	}
+}
+
 // ToolPruneExecutor runs only closed, built-in tool profiles.
 // ToolPruneExecutor 仅运行闭合集成 tool profile。
 type ToolPruneExecutor struct {
 	Home       string
 	Whitelist  *safety.Whitelist
+	Policy     safety.Policy
 	SearchPath []string
 	Target     CommandIdentity
 	HasTarget  bool
@@ -162,7 +171,7 @@ func (e *ToolPruneExecutor) Run(ctx context.Context, c model.Cleaner, dryRun boo
 	for _, checkedRoot := range checkedRoots {
 		roots = append(roots, checkedRoot.path)
 	}
-	if profile.Busy != nil {
+	if profile.Busy != nil && !e.Policy.EffectiveIgnoreRunning() {
 		for _, root := range roots {
 			busy, busyErr := profile.Busy(root, e.procRoot)
 			if busy || busyErr != nil {
@@ -182,7 +191,7 @@ func (e *ToolPruneExecutor) Run(ctx context.Context, c model.Cleaner, dryRun boo
 	if err != nil {
 		return e.finishToolSkip(emit, c, start, string(model.SkipReasonManagerNotInstalled), err.Error())
 	}
-	binaryState, err := snapshotPath(binary)
+	binaryState, err := e.snapshotBinary(binary)
 	if err != nil {
 		return e.finishToolSkip(emit, c, start, string(model.SkipReasonManagerNotInstalled), err.Error())
 	}
@@ -196,15 +205,17 @@ func (e *ToolPruneExecutor) Run(ctx context.Context, c model.Cleaner, dryRun boo
 	if err := e.validateToolState(profile, checkedRoots, binary, binaryState); err != nil {
 		return e.finishToolSkip(emit, c, start, "safety_changed", err.Error())
 	}
-	if err := e.probe(ctx, binary, profile, identity, commandIdentity, env, dryRun); err != nil {
-		reason := "capability_unsupported"
-		if errors.Is(err, errVersionMismatch) {
-			reason = "version_mismatch"
+	if !e.Policy.BypassAll {
+		if err := e.probe(ctx, binary, profile, identity, commandIdentity, env, dryRun); err != nil {
+			reason := "capability_unsupported"
+			if errors.Is(err, errVersionMismatch) {
+				reason = "version_mismatch"
+			}
+			return e.finishToolSkip(emit, c, start, reason, err.Error())
 		}
-		return e.finishToolSkip(emit, c, start, reason, err.Error())
-	}
-	if err := e.validateToolState(profile, checkedRoots, binary, binaryState); err != nil {
-		return e.finishToolSkip(emit, c, start, "safety_changed", err.Error())
+		if err := e.validateToolState(profile, checkedRoots, binary, binaryState); err != nil {
+			return e.finishToolSkip(emit, c, start, "safety_changed", err.Error())
+		}
 	}
 	args := profile.BuildArgs(roots[0], c.AgeOrDefault(14), dryRun)
 	var errs int

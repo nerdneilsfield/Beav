@@ -122,6 +122,9 @@ func openDescriptorsMatchForUID(procRoot string, identities []FileIdentity, excl
 		processRoot := filepath.Join(procRoot, process.Name())
 		inspect, err := ShouldInspectProcessFDs(processRoot, effectiveUID)
 		if err != nil {
+			if isTransientProcErr(err) {
+				continue
+			}
 			return false, err
 		}
 		if !inspect {
@@ -130,6 +133,9 @@ func openDescriptorsMatchForUID(procRoot string, identities []FileIdentity, excl
 		fdRoot := filepath.Join(processRoot, "fd")
 		fds, err := os.ReadDir(fdRoot)
 		if err != nil {
+			if isTransientProcErr(err) {
+				continue
+			}
 			return false, err
 		}
 		for _, fd := range fds {
@@ -179,6 +185,10 @@ func statProcFD(path string) (FileIdentity, error) {
 		return FileIdentity{}, err
 	}
 	return FileIdentity{Dev: uint64(st.Dev), Ino: uint64(st.Ino)}, nil
+}
+
+func isTransientProcErr(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH)
 }
 
 // AnyProcessRunning checks if any process with the given names is currently running.

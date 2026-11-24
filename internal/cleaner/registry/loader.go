@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/dengqi/beav/internal/cleaner/model"
+	"github.com/dengqi/beav/internal/cleaner/safety"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,21 +23,27 @@ func LoadBuiltin(root fs.FS) ([]Loaded, error) {
 }
 
 func LoadUserDir(dir string) ([]Loaded, error) {
+	return LoadUserDirWithPolicy(dir, safety.DefaultPolicy())
+}
+
+// LoadUserDirWithPolicy loads user cleaner YAML files from dir under the given safety Policy.
+// LoadUserDirWithPolicy 根据给定安全策略从目录加载用户自定义清理器 YAML 文件。
+func LoadUserDirWithPolicy(dir string, policy safety.Policy) ([]Loaded, error) {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
 	}
-	return loadFSWithReservedIDs(os.DirFS(dir), ".", true)
+	return loadFSWithPolicy(os.DirFS(dir), ".", !policy.BypassAll, policy)
 }
 
 // loadFS walks the filesystem and parses YAML files into Loaded cleaner definitions.
 // loadFS 遍历文件系统并将 YAML 文件解析为 Loaded 清理器定义。
 func loadFS(root fs.FS, base string) ([]Loaded, error) {
-	return loadFSWithReservedIDs(root, base, false)
+	return loadFSWithPolicy(root, base, false, safety.DefaultPolicy())
 }
 
-func loadFSWithReservedIDs(root fs.FS, base string, rejectReservedIDs bool) ([]Loaded, error) {
+func loadFSWithPolicy(root fs.FS, base string, rejectReservedIDs bool, policy safety.Policy) ([]Loaded, error) {
 	var out []Loaded
 	err := fs.WalkDir(root, base, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -65,7 +72,7 @@ func loadFSWithReservedIDs(root fs.FS, base string, rejectReservedIDs bool) ([]L
 					if err := rejectReservedCleanerID(c.ID, p, rejectReservedIDs); err != nil {
 						return err
 					}
-					if err := normalizeAndValidate(&c); err != nil {
+					if err := normalizeAndValidateWithPolicy(&c, policy); err != nil {
 						return fmt.Errorf("%s: %w", p, err)
 					}
 					out = append(out, Loaded{From: p, Cleaner: c})
@@ -84,7 +91,7 @@ func loadFSWithReservedIDs(root fs.FS, base string, rejectReservedIDs bool) ([]L
 		if err := rejectReservedCleanerID(c.ID, p, rejectReservedIDs); err != nil {
 			return err
 		}
-		if err := normalizeAndValidate(&c); err != nil {
+		if err := normalizeAndValidateWithPolicy(&c, policy); err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
 		out = append(out, Loaded{From: p, Cleaner: c})
@@ -188,6 +195,10 @@ func decodeYAML(data []byte, out any) error {
 // fields before a cleaner can enter the registry. Mutable user override files
 // may contain only an ID plus override fields; those are validated after merge.
 func normalizeAndValidate(c *model.Cleaner) error {
+	return normalizeAndValidateWithPolicy(c, safety.DefaultPolicy())
+}
+
+func normalizeAndValidateWithPolicy(c *model.Cleaner, policy safety.Policy) error {
 	if c.Impact == "" {
 		c.Impact = model.ImpactSafe
 	}
@@ -206,5 +217,5 @@ func normalizeAndValidate(c *model.Cleaner) error {
 		}
 		return nil
 	}
-	return Validate(*c)
+	return ValidateWithPolicy(*c, policy)
 }

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,10 +9,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/dengqi/beav/cleaners"
+	"github.com/dengqi/beav/internal/cleaner/model"
 	"github.com/dengqi/beav/internal/cleaner/registry"
+	"github.com/dengqi/beav/internal/cleaner/safety"
 	"github.com/dengqi/beav/internal/config"
 	"github.com/dengqi/beav/internal/i18n"
 	"github.com/spf13/cobra"
@@ -26,14 +30,16 @@ func NewConfigCmd(tr *i18n.Translator) *cobra.Command {
 	var dir string
 	var force bool
 	var showJSON bool
+	var resetYes bool
 
 	cmd := &cobra.Command{
-		Use:   "config",
-		Short: tr.Text("Inspect or manage beav configuration and whitelist", "查看或管理 beav 配置文件与白名单"),
+		Use:     "config",
+		GroupID: "util",
+		Short:   tr.Text("Inspect or manage beav configuration, safety policy, and whitelist", "查看或管理 beav 配置文件、安全策略与白名单"),
 		Long: tr.Text(
-			"Manage ~/.config/beav/config.yaml, per-cleaner enable/disable overrides, and protected whitelist paths.\n"+
+			"Manage ~/.config/beav/config.yaml, safety policy overrides, per-cleaner enable/disable rules, and protected whitelist paths.\n"+
 				"To browse all available cleaners and IDs, use `beav list` or `beav info <id>`.",
-			"管理 ~/.config/beav/config.yaml 配置、单个清理项的启用/禁用规则及白名单保护路径。\n"+
+			"管理 ~/.config/beav/config.yaml 配置、安全边界策略、单个清理项的启用/禁用规则及白名单保护路径。\n"+
 				"若要浏览全部清理项及其 ID，请使用 `beav list` 或 `beav info <ID>`。",
 		),
 	}
@@ -165,7 +171,37 @@ func NewConfigCmd(tr *i18n.Translator) *cobra.Command {
 	}
 	whitelistCmd.AddCommand(wlAdd, wlRemove)
 
-	cmd.AddCommand(initCmd, show, edit, enable, disable, whitelistCmd)
+	pathCmd := &cobra.Command{
+		Use:   "path",
+		Short: tr.Text("Print resolved config, cleaners.d, whitelist, and log paths", "显示配置目录、自定义规则、白名单与日志文件路径"),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			localTr := translatorForCommand(cmd, tr)
+			return runConfigPath(resolveConfigDir(dir), cmd.OutOrStdout(), localTr)
+		},
+	}
+
+	validateCmd := &cobra.Command{
+		Use:   "validate",
+		Short: tr.Text("Validate config.yaml, whitelist, and custom cleaners", "校验 config.yaml、白名单及自定义清理项定义"),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			localTr := translatorForCommand(cmd, tr)
+			return runConfigValidate(resolveConfigDir(dir), cmd.OutOrStdout(), localTr)
+		},
+	}
+
+	resetCmd := &cobra.Command{
+		Use:   "reset",
+		Short: tr.Text("Reset config.yaml back to starter defaults", "将 config.yaml 重置为默认初始配置"),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			localTr := translatorForCommand(cmd, tr)
+			return runConfigReset(resolveConfigDir(dir), resetYes, os.Stdin, cmd.OutOrStdout(), localTr)
+		},
+	}
+	resetCmd.Flags().BoolVarP(&resetYes, "yes", "y", false, tr.Text("overwrite without confirmation", "跳过确认直接重置"))
+
+	safetyCmd := newConfigSafetyCmd(&dir, tr)
+
+	cmd.AddCommand(initCmd, show, edit, pathCmd, validateCmd, resetCmd, enable, disable, whitelistCmd, safetyCmd)
 	return cmd
 }
 
@@ -230,7 +266,22 @@ func writeDefaultConfig(path string, force bool, tr *i18n.Translator) error {
 			"#     enabled: false\n\n"+
 			"# Paths never touched by any cleaner (or manage via `beav config whitelist add <path>`):\n"+
 			"# whitelist:\n"+
-			"#   - ~/.cache/keep-this\n",
+			"#   - ~/.cache/keep-this\n\n"+
+			"# Configurable safety policy (all restrictions can be customized or bypassed):\n"+
+			"# safety:\n"+
+			"#   bypass_all: false\n"+
+			"#   allow_list: []\n"+
+			"#   replace_allow_list: false\n"+
+			"#   disable_allow_list: false\n"+
+			"#   blacklist: []\n"+
+			"#   replace_blacklist: false\n"+
+			"#   disable_blacklist: false\n"+
+			"#   ignore_running_processes: false\n"+
+			"#   bypass_age_floor: false\n"+
+			"#   follow_symlinks: false\n"+
+			"#   allow_cross_fs: false\n"+
+			"#   allow_root_home: false\n"+
+			"#   allow_command_cleaners: false\n",
 		"# Beav 配置文件\n"+
 			"# 优先级：命令行参数 > 本配置文件 > 清理项内置默认值。\n"+
 			"defaults:\n"+
@@ -244,7 +295,22 @@ func writeDefaultConfig(path string, force bool, tr *i18n.Translator) error {
 			"#     enabled: false\n\n"+
 			"# 白名单保护路径（也可通过 `beav config whitelist add <路径>` 管理）：\n"+
 			"# whitelist:\n"+
-			"#   - ~/.cache/keep-this\n",
+			"#   - ~/.cache/keep-this\n\n"+
+			"# 可配置安全策略（所有限制均可自定义或绕过）：\n"+
+			"# safety:\n"+
+			"#   bypass_all: false\n"+
+			"#   allow_list: []\n"+
+			"#   replace_allow_list: false\n"+
+			"#   disable_allow_list: false\n"+
+			"#   blacklist: []\n"+
+			"#   replace_blacklist: false\n"+
+			"#   disable_blacklist: false\n"+
+			"#   ignore_running_processes: false\n"+
+			"#   bypass_age_floor: false\n"+
+			"#   follow_symlinks: false\n"+
+			"#   allow_cross_fs: false\n"+
+			"#   allow_root_home: false\n"+
+			"#   allow_command_cleaners: false\n",
 	))
 	return err
 }
@@ -461,12 +527,299 @@ func runConfigSetEnabled(cfgDir, id string, enabled bool, stdout io.Writer, tr *
 	return nil
 }
 
-// resolveConfigDir returns the config directory, using the override if provided.
-// resolveConfigDir 返回配置目录，如果提供了覆盖则使用覆盖值。
+// resolveConfigDir returns the config directory, using the override or BEAV_CONFIG_DIR if provided.
+// resolveConfigDir 返回配置目录，优先使用显式参数或环境变量 BEAV_CONFIG_DIR。
 func resolveConfigDir(dir string) string {
 	if dir != "" {
 		return dir
 	}
+	if envDir := strings.TrimSpace(os.Getenv("BEAV_CONFIG_DIR")); envDir != "" {
+		return envDir
+	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "beav")
+}
+
+func runConfigPath(cfgDir string, out io.Writer, tr *i18n.Translator) error {
+	home, _ := os.UserHomeDir()
+	opLog := operationLogPath(home, os.Geteuid())
+	fmt.Fprintf(out, "%s %s\n", padLabel(tr.Text("Config dir:", "配置目录："), 16), cfgDir)
+	fmt.Fprintf(out, "%s %s\n", padLabel(tr.Text("Config file:", "配置文件："), 16), filepath.Join(cfgDir, "config.yaml"))
+	fmt.Fprintf(out, "%s %s\n", padLabel(tr.Text("Cleaners dir:", "自定义目录："), 16), filepath.Join(cfgDir, "cleaners.d"))
+	fmt.Fprintf(out, "%s %s\n", padLabel(tr.Text("Whitelist file:", "白名单文件："), 16), filepath.Join(cfgDir, "whitelist.txt"))
+	if opLog != "" {
+		fmt.Fprintf(out, "%s %s\n", padLabel(tr.Text("Operation log:", "操作日志："), 16), opLog)
+	}
+	return nil
+}
+
+func runConfigValidate(cfgDir string, out io.Writer, tr *i18n.Translator) error {
+	home, _ := os.UserHomeDir()
+	cfg, err := config.LoadWithHome(cfgDir, home)
+	if err != nil {
+		return ExitError{code: 2, err: err}
+	}
+	policy := cfg.Safety.ToPolicy()
+	builtin, err := registry.LoadBuiltin(cleaners.Builtin)
+	if err != nil {
+		return ExitError{code: 2, err: err}
+	}
+	user, err := registry.LoadUserDirWithPolicy(cfg.CleanersDir(), policy)
+	if err != nil {
+		return ExitError{code: 2, err: err}
+	}
+	merged, err := registry.MergeByIDWithPolicy(builtin, user, policy)
+	if err != nil {
+		return ExitError{code: 2, err: err}
+	}
+	for _, c := range merged {
+		if c.Scope == model.ScopeUser {
+			if err := registry.ValidatePathsWithPolicy(c, home, policy); err != nil {
+				return ExitError{code: 2, err: err}
+			}
+		} else {
+			if err := registry.ValidatePathsWithPolicy(c, "", policy); err != nil {
+				return ExitError{code: 2, err: err}
+			}
+		}
+	}
+	fmt.Fprintf(out, "%s\n", tr.Textf(
+		"Configuration is valid (%s, %s).",
+		"配置校验通过（%s，%s）。",
+		tr.Plural(int64(len(user)), "custom cleaner", "custom cleaners", "个自定义清理项"),
+		tr.Plural(int64(len(merged)), "total cleaner", "total cleaners", "个总清理项"),
+	))
+	return nil
+}
+
+func runConfigReset(cfgDir string, yes bool, stdin io.Reader, out io.Writer, tr *i18n.Translator) error {
+	path := filepath.Join(cfgDir, "config.yaml")
+	if !yes {
+		if _, err := os.Stat(path); err == nil {
+			fmt.Fprintf(out, "%s", tr.Textf("Overwrite %s with default configuration? [y/N] ", "确认将 %s 重置为默认配置？[y/N] ", path))
+			line, readErr := bufio.NewReader(stdin).ReadString('\n')
+			if readErr != nil && line == "" {
+				return nil
+			}
+			ans := strings.ToLower(strings.TrimSpace(line))
+			if ans != "y" && ans != "yes" {
+				fmt.Fprintln(out, tr.Text("Canceled.", "已取消。"))
+				return nil
+			}
+		}
+	}
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		return err
+	}
+	if err := writeDefaultConfig(path, true, tr); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s\n", tr.Textf("Reset config file at %s", "已重置配置文件：%s", path))
+	return nil
+}
+
+func newConfigSafetyCmd(dir *string, tr *i18n.Translator) *cobra.Command {
+	safetyCmd := &cobra.Command{
+		Use:   "safety",
+		Short: tr.Text("Inspect or configure safety boundaries and bypass rules", "查看或配置安全边界与绕过规则"),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			localTr := translatorForCommand(cmd, tr)
+			return runConfigSafetyShow(resolveConfigDir(*dir), cmd.OutOrStdout(), localTr)
+		},
+	}
+
+	showCmd := &cobra.Command{
+		Use:   "show",
+		Short: tr.Text("Show current safety policy and allow/blacklist entries", "显示当前安全策略与允许/黑名单规则"),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			localTr := translatorForCommand(cmd, tr)
+			return runConfigSafetyShow(resolveConfigDir(*dir), cmd.OutOrStdout(), localTr)
+		},
+	}
+
+	setCmd := &cobra.Command{
+		Use:   "set <key> <true|false>",
+		Short: tr.Text("Set a boolean safety policy key in config.yaml", "在 config.yaml 中设置安全策略布尔开关"),
+		Long: tr.Text(
+			"Valid keys: bypass_all, replace_allow_list, disable_allow_list, replace_blacklist,\n"+
+				"disable_blacklist, ignore_running_processes, bypass_age_floor, follow_symlinks,\n"+
+				"allow_cross_fs, allow_root_home, allow_command_cleaners",
+			"可用键名：bypass_all、replace_allow_list、disable_allow_list、replace_blacklist、\n"+
+				"disable_blacklist、ignore_running_processes、bypass_age_floor、follow_symlinks、\n"+
+				"allow_cross_fs、allow_root_home、allow_command_cleaners",
+		),
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			localTr := translatorForCommand(cmd, tr)
+			val, err := strconv.ParseBool(args[1])
+			if err != nil {
+				return ExitError{code: 1, err: fmt.Errorf("%s", localTr.Textf("invalid boolean %q (use true or false)", "无效的布尔值 %q（请传入 true 或 false）", args[1]))}
+			}
+			return runConfigSafetySet(resolveConfigDir(*dir), args[0], val, cmd.OutOrStdout(), localTr)
+		},
+	}
+
+	allowAdd := &cobra.Command{
+		Use:   "allow-add <path>",
+		Short: tr.Text("Add a path prefix to safety.allow_list", "向 safety.allow_list 添加允许清理路径前缀"),
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			localTr := translatorForCommand(cmd, tr)
+			return runConfigSafetyListEdit(resolveConfigDir(*dir), true, true, args[0], cmd.OutOrStdout(), localTr)
+		},
+	}
+	allowRemove := &cobra.Command{
+		Use:   "allow-remove <path>",
+		Short: tr.Text("Remove a path prefix from safety.allow_list", "从 safety.allow_list 移除允许路径前缀"),
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			localTr := translatorForCommand(cmd, tr)
+			return runConfigSafetyListEdit(resolveConfigDir(*dir), true, false, args[0], cmd.OutOrStdout(), localTr)
+		},
+	}
+	denyAdd := &cobra.Command{
+		Use:   "deny-add <path>",
+		Short: tr.Text("Add a path prefix to safety.blacklist", "向 safety.blacklist 添加保护黑名单前缀"),
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			localTr := translatorForCommand(cmd, tr)
+			return runConfigSafetyListEdit(resolveConfigDir(*dir), false, true, args[0], cmd.OutOrStdout(), localTr)
+		},
+	}
+	denyRemove := &cobra.Command{
+		Use:   "deny-remove <path>",
+		Short: tr.Text("Remove a path prefix from safety.blacklist", "从 safety.blacklist 移除黑名单前缀"),
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			localTr := translatorForCommand(cmd, tr)
+			return runConfigSafetyListEdit(resolveConfigDir(*dir), false, false, args[0], cmd.OutOrStdout(), localTr)
+		},
+	}
+
+	safetyCmd.AddCommand(showCmd, setCmd, allowAdd, allowRemove, denyAdd, denyRemove)
+	return safetyCmd
+}
+
+func runConfigSafetyShow(cfgDir string, out io.Writer, tr *i18n.Translator) error {
+	cfg, err := config.Load(cfgDir)
+	if err != nil {
+		return ExitError{code: 2, err: err}
+	}
+	s := cfg.Safety
+	rows := [][]string{
+		{"bypass_all", strconv.FormatBool(s.BypassAll), tr.Text("bypass all optional restrictions", "绕过全部可配置安全限制")},
+		{"disable_allow_list", strconv.FormatBool(s.DisableAllowList), tr.Text("disable allow-list boundary check", "关闭允许路径边界检查")},
+		{"replace_allow_list", strconv.FormatBool(s.ReplaceAllowList), tr.Text("use only custom allow_list", "仅使用自定义 allow_list")},
+		{"disable_blacklist", strconv.FormatBool(s.DisableBlacklist), tr.Text("disable blacklist protection (except /)", "关闭黑名单保护（仍保护 /）")},
+		{"replace_blacklist", strconv.FormatBool(s.ReplaceBlacklist), tr.Text("use only custom blacklist", "仅使用自定义 blacklist")},
+		{"ignore_running_processes", strconv.FormatBool(s.IgnoreRunningProcesses), tr.Text("ignore running app and busy checks", "忽略运行中进程与缓存占用检查")},
+		{"bypass_age_floor", strconv.FormatBool(s.BypassAgeFloor), tr.Text("allow 0d age on managed/debris/rustup", "允许 0 天清理托管/杂项/rustup 缓存")},
+		{"follow_symlinks", strconv.FormatBool(s.FollowSymlinks), tr.Text("follow symbolic links and link binaries", "允许遍历符号链接与链接二进制")},
+		{"allow_cross_fs", strconv.FormatBool(s.AllowCrossFS), tr.Text("allow crossing filesystem boundaries", "允许跨文件系统或挂载点边界")},
+		{"allow_root_home", strconv.FormatBool(s.AllowRootHome), tr.Text("allow cleaning /root when running as root", "允许以 root 身份清理 /root")},
+		{"allow_command_cleaners", strconv.FormatBool(s.AllowCommandCleaners), tr.Text("allow type: command custom cleaners", "允许执行自定义 type: command 清理器")},
+	}
+	writeAlignedTable(out, []string{tr.Text("SETTING", "配置项"), tr.Text("VALUE", "当前值"), tr.Text("DESCRIPTION", "说明")}, rows)
+
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "%s %v\n", tr.Text("Custom allow_list:", "自定义允许路径："), s.AllowList)
+	fmt.Fprintf(out, "%s %v\n", tr.Text("Default system allow_list:", "默认系统允许路径："), safety.DefaultAllowRoots())
+	fmt.Fprintf(out, "%s %v\n", tr.Text("Custom blacklist:", "自定义黑名单："), s.Blacklist)
+	return nil
+}
+
+func runConfigSafetySet(cfgDir, key string, val bool, out io.Writer, tr *i18n.Translator) error {
+	cfg, err := config.Load(cfgDir)
+	if err != nil {
+		return ExitError{code: 2, err: err}
+	}
+	if !SetSafetyFlag(&cfg.Safety, key, val) {
+		return ExitError{code: 1, err: fmt.Errorf("%s", tr.Textf("unknown safety setting %q", "未知的安全配置项 %q", key))}
+	}
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s\n", tr.Textf("safety.%s = %v", "safety.%s 已设为 %v", key, val))
+	return nil
+}
+
+// SetSafetyFlag updates a named boolean field in config.SafetyConfig.
+// SetSafetyFlag 按名称更新 config.SafetyConfig 中的布尔配置项。
+func SetSafetyFlag(s *config.SafetyConfig, key string, val bool) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "bypass_all":
+		s.BypassAll = val
+	case "replace_allow_list":
+		s.ReplaceAllowList = val
+	case "disable_allow_list":
+		s.DisableAllowList = val
+	case "replace_blacklist":
+		s.ReplaceBlacklist = val
+	case "disable_blacklist":
+		s.DisableBlacklist = val
+	case "ignore_running_processes":
+		s.IgnoreRunningProcesses = val
+	case "bypass_age_floor":
+		s.BypassAgeFloor = val
+	case "follow_symlinks":
+		s.FollowSymlinks = val
+	case "allow_cross_fs":
+		s.AllowCrossFS = val
+	case "allow_root_home":
+		s.AllowRootHome = val
+	case "allow_command_cleaners":
+		s.AllowCommandCleaners = val
+	default:
+		return false
+	}
+	return true
+}
+
+func runConfigSafetyListEdit(cfgDir string, isAllow, add bool, rawPath string, out io.Writer, tr *i18n.Translator) error {
+	p := strings.TrimSpace(rawPath)
+	if p == "" {
+		return ExitError{code: 1, err: fmt.Errorf("%s", tr.Text("path cannot be empty", "路径不能为空"))}
+	}
+	cfg, err := config.Load(cfgDir)
+	if err != nil {
+		return ExitError{code: 2, err: err}
+	}
+	list := &cfg.Safety.Blacklist
+	name := "blacklist"
+	if isAllow {
+		list = &cfg.Safety.AllowList
+		name = "allow_list"
+	}
+	if add {
+		for _, item := range *list {
+			if item == p {
+				fmt.Fprintf(out, "%s\n", tr.Textf("%q is already in safety.%s", "%q 已存在于 safety.%s 中", p, name))
+				return nil
+			}
+		}
+		*list = append(*list, p)
+		if err := cfg.Save(); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "%s\n", tr.Textf("Added %q to safety.%s", "已将 %q 添加到 safety.%s", p, name))
+		return nil
+	}
+	next := make([]string, 0, len(*list))
+	removed := false
+	for _, item := range *list {
+		if item == p {
+			removed = true
+			continue
+		}
+		next = append(next, item)
+	}
+	if !removed {
+		return ExitError{code: 1, err: fmt.Errorf("%s", tr.Textf("%q not found in safety.%s", "safety.%s 中未找到 %q", name, p))}
+	}
+	*list = next
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s\n", tr.Textf("Removed %q from safety.%s", "已从 safety.%s 移除 %q", name, p))
+	return nil
 }

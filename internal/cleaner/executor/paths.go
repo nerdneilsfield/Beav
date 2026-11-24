@@ -28,12 +28,21 @@ type PathsExecutor struct {
 	// Whitelist contains paths that must never be deleted.
 	// Whitelist 包含绝不能被删除的路径。
 	Whitelist *safety.Whitelist
+	// Policy configures safety boundaries and bypass overrides.
+	// Policy 配置安全边界与绕过选项。
+	Policy safety.Policy
 }
 
 // NewPathsExecutor creates a new PathsExecutor with the given home directory and whitelist.
 // NewPathsExecutor 使用给定的主目录和白名单创建一个新的 PathsExecutor。
 func NewPathsExecutor(home string, wl *safety.Whitelist) *PathsExecutor {
-	return &PathsExecutor{Home: home, Whitelist: wl}
+	return NewPathsExecutorWithPolicy(home, wl, safety.DefaultPolicy())
+}
+
+// NewPathsExecutorWithPolicy creates a PathsExecutor configured with a safety Policy.
+// NewPathsExecutorWithPolicy 使用指定的安全策略创建 PathsExecutor。
+func NewPathsExecutorWithPolicy(home string, wl *safety.Whitelist, policy safety.Policy) *PathsExecutor {
+	return &PathsExecutor{Home: home, Whitelist: wl, Policy: policy}
 }
 
 // Run executes the path cleaning operation, emitting events for each action taken.
@@ -42,7 +51,7 @@ func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, e
 	start := time.Now()
 	emit(model.Event{Event: model.EvStart, CleanerID: c.ID, Name: c.Name, Scope: c.Scope, Type: c.Type, DryRun: dryRun, TS: start})
 
-	if safety.AnyProcessRunning(c.RunningProcesses) {
+	if !p.Policy.EffectiveIgnoreRunning() && safety.AnyProcessRunning(c.RunningProcesses) {
 		emit(model.Event{Event: model.EvCleanerSkipped, CleanerID: c.ID, Reason: "running_process", TS: time.Now()})
 		emitFinish(emit, c.ID, "skipped", 0, start)
 		return nil
@@ -120,7 +129,7 @@ func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, e
 		if ctx.Err() != nil {
 			break
 		}
-		safeRoot := determineSafeRoot(root, p.Home)
+		safeRoot := determineSafeRootWithPolicy(root, p.Home, p.Policy)
 		if safeRoot == "" {
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: root, Reason: "blacklisted", TS: time.Now()})
 			continue
@@ -148,13 +157,17 @@ func (p *PathsExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, e
 }
 
 func (p *PathsExecutor) runRoot(c model.Cleaner, root, safeRoot string, age int, field safety.TimeField, process func(*safety.Walker, []safety.Entry), emit func(model.Event), errs *int) {
+	opts := safety.WalkerOptions{
+		FollowSymlinks: p.Policy.EffectiveFollowSymlinks(),
+		AllowCrossFS:   p.Policy.EffectiveAllowCrossFS(),
+	}
 	parent := filepath.Dir(root)
 	leaf := filepath.Base(root)
 	if filepath.Clean(root) == filepath.Clean(safeRoot) {
 		parent = safeRoot
 		leaf = "."
 	}
-	parentFD, err := safety.OpenAnchoredDirFD(safeRoot, parent)
+	parentFD, err := safety.OpenAnchoredDirFDWithOptions(safeRoot, parent, opts)
 	if err != nil {
 		emitOpenSkip(c.ID, root, err, emit)
 		return
@@ -162,17 +175,21 @@ func (p *PathsExecutor) runRoot(c model.Cleaner, root, safeRoot string, age int,
 	defer unix.Close(parentFD)
 
 	var st unix.Stat_t
-	if err := unix.Fstatat(parentFD, leaf, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+	statFlags := unix.AT_SYMLINK_NOFOLLOW
+	if opts.FollowSymlinks {
+		statFlags = 0
+	}
+	if err := unix.Fstatat(parentFD, leaf, &st, statFlags); err != nil {
 		emitOpenSkip(c.ID, root, err, emit)
 		return
 	}
 	mode := st.Mode & unix.S_IFMT
-	if mode == unix.S_IFLNK {
+	if mode == unix.S_IFLNK && !opts.FollowSymlinks {
 		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: root, Reason: "symlink", TS: time.Now()})
 		return
 	}
-	if mode == unix.S_IFREG {
-		w, e, err := safety.OpenAnchoredFile(safeRoot, root)
+	if mode == unix.S_IFREG || (opts.FollowSymlinks && mode == unix.S_IFLNK) {
+		w, e, err := safety.OpenAnchoredFileWithOptions(safeRoot, root, opts)
 		if err != nil {
 			emitOpenSkip(c.ID, root, err, emit)
 			return
@@ -190,12 +207,12 @@ func (p *PathsExecutor) runRoot(c model.Cleaner, root, safeRoot string, age int,
 		return
 	}
 
-	dirFD, err := safety.OpenAnchoredDirFD(safeRoot, root)
+	dirFD, err := safety.OpenAnchoredDirFDWithOptions(safeRoot, root, opts)
 	if err != nil {
 		emitOpenSkip(c.ID, root, err, emit)
 		return
 	}
-	w, err := safety.OpenWalkerFD(dirFD, root)
+	w, err := safety.OpenWalkerFDWithOptions(dirFD, root, opts)
 	if err != nil {
 		*errs++
 		emit(model.Event{Event: model.EvError, CleanerID: c.ID, Path: root, Reason: "walk_failed", Detail: err.Error(), TS: time.Now()})
@@ -277,7 +294,7 @@ func (p *PathsExecutor) expandRoots(c model.Cleaner) ([]string, error) {
 				continue
 			}
 			seen[clean] = struct{}{}
-			if !safety.InsideAllowList(clean, p.Home) || safety.Blacklisted(clean, p.Home) {
+			if !safety.InsideAllowListWithPolicy(clean, p.Home, p.Policy) || safety.BlacklistedWithPolicy(clean, p.Home, p.Policy) {
 				continue
 			}
 			out = append(out, clean)
@@ -339,17 +356,35 @@ func matchAny(set globSet, absPath, relPath string) bool {
 // determineSafeRoot returns the safe root directory for a given path, or empty string if blacklisted.
 // determineSafeRoot 返回给定路径的安全根目录，如果被列入黑名单则返回空字符串。
 func determineSafeRoot(path, home string) string {
+	return determineSafeRootWithPolicy(path, home, safety.DefaultPolicy())
+}
+
+func determineSafeRootWithPolicy(path, home string, policy safety.Policy) string {
 	clean := filepath.Clean(path)
-	if home != "" {
-		hc := filepath.Clean(home)
-		if clean == hc || strings.HasPrefix(clean, hc+string(filepath.Separator)) {
-			return hc
+	if clean == "/" {
+		return ""
+	}
+	for _, entry := range policy.AllowList {
+		exp := safety.ExpandPath(entry, home)
+		if exp != "" && (clean == exp || strings.HasPrefix(clean, exp+string(filepath.Separator))) {
+			return exp
 		}
 	}
-	for _, r := range []string{"/var/cache", "/var/log", "/tmp", "/var/tmp"} {
-		if clean == r || strings.HasPrefix(clean, r+string(filepath.Separator)) {
-			return r
+	if !policy.ReplaceAllowList {
+		if home != "" {
+			hc := filepath.Clean(home)
+			if clean == hc || strings.HasPrefix(clean, hc+string(filepath.Separator)) {
+				return hc
+			}
 		}
+		for _, r := range safety.DefaultAllowRoots() {
+			if clean == r || strings.HasPrefix(clean, r+string(filepath.Separator)) {
+				return r
+			}
+		}
+	}
+	if policy.EffectiveDisableAllowList() && filepath.IsAbs(clean) {
+		return "/"
 	}
 	return ""
 }

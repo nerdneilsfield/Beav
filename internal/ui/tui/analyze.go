@@ -10,13 +10,19 @@ import (
 	"github.com/rivo/tview"
 )
 
-// RunAnalyze launches the interactive disk analyzer (gdu) for the given path.
-// RunAnalyze 为给定路径启动交互式磁盘分析器 (gdu)。
+// RunAnalyze launches the interactive disk analyzer (gdu) for the given path in read-only mode.
+// RunAnalyze 为给定路径以只读模式启动交互式磁盘分析器 (gdu)。
 func RunAnalyze(path string) error {
+	return RunAnalyzeWithOptions(path, false)
+}
+
+// RunAnalyzeWithOptions launches gdu for path, optionally enabling deletion and shell spawning.
+// RunAnalyzeWithOptions 为给定路径启动 gdu，并可选择允许删除和外部 Shell。
+func RunAnalyzeWithOptions(path string, allowDelete bool) error {
 	istty := isatty.IsTerminal(os.Stdout.Fd())
 	flags := &gduapp.Flags{
-		NoDelete:     true,
-		NoSpawnShell: true,
+		NoDelete:     !allowDelete,
+		NoSpawnShell: !allowDelete,
 	}
 	var screen tcell.Screen
 	var termApp *tview.Application

@@ -25,7 +25,10 @@ type Options struct {
 	// IncludeHeavy authorizes cleaners whose effective impact is heavy.
 	// IncludeHeavy 授权 effective impact 为 heavy 的清理器。
 	IncludeHeavy bool
-	Emitter      func(model.Event)
+	// BypassAll authorizes heavy cleaners and signals full bypass mode.
+	// BypassAll 授权全部重度清理器并启用全绕过模式。
+	BypassAll bool
+	Emitter   func(model.Event)
 }
 
 // Result aggregates statistics from a cleaning run.
@@ -82,7 +85,7 @@ func (e *Engine) Run(ctx context.Context, cleaners []model.Cleaner, opt Options)
 		if !Selected(c, opt.Scope, opt.Only, opt.Skip) {
 			continue
 		}
-		if c.EffectiveImpact() == model.ImpactHeavy && !HeavyAuthorized(c, opt.IncludeHeavy, opt.Only) {
+		if c.EffectiveImpact() == model.ImpactHeavy && !opt.BypassAll && !HeavyAuthorized(c, opt.IncludeHeavy, opt.Only) {
 			if opt.Emitter != nil {
 				now := time.Now()
 				opt.Emitter(model.Event{Event: model.EvStart, CleanerID: c.ID, Name: c.Name, Scope: c.Scope, Type: c.Type, DryRun: opt.DryRun, TS: now})

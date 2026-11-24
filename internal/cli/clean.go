@@ -34,8 +34,9 @@ func NewCleanCmd(tr *i18n.Translator) *cobra.Command {
 	}
 	var f CleanFlags
 	cmd := &cobra.Command{
-		Use:   "clean",
-		Short: tr.Text("Clean caches, logs, and other reclaimable disk usage", "清理缓存、日志及其他可释放磁盘空间"),
+		Use:     "clean",
+		GroupID: "core",
+		Short:   tr.Text("Clean caches, logs, and other reclaimable disk usage", "清理缓存、日志及其他可释放磁盘空间"),
 		Long: tr.Text(
 			"Clean caches, logs, and build artifacts safely.\n"+
 				"In an interactive terminal, Beav previews the cleanup plan first and asks before deleting unless --yes is passed.\n"+
@@ -58,9 +59,7 @@ func NewCleanCmd(tr *i18n.Translator) *cobra.Command {
 		),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			localTr := translatorForCommand(cmd, tr)
-			if langFlag, err := cmd.Flags().GetString("lang"); err == nil && langFlag != "" {
-				f.Lang = langFlag
-			}
+			applyGlobalFlags(cmd, &f)
 			return runCleanWithTranslator(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), f, localTr)
 		},
 	}
@@ -70,16 +69,11 @@ func NewCleanCmd(tr *i18n.Translator) *cobra.Command {
 	cmd.Flags().StringSliceVar(&f.Only, "only", nil, tr.Text("run matching cleaner IDs, tags, or ID prefixes; heavy requires an exact full ID or tag", "仅运行匹配的清理项 ID、标签或 ID 前缀；重度项需指定完整 ID 或标签"))
 	cmd.Flags().BoolVar(&f.IncludeHeavy, "include-heavy", false, tr.Text("explicitly authorize all heavy cleaners; an exact cleaner ID or tag in --only also authorizes one; --yes, --all, and prefixes do not", "启用全部重度清理项；在 --only 中指定精确 ID 或标签也可启用（--yes、--all 与前缀不会自动启用）"))
 	cmd.Flags().StringSliceVar(&f.Skip, "skip", nil, tr.Text("skip matching cleaner IDs, tags, or ID prefixes", "跳过匹配的清理项 ID、标签或 ID 前缀"))
-	cmd.Flags().StringVar(&f.MinAge, "min-age", "", tr.Text("override min age, for example 14d or tag=3d", "覆盖最小保留天数，如 14d 或 langs=3d"))
 	cmd.Flags().BoolVar(&f.ForceNoAge, "force-no-age", false, tr.Text("allow cleaners that explicitly have no age filter", "允许执行未设置保留天数过滤的清理项"))
 	cmd.Flags().StringVar(&f.Output, "output", "", tr.Text("output mode: spinner, plain, or json", "输出格式：spinner、plain 或 json"))
 	cmd.Flags().BoolVarP(&f.Yes, "yes", "y", false, tr.Text("run deletion without the confirmation prompt; does not authorize heavy cleaners", "跳过交互确认直接执行；不会自动启用重度清理项"))
 	cmd.Flags().BoolVarP(&f.Verbose, "verbose", "v", false, tr.Text("show file samples, command output, and all skipped cleaners", "显示文件样本、原生命令输出与全部跳过项明细"))
-	cmd.Flags().BoolVar(&f.AllowRootHome, "allow-root-home", false, tr.Text("allow cleaning /root when running as root", "以 root 运行时允许清理 /root 目录"))
-	cmd.Flags().StringVar(&f.UserOverride, "user", "", tr.Text("target user for --all", "配合 --all 指定目标用户名"))
-	cmd.Flags().StringVar(&f.ConfigDir, "config-dir", "", tr.Text("override config directory", "覆盖默认配置目录"))
-	cmd.Flags().BoolVar(&f.BuiltinDisabled, "builtin-disabled", false, "skip embedded cleaners")
-	_ = cmd.Flags().MarkHidden("builtin-disabled")
+	addScopeAndPolicyFlags(cmd, &f, tr)
 	return cmd
 }
 
@@ -97,20 +91,22 @@ func runCleanWithTranslator(ctx context.Context, stdout, stderr io.Writer, f Cle
 	}
 
 	mode := outputMode(f.Output, lc.Cfg.Defaults.Output)
-	if mode != "json" {
+	if mode != "json" && !f.Quiet {
 		for _, w := range warnings {
 			fmt.Fprintf(stderr, "%s\n", tr.Textf("Warning: %s", "警告：%s", w))
 		}
-		printRunHeader(stdout, lc.Scope, lc.Home, f.DryRun, confirmNeeded(f, lc.Cfg, stdout), tr)
+		printRunHeader(stdout, lc.Scope, lc.Home, f.DryRun, confirmNeeded(f, lc.Cfg, stdout), lc.Policy.BypassAll, tr)
 	}
 
 	if confirmNeeded(f, lc.Cfg, stdout) {
-		res, info, err := runCleanPassWithOptions(ctx, lc.Merged, lc.Scope, lc.Home, lc.TargetUID, lc.Cfg, f, true, stdout, tr)
+		res, info, err := runCleanPassWithOptions(ctx, lc.Merged, lc.Scope, lc.Home, lc.TargetUID, lc.Cfg, lc.Policy, f, true, stdout, tr)
 		if err != nil {
 			return passExitError(err)
 		}
 		if shouldAbortEarly(res, info) {
-			fmt.Fprintln(stdout, "\n"+tr.Text("Nothing to delete.", "没有发现可清理的缓存。"))
+			if !f.Quiet {
+				fmt.Fprintln(stdout, "\n"+tr.Text("Nothing to delete.", "没有发现可清理的缓存。"))
+			}
 			return nil
 		}
 		info.unmeasured = filterOutNative(res.UnmeasuredCleaners, info.native)
@@ -120,7 +116,7 @@ func runCleanWithTranslator(ctx context.Context, stdout, stderr io.Writer, f Cle
 		}
 		fmt.Fprintf(stdout, "\n%s\n", tr.Text("Cleaning...", "开始执行清理..."))
 	}
-	res, _, err := runCleanPassWithOptions(ctx, lc.Merged, lc.Scope, lc.Home, lc.TargetUID, lc.Cfg, f, false, stdout, tr)
+	res, _, err := runCleanPassWithOptions(ctx, lc.Merged, lc.Scope, lc.Home, lc.TargetUID, lc.Cfg, lc.Policy, f, false, stdout, tr)
 	if err != nil {
 		return passExitError(err)
 	}
@@ -133,7 +129,7 @@ func runCleanWithTranslator(ctx context.Context, stdout, stderr io.Writer, f Cle
 	return nil
 }
 
-func printRunHeader(w io.Writer, scope model.Scope, home string, dryRun, previewBeforeConfirm bool, tr *i18n.Translator) {
+func printRunHeader(w io.Writer, scope model.Scope, home string, dryRun, previewBeforeConfirm, bypassAll bool, tr *i18n.Translator) {
 	phase := tr.Text("Clean", "执行清理")
 	if dryRun {
 		phase = tr.Text("Preview (read-only)", "只读扫描（不会删除文件）")
@@ -143,6 +139,9 @@ func printRunHeader(w io.Writer, scope model.Scope, home string, dryRun, preview
 	scopeText := tr.ScopeLabel(scope)
 	if home != "" && scope != model.ScopeSystem {
 		scopeText += " (" + home + ")"
+	}
+	if bypassAll {
+		scopeText += tr.Text(" [UNSAFE BYPASS]", " [已绕过安全限制]")
 	}
 	fmt.Fprint(w, tr.Textf("%s | scope: %s\n", "%s | 作用域：%s\n", phase, scopeText))
 }
@@ -175,17 +174,17 @@ type passInfo struct {
 	unmeasured []string // native cleaners that previewed without exact byte totals
 }
 
-func runCleanPassWithOptions(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, f CleanFlags, preview bool, stdout io.Writer, tr *i18n.Translator) (engine.Result, passInfo, error) {
+func runCleanPassWithOptions(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, policy safety.Policy, f CleanFlags, preview bool, stdout io.Writer, tr *i18n.Translator) (engine.Result, passInfo, error) {
 	renderer := chooseRendererWithOptions(f, cfg.Defaults.Output, stdout, tr)
 	defer func() { _ = renderer.Close() }()
-	return runCleanPassWithSink(ctx, merged, scope, home, targetUID, cfg, f, preview, renderer.Render)
+	return runCleanPassWithSink(ctx, merged, scope, home, targetUID, cfg, policy, f, preview, renderer.Render)
 }
 
 // runCleanPassWithSink wires executors, emits events to sink, and runs one engine pass.
 // Dryness is always derived here from CleanFlags and preview so no caller can pass a literal dry value.
 // runCleanPassWithSink 接线执行器、将事件发送给 sink 并运行一次引擎处理；
 // dry 在此严格从 CleanFlags 与 preview 派生，调用方无法传入字面量 dry 值。
-func runCleanPassWithSink(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, f CleanFlags, preview bool, sink func(model.Event)) (engine.Result, passInfo, error) {
+func runCleanPassWithSink(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, policy safety.Policy, f CleanFlags, preview bool, sink func(model.Event)) (engine.Result, passInfo, error) {
 	dry := preview || f.DryRun
 	info := passInfo{}
 
@@ -199,7 +198,7 @@ func runCleanPassWithSink(ctx context.Context, merged []model.Cleaner, scope mod
 		}
 	}
 
-	eng := newCleanEngine(home, targetUID, safety.NewWhitelist(cfg.MergedWhitelist()))
+	eng := newCleanEngineWithPolicy(home, targetUID, safety.NewWhitelist(cfg.MergedWhitelist()), policy)
 	emit := func(ev model.Event) {
 		if log != nil && ev.Event == model.EvDeleted {
 			_ = log.Write("delete", ev.Path, ev.Size, ev.CleanerID)
@@ -216,7 +215,8 @@ func runCleanPassWithSink(ctx context.Context, merged []model.Cleaner, scope mod
 		DryRun:       dry,
 		Only:         f.Only,
 		Skip:         f.Skip,
-		IncludeHeavy: f.IncludeHeavy,
+		IncludeHeavy: f.IncludeHeavy || policy.BypassAll,
+		BypassAll:    policy.BypassAll,
 		Emitter:      emit,
 	})
 	return res, info, err
@@ -306,27 +306,37 @@ func shouldWriteOperationLog(targetUID int) bool {
 // identity for profile-backed cleaners. Closed executors never receive YAML
 // command, root, or identity data.
 func newCleanEngine(home string, targetUID int, whitelist *safety.Whitelist) *engine.Engine {
+	return newCleanEngineWithPolicy(home, targetUID, whitelist, safety.DefaultPolicy())
+}
+
+func newCleanEngineWithPolicy(home string, targetUID int, whitelist *safety.Whitelist, policy safety.Policy) *engine.Engine {
 	uid := uint32(targetUID) //nolint:gosec // targetUID comes from the OS or the validated uint32 sudo resolver.
 	toolOptions := []executor.ToolPruneOption{
 		executor.WithToolIdentity(executor.CommandIdentity{UID: uid}),
+		executor.WithToolPolicy(policy),
 	}
 	return engine.New(
-		engine.WithExecutor(model.TypePaths, executor.NewPathsExecutor(home, whitelist)),
+		engine.WithExecutor(model.TypePaths, executor.NewPathsExecutorWithPolicy(home, whitelist, policy)),
+		engine.WithExecutor(model.TypeCommand, executor.NewCustomCommandExecutor(home, policy)),
 		engine.WithExecutor(model.TypeJournalVacuum, executor.NewJournalExecutor()),
 		engine.WithExecutor(model.TypePkgCache, executor.NewPkgCacheExecutor()),
-		engine.WithExecutor(model.TypeContainerPrune, executor.NewContainerExecutor(executor.ContainerTarget{UID: targetUID, Home: home})),
+		engine.WithExecutor(model.TypeContainerPrune, executor.NewContainerExecutorWithPolicy(executor.ContainerTarget{UID: targetUID, Home: home}, policy)),
 		engine.WithExecutor(model.TypeToolPrune, executor.NewToolPruneExecutor(home, whitelist, toolOptions...)),
-		engine.WithExecutor(model.TypeDebris, executor.NewDebrisExecutor(home, whitelist, uid)),
-		engine.WithExecutor(model.TypeManagedCache, executor.NewManagedCacheExecutor(home, whitelist, uid)),
-		engine.WithExecutor(model.TypeRustupPrune, executor.NewRustupExecutor(home, whitelist, uid)),
+		engine.WithExecutor(model.TypeDebris, executor.NewDebrisExecutorWithPolicy(home, whitelist, policy, uid)),
+		engine.WithExecutor(model.TypeManagedCache, executor.NewManagedCacheExecutorWithPolicy(home, whitelist, policy, uid)),
+		engine.WithExecutor(model.TypeRustupPrune, executor.NewRustupExecutorWithPolicy(home, whitelist, policy, uid)),
 	)
 }
 
 // validateCleanersForRun validates cleaners for the given scope and flags before execution.
 // validateCleanersForRun 在执行前验证给定范围和标志的清理器。
 func validateCleanersForRun(cleaners []model.Cleaner, scope model.Scope, home string, f CleanFlags) error {
+	return validateCleanersForRunWithPolicy(cleaners, scope, home, f, safety.DefaultPolicy())
+}
+
+func validateCleanersForRunWithPolicy(cleaners []model.Cleaner, scope model.Scope, home string, f CleanFlags, policy safety.Policy) error {
 	for _, c := range cleaners {
-		if err := registry.Validate(c); err != nil {
+		if err := registry.ValidateWithPolicy(c, policy); err != nil {
 			return err
 		}
 		if !engine.Selected(c, scope, f.Only, f.Skip) {
@@ -336,7 +346,7 @@ func validateCleanersForRun(cleaners []model.Cleaner, scope model.Scope, home st
 		if c.Scope == model.ScopeSystem {
 			validateHome = ""
 		}
-		if err := registry.ValidatePaths(c, validateHome); err != nil {
+		if err := registry.ValidatePathsWithPolicy(c, validateHome, policy); err != nil {
 			return err
 		}
 	}
@@ -452,11 +462,19 @@ func chooseRenderer(flag, cfgDefault string, stdout io.Writer) ui.Renderer {
 }
 
 func chooseRendererWithOptions(f CleanFlags, cfgDefault string, stdout io.Writer, tr *i18n.Translator) ui.Renderer {
+	if f.Quiet {
+		return uicli.NewQuietRenderer(stdout, tr)
+	}
 	isTTY := false
 	if file, ok := stdout.(*os.File); ok && sysinfo.IsTerminal(file) {
 		isTTY = true
 	}
-	switch outputMode(f.Output, cfgDefault) {
+	noColor := f.NoColor || os.Getenv("NO_COLOR") != ""
+	mode := outputMode(f.Output, cfgDefault)
+	if noColor && (mode == "" || mode == "auto" || mode == "spinner") {
+		mode = "plain"
+	}
+	switch mode {
 	case "json":
 		return uijson.New(stdout)
 	case "plain":

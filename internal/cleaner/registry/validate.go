@@ -4,13 +4,23 @@ import (
 	"fmt"
 
 	"github.com/dengqi/beav/internal/cleaner/model"
+	"github.com/dengqi/beav/internal/cleaner/safety"
 )
 
+// Validate checks cleaner structure under the default safety policy.
+// Validate 在默认安全策略下校验清理器结构。
 func Validate(c model.Cleaner) error {
+	return ValidateWithPolicy(c, safety.DefaultPolicy())
+}
+
+// ValidateWithPolicy checks cleaner structure using the supplied safety Policy.
+// ValidateWithPolicy 使用指定的安全策略校验清理器结构。
+func ValidateWithPolicy(c model.Cleaner, policy safety.Policy) error {
 	if c.ID == "" {
 		return fmt.Errorf("cleaner missing id")
 	}
-	if _, ok := model.ParseExecutorType(string(c.Type)); !ok {
+	allowCommand := policy.EffectiveAllowCommandCleaners()
+	if _, ok := model.ParseExecutorTypeWithOptions(string(c.Type), allowCommand); !ok {
 		return fmt.Errorf("cleaner %q: invalid type %q", c.ID, c.Type)
 	}
 	if _, ok := model.ParseScope(string(c.Scope)); !ok {
@@ -26,6 +36,10 @@ func Validate(c model.Cleaner) error {
 		if len(c.Paths) == 0 && len(c.PathResolvers) == 0 {
 			return fmt.Errorf("cleaner %q: paths type requires paths or path_resolvers", c.ID)
 		}
+	case model.TypeCommand:
+		if c.Command == "" {
+			return fmt.Errorf("cleaner %q: command type requires command", c.ID)
+		}
 	case model.TypePkgCache:
 		if c.PkgCache == nil || c.PkgCache.Manager == "" {
 			return fmt.Errorf("cleaner %q: pkg_cache type requires pkg_cache.manager", c.ID)
@@ -34,10 +48,10 @@ func Validate(c model.Cleaner) error {
 		if c.ContainerPrune == nil {
 			return fmt.Errorf("cleaner %q: container_prune type requires container_prune block", c.ID)
 		}
-		if !validContainerTarget(c.ContainerPrune.Runtime, c.ContainerPrune.Target) {
+		if !validContainerTargetWithPolicy(c.ContainerPrune.Runtime, c.ContainerPrune.Target, policy.BypassAll) {
 			return fmt.Errorf("cleaner %q: unsupported container_prune runtime/target %q/%q", c.ID, c.ContainerPrune.Runtime, c.ContainerPrune.Target)
 		}
-		if c.MinAgeDays == nil {
+		if c.MinAgeDays == nil && !policy.EffectiveBypassAgeFloor() {
 			return fmt.Errorf("cleaner %q: container_prune requires min_age_days", c.ID)
 		}
 	case model.TypeToolPrune:
@@ -61,7 +75,7 @@ func Validate(c model.Cleaner) error {
 		if !model.KnownProfile(model.TypeManagedCache, c.ManagedCache.Profile) {
 			return fmt.Errorf("cleaner %q: unknown managed_cache profile %q", c.ID, c.ManagedCache.Profile)
 		}
-		if c.NoAgeFilter {
+		if c.NoAgeFilter && !policy.EffectiveBypassAgeFloor() {
 			return fmt.Errorf("cleaner %q: managed_cache rejects no_age_filter", c.ID)
 		}
 	case model.TypeRustupPrune:
@@ -71,7 +85,7 @@ func Validate(c model.Cleaner) error {
 		if !model.KnownProfile(model.TypeRustupPrune, c.RustupPrune.Profile) {
 			return fmt.Errorf("cleaner %q: unknown rustup_prune profile %q", c.ID, c.RustupPrune.Profile)
 		}
-		if c.NoAgeFilter {
+		if c.NoAgeFilter && !policy.EffectiveBypassAgeFloor() {
 			return fmt.Errorf("cleaner %q: rustup_prune rejects no_age_filter", c.ID)
 		}
 	}
@@ -81,16 +95,24 @@ func Validate(c model.Cleaner) error {
 // validContainerTarget checks if a container prune runtime/target combination is supported.
 // validContainerTarget 检查容器修剪运行时/目标组合是否受支持。
 func validContainerTarget(runtime, target string) bool {
+	return validContainerTargetWithPolicy(runtime, target, false)
+}
+
+func validContainerTargetWithPolicy(runtime, target string, allowUnsafe bool) bool {
 	switch runtime {
 	case "docker":
 		switch target {
 		case "builder", "container", "image", "network":
 			return true
+		case "system", "volume":
+			return allowUnsafe
 		}
 	case "podman":
 		switch target {
 		case "builder", "container", "image", "network", "system":
 			return true
+		case "volume":
+			return allowUnsafe
 		}
 	}
 	return false

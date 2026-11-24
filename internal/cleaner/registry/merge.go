@@ -4,11 +4,18 @@ import (
 	"fmt"
 
 	"github.com/dengqi/beav/internal/cleaner/model"
+	"github.com/dengqi/beav/internal/cleaner/safety"
 )
 
 // MergeByID merges builtin and user cleaner definitions by ID, applying user overrides.
 // MergeByID 按 ID 合并内置和用户清理器定义，应用用户覆盖。
 func MergeByID(builtin, user []Loaded) ([]model.Cleaner, error) {
+	return MergeByIDWithPolicy(builtin, user, safety.DefaultPolicy())
+}
+
+// MergeByIDWithPolicy merges builtin and user cleaner definitions under the supplied safety Policy.
+// MergeByIDWithPolicy 根据给定安全策略合并内置与用户清理器定义。
+func MergeByIDWithPolicy(builtin, user []Loaded, policy safety.Policy) ([]model.Cleaner, error) {
 	byID := map[string]model.Cleaner{}
 	order := []string{}
 	for _, l := range builtin {
@@ -52,7 +59,7 @@ func MergeByID(builtin, user []Loaded) ([]model.Cleaner, error) {
 	out := make([]model.Cleaner, 0, len(order))
 	for _, id := range order {
 		c := byID[id]
-		if err := Validate(c); err != nil {
+		if err := ValidateWithPolicy(c, policy); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

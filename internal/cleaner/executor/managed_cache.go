@@ -59,6 +59,7 @@ type ManagedCacheExecutor struct {
 	Home      string
 	Whitelist *safety.Whitelist
 	TargetUID uint32
+	Policy    safety.Policy
 
 	procRoot        string
 	env             func(string) string
@@ -122,6 +123,14 @@ type managedRunStats struct {
 	errors            int
 }
 
+// NewManagedCacheExecutorWithPolicy creates a closed managed-cache executor with a safety Policy.
+// NewManagedCacheExecutorWithPolicy 使用指定安全策略创建托管缓存执行器。
+func NewManagedCacheExecutorWithPolicy(home string, wl *safety.Whitelist, policy safety.Policy, targetUID ...uint32) *ManagedCacheExecutor {
+	e := NewManagedCacheExecutor(home, wl, targetUID...)
+	e.Policy = policy
+	return e
+}
+
 // Run executes one closed managed-cache profile.
 func (e *ManagedCacheExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, emit func(model.Event)) error {
 	start := e.now()
@@ -159,14 +168,14 @@ func (e *ManagedCacheExecutor) Run(ctx context.Context, c model.Cleaner, dryRun 
 	if c.Scope != model.ScopeUser {
 		return skip("profile_scope_mismatch", "managed cache profiles are user-scoped")
 	}
-	if c.NoAgeFilter {
+	if c.NoAgeFilter && !e.Policy.EffectiveBypassAgeFloor() {
 		return skip("no_age_filter_unsupported", "managed cache requires an age floor")
 	}
 	root, err := profile.resolveRoot(e)
 	if err != nil {
 		return skip("root_unavailable", err.Error())
 	}
-	if safety.Blacklisted(root, e.Home) {
+	if safety.BlacklistedWithPolicy(root, e.Home, e.Policy) {
 		return skip("root_unavailable", "managed-cache root is blacklisted")
 	}
 	parentFD, rootFD, rootIdentity, err := e.openManagedRoot(root)
@@ -185,15 +194,17 @@ func (e *ManagedCacheExecutor) Run(ctx context.Context, c model.Cleaner, dryRun 
 	defer unix.Close(rootFD)
 	defer unix.Close(parentFD)
 
-	if e.procVisibility != nil {
-		if err := e.procVisibility(e.procRoot, e.TargetUID); err != nil {
-			return skip("proc_inspection_failed", err.Error())
+	if !e.Policy.EffectiveIgnoreRunning() {
+		if e.procVisibility != nil {
+			if err := e.procVisibility(e.procRoot, e.TargetUID); err != nil {
+				return skip("proc_inspection_failed", err.Error())
+			}
 		}
-	}
-	if busy, checkErr := e.checkOwner(profile.ownerProcesses); checkErr != nil {
-		return skip("proc_inspection_failed", checkErr.Error())
-	} else if busy {
-		return skip(string(model.SkipReasonRunningProcess), "profile owner process is running")
+		if busy, checkErr := e.checkOwner(profile.ownerProcesses); checkErr != nil {
+			return skip("proc_inspection_failed", checkErr.Error())
+		} else if busy {
+			return skip(string(model.SkipReasonRunningProcess), "profile owner process is running")
+		}
 	}
 
 	var journal *managedJournal
@@ -302,26 +313,30 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 		return managedCandidateSkipped
 	}
 	minAge := profile.minAgeDays
-	if requested := c.AgeOrDefault(14); requested > minAge {
+	if e.Policy.EffectiveBypassAgeFloor() {
+		minAge = c.AgeOrDefault(0)
+	} else if requested := c.AgeOrDefault(14); requested > minAge {
 		minAge = requested
 	}
-	if !renamed && !managedIdentityOldEnough(identity, minAge, e.now()) {
+	if !renamed && !(c.NoAgeFilter && e.Policy.EffectiveBypassAgeFloor()) && !managedIdentityOldEnoughWithFloor(identity, minAge, e.Policy.EffectiveBypassAgeFloor(), e.now()) {
 		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonAgeTooRecent), TS: e.now()})
 		return managedCandidateSkipped
 	}
-	if busy, checkErr := e.checkOwner(profile.ownerProcesses); checkErr != nil {
-		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: checkErr.Error(), TS: e.now()})
-		return managedCandidateSkipped
-	} else if busy {
-		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonRunningProcess), TS: e.now()})
-		return managedCandidateSkipped
-	}
-	if open, checkErr := e.managedDescriptorBusy(identity, -1); checkErr != nil {
-		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: checkErr.Error(), TS: e.now()})
-		return managedCandidateSkipped
-	} else if open {
-		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "open_file", TS: e.now()})
-		return managedCandidateSkipped
+	if !e.Policy.EffectiveIgnoreRunning() {
+		if busy, checkErr := e.checkOwner(profile.ownerProcesses); checkErr != nil {
+			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: checkErr.Error(), TS: e.now()})
+			return managedCandidateSkipped
+		} else if busy {
+			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonRunningProcess), TS: e.now()})
+			return managedCandidateSkipped
+		}
+		if open, checkErr := e.managedDescriptorBusy(identity, -1); checkErr != nil {
+			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: checkErr.Error(), TS: e.now()})
+			return managedCandidateSkipped
+		} else if open {
+			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "open_file", TS: e.now()})
+			return managedCandidateSkipped
+		}
 	}
 	unitFD, err := openManagedUnit(parentFD, leaf, profile.kind)
 	if err != nil {
@@ -357,12 +372,14 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: reason, Detail: treeErr.Error(), TS: e.now()})
 		return managedCandidateSkipped
 	}
-	if open, checkErr := e.managedSubtreeDescriptorBusy(tree, unitFD); checkErr != nil {
-		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: checkErr.Error(), TS: e.now()})
-		return managedCandidateSkipped
-	} else if open {
-		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "open_file", TS: e.now()})
-		return managedCandidateSkipped
+	if !e.Policy.EffectiveIgnoreRunning() {
+		if open, checkErr := e.managedSubtreeDescriptorBusy(tree, unitFD); checkErr != nil {
+			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: checkErr.Error(), TS: e.now()})
+			return managedCandidateSkipped
+		} else if open {
+			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "open_file", TS: e.now()})
+			return managedCandidateSkipped
+		}
 	}
 	if dryRun {
 		size := identity.Size
@@ -426,23 +443,25 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonToctouChanged), TS: e.now()})
 			return managedCandidateSkipped
 		}
-		if !sameManagedState(current, openedIdentity) || !managedIdentityOldEnough(current, minAge, e.now()) {
+		if !sameManagedState(current, openedIdentity) || (!(c.NoAgeFilter && e.Policy.EffectiveBypassAgeFloor()) && !managedIdentityOldEnoughWithFloor(current, minAge, e.Policy.EffectiveBypassAgeFloor(), e.now())) {
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonToctouChanged), TS: e.now()})
 			return managedCandidateSkipped
 		}
-		if busy, checkErr := e.checkOwner(profile.ownerProcesses); checkErr != nil {
-			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: checkErr.Error(), TS: e.now()})
-			return managedCandidateSkipped
-		} else if busy {
-			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonRunningProcess), TS: e.now()})
-			return managedCandidateSkipped
-		}
-		if open, checkErr := e.managedDescriptorBusy(openedIdentity, unitFD); checkErr != nil {
-			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: checkErr.Error(), TS: e.now()})
-			return managedCandidateSkipped
-		} else if open {
-			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "open_file", TS: e.now()})
-			return managedCandidateSkipped
+		if !e.Policy.EffectiveIgnoreRunning() {
+			if busy, checkErr := e.checkOwner(profile.ownerProcesses); checkErr != nil {
+				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: checkErr.Error(), TS: e.now()})
+				return managedCandidateSkipped
+			} else if busy {
+				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonRunningProcess), TS: e.now()})
+				return managedCandidateSkipped
+			}
+			if open, checkErr := e.managedDescriptorBusy(openedIdentity, unitFD); checkErr != nil {
+				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: checkErr.Error(), TS: e.now()})
+				return managedCandidateSkipped
+			} else if open {
+				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "open_file", TS: e.now()})
+				return managedCandidateSkipped
+			}
 		}
 		currentTree, treeErr := captureManagedTree(unitFD, abs, profile.kind, openedIdentity)
 		if treeErr != nil || !sameManagedTree(tree, currentTree) {
@@ -452,12 +471,14 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonToctouChanged), Detail: treeErr.Error(), TS: e.now()})
 			return managedCandidateSkipped
 		}
-		if open, checkErr := e.managedSubtreeDescriptorBusy(currentTree, unitFD); checkErr != nil {
-			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: checkErr.Error(), TS: e.now()})
-			return managedCandidateSkipped
-		} else if open {
-			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "open_file", TS: e.now()})
-			return managedCandidateSkipped
+		if !e.Policy.EffectiveIgnoreRunning() {
+			if open, checkErr := e.managedSubtreeDescriptorBusy(currentTree, unitFD); checkErr != nil {
+				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "proc_inspection_failed", Detail: checkErr.Error(), TS: e.now()})
+				return managedCandidateSkipped
+			} else if open {
+				emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: "open_file", TS: e.now()})
+				return managedCandidateSkipped
+			}
 		}
 		if err := e.renameat2(parentFD, record.OriginalLeaf, parentFD, record.TombstoneLeaf, unix.RENAME_NOREPLACE); err != nil {
 			e.emitManagedRenameFailure(c.ID, abs, err, emit)
@@ -627,10 +648,38 @@ func (e *ManagedCacheExecutor) emitManagedRenameFailure(cleanerID, path string, 
 func (e *ManagedCacheExecutor) openManagedRoot(root string) (int, int, managedIdentity, error) {
 	home := filepath.Clean(e.Home)
 	root = filepath.Clean(root)
-	if !filepath.IsAbs(home) || !managedPathWithin(root, home) || root == home {
+	if !e.Policy.EffectiveDisableAllowList() && (!filepath.IsAbs(home) || !managedPathWithin(root, home) || root == home) {
 		return -1, -1, managedIdentity{}, fmt.Errorf("%w: root outside target home", errManagedRootUnavailable)
 	}
-	homeFD, err := safety.OpenAnchoredDirFD(home, home)
+	walkOpts := safety.WalkerOptions{
+		FollowSymlinks: e.Policy.EffectiveFollowSymlinks(),
+		AllowCrossFS:   e.Policy.EffectiveAllowCrossFS(),
+	}
+	if e.Policy.BypassAll {
+		parentPath := filepath.Dir(root)
+		parentFD, err := safety.OpenAnchoredDirFDWithOptions("/", parentPath, walkOpts)
+		if err != nil {
+			return -1, -1, managedIdentity{}, fmt.Errorf("%w: root parent: %v", errManagedRootUnavailable, err)
+		}
+		leaf := filepath.Base(root)
+		openFlags := unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC
+		if !walkOpts.FollowSymlinks {
+			openFlags |= unix.O_NOFOLLOW
+		}
+		rootFD, err := unix.Openat(parentFD, leaf, openFlags, 0)
+		if err != nil {
+			_ = unix.Close(parentFD)
+			return -1, -1, managedIdentity{}, fmt.Errorf("%w: open root: %v", errManagedRootUnavailable, err)
+		}
+		opened, err := e.fdIdentity(rootFD)
+		if err != nil {
+			_ = unix.Close(rootFD)
+			_ = unix.Close(parentFD)
+			return -1, -1, managedIdentity{}, fmt.Errorf("%w: opened root identity: %v", errManagedRootChanged, err)
+		}
+		return parentFD, rootFD, opened, nil
+	}
+	homeFD, err := safety.OpenAnchoredDirFDWithOptions(home, home, walkOpts)
 	if err != nil {
 		return -1, -1, managedIdentity{}, fmt.Errorf("%w: home: %v", errManagedRootUnavailable, err)
 	}
@@ -643,7 +692,7 @@ func (e *ManagedCacheExecutor) openManagedRoot(root string) (int, int, managedId
 		return -1, -1, managedIdentity{}, fmt.Errorf("%w: target home ownership/type invalid", errManagedRootUnavailable)
 	}
 	parentPath := filepath.Dir(root)
-	parentFD, err := safety.OpenAnchoredDirFDFromFD(homeFD, home, parentPath)
+	parentFD, err := safety.OpenAnchoredDirFDWithOptions(home, parentPath, walkOpts)
 	if err != nil {
 		return -1, -1, managedIdentity{}, fmt.Errorf("%w: root parent: %v", errManagedRootUnavailable, err)
 	}
@@ -658,16 +707,16 @@ func (e *ManagedCacheExecutor) openManagedRoot(root string) (int, int, managedId
 	if err != nil {
 		return -1, -1, managedIdentity{}, fmt.Errorf("%w: selected root: %v", errManagedRootUnavailable, err)
 	}
-	if selected.Mode == unix.S_IFLNK {
+	if selected.Mode == unix.S_IFLNK && !walkOpts.FollowSymlinks {
 		return -1, -1, managedIdentity{}, safety.ErrSymlink
 	}
-	if selected.Mode != unix.S_IFDIR {
+	if selected.Mode != unix.S_IFDIR && !(walkOpts.FollowSymlinks && selected.Mode == unix.S_IFLNK) {
 		return -1, -1, managedIdentity{}, fmt.Errorf("%w: selected root is not a directory", errManagedRootUnavailable)
 	}
 	if selected.UID != e.TargetUID {
 		return -1, -1, managedIdentity{}, fmt.Errorf("%w: selected root owner differs", errManagedRootUnavailable)
 	}
-	if selected.Dev != homeIdentity.Dev || selected.MountID != homeIdentity.MountID {
+	if !walkOpts.AllowCrossFS && (selected.Dev != homeIdentity.Dev || selected.MountID != homeIdentity.MountID) {
 		return -1, -1, managedIdentity{}, safety.ErrCrossFS
 	}
 	if e.beforeRootOpen != nil {
@@ -675,7 +724,11 @@ func (e *ManagedCacheExecutor) openManagedRoot(root string) (int, int, managedId
 			return -1, -1, managedIdentity{}, fmt.Errorf("%w: pre-open hook: %v", errManagedRootChanged, hookErr)
 		}
 	}
-	rootFD, err := unix.Openat(parentFD, leaf, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	openFlags := unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC
+	if !walkOpts.FollowSymlinks {
+		openFlags |= unix.O_NOFOLLOW
+	}
+	rootFD, err := unix.Openat(parentFD, leaf, openFlags, 0)
 	if err != nil {
 		return -1, -1, managedIdentity{}, fmt.Errorf("%w: open root: %v", errManagedRootChanged, err)
 	}
@@ -684,9 +737,11 @@ func (e *ManagedCacheExecutor) openManagedRoot(root string) (int, int, managedId
 		_ = unix.Close(rootFD)
 		return -1, -1, managedIdentity{}, fmt.Errorf("%w: opened root identity: %v", errManagedRootChanged, err)
 	}
-	if !sameManagedIdentity(selected, opened) || opened.Dev != homeIdentity.Dev || opened.MountID != homeIdentity.MountID || opened.UID != e.TargetUID {
-		_ = unix.Close(rootFD)
-		return -1, -1, managedIdentity{}, errManagedRootChanged
+	if !walkOpts.FollowSymlinks && !walkOpts.AllowCrossFS {
+		if !sameManagedIdentity(selected, opened) || opened.Dev != homeIdentity.Dev || opened.MountID != homeIdentity.MountID || opened.UID != e.TargetUID {
+			_ = unix.Close(rootFD)
+			return -1, -1, managedIdentity{}, errManagedRootChanged
+		}
 	}
 	closeParent = false
 	return parentFD, rootFD, opened, nil

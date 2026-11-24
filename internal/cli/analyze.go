@@ -10,22 +10,26 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// NewAnalyzeCmd creates a command that launches the bundled read-only disk usage explorer.
-// NewAnalyzeCmd 创建一个启动内置只读磁盘空间浏览器的命令。
+// NewAnalyzeCmd creates a command that launches the bundled disk usage explorer.
+// NewAnalyzeCmd 创建一个启动内置磁盘空间浏览器的命令。
 func NewAnalyzeCmd(tr *i18n.Translator) *cobra.Command {
 	if tr == nil {
 		tr = i18n.New(i18n.LangEN)
 	}
-	return &cobra.Command{
-		Use:   "analyze [path]",
-		Short: tr.Text("Explore disk usage in a read-only TUI (powered by gdu)", "以只读界面分析目录磁盘占用（基于 gdu）"),
+	var allowDelete bool
+	var unsafe bool
+
+	cmd := &cobra.Command{
+		Use:     "analyze [path]",
+		GroupID: "core",
+		Short:   tr.Text("Explore disk usage in a TUI (powered by gdu)", "以交互界面分析目录磁盘占用（基于 gdu）"),
 		Long: tr.Text(
-			"Launch the bundled read-only disk usage explorer (powered by gdu) for the given directory (defaults to current directory).\n"+
-				"Deletion and shell spawning are disabled for safety. Press q to quit.",
-			"启动内置的只读磁盘占用浏览器（基于 gdu），分析指定目录（默认为当前目录）的空间分布。\n"+
-				"为保证安全已禁用删除与外部 Shell 功能；按 q 键退出。",
+			"Launch the bundled disk usage explorer (powered by gdu) for the given directory (defaults to current directory).\n"+
+				"Default mode is read-only; pass --allow-delete or --unsafe to enable deletion inside gdu. Press q to quit.",
+			"启动内置的磁盘占用浏览器（基于 gdu），分析指定目录（默认为当前目录）的空间分布。\n"+
+				"默认以只读模式运行；加上 --allow-delete 或 --unsafe 可在界面中直接删除文件。按 q 键退出。",
 		),
-		Example: "  beav analyze\n  beav analyze ~/.cache",
+		Example: "  beav analyze\n  beav analyze ~/.cache\n  beav analyze ~/.cache --allow-delete",
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			localTr := translatorForCommand(cmd, tr)
@@ -42,7 +46,10 @@ func NewAnalyzeCmd(tr *i18n.Translator) *cobra.Command {
 			if len(args) == 1 {
 				path = args[0]
 			}
-			return tui.RunAnalyze(path)
+			return tui.RunAnalyzeWithOptions(path, allowDelete || unsafe)
 		},
 	}
+	cmd.Flags().BoolVar(&allowDelete, "allow-delete", false, tr.Text("enable file deletion inside gdu", "允许在 gdu 界面中直接删除文件"))
+	cmd.Flags().BoolVar(&unsafe, "unsafe", false, tr.Text("enable deletion and shell inside gdu", "允许在 gdu 界面中执行删除与 Shell"))
+	return cmd
 }

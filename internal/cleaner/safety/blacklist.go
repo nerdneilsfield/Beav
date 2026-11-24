@@ -38,10 +38,68 @@ var homeBlacklistRel = []string{
 	".password-store",
 }
 
-// Blacklisted checks whether a given path is on the blacklist and must not be cleaned.
-// Blacklisted 检查给定路径是否在黑名单中且不得被清理。
+// DefaultSystemDenyPrefixes returns a copy of built-in protected system path prefixes.
+// DefaultSystemDenyPrefixes 返回内置受保护系统路径前缀的副本。
+func DefaultSystemDenyPrefixes() []string {
+	out := make([]string, len(hardDenyExact))
+	copy(out, hardDenyExact)
+	for _, p := range hardDenyPrefix {
+		p = strings.TrimSuffix(p, "/")
+		if !containsStr(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// DefaultHomeDenyRel returns a copy of built-in protected home-relative paths.
+// DefaultHomeDenyRel 返回内置受保护主目录相对路径的副本。
+func DefaultHomeDenyRel() []string {
+	out := make([]string, len(homeBlacklistRel))
+	copy(out, homeBlacklistRel)
+	return out
+}
+
+func containsStr(list []string, target string) bool {
+	for _, item := range list {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
+// Blacklisted checks whether a given path is on the default blacklist and must not be cleaned.
+// Blacklisted 检查给定路径是否在默认黑名单中且不得被清理。
 func Blacklisted(path, home string) bool {
+	return BlacklistedWithPolicy(path, home, DefaultPolicy())
+}
+
+// BlacklistedWithPolicy checks whether path is protected under the given Policy.
+// Literal "/" is always protected to prevent catastrophic wildcard/env accidents.
+// BlacklistedWithPolicy 根据给定 Policy 检查路径是否受保护；根目录 "/" 本身始终受保护。
+func BlacklistedWithPolicy(path, home string, policy Policy) bool {
 	clean := filepath.Clean(path)
+	if clean == "/" {
+		return true
+	}
+	if policy.EffectiveDisableBlacklist() {
+		return false
+	}
+
+	for _, entry := range policy.Blacklist {
+		exp := ExpandPath(entry, home)
+		if exp == "" {
+			continue
+		}
+		if hasPrefix(clean, exp) {
+			return true
+		}
+	}
+
+	if policy.ReplaceBlacklist {
+		return false
+	}
 
 	for _, d := range hardDenyExact {
 		if clean == d {

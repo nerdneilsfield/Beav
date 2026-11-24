@@ -76,7 +76,11 @@ func sameManagedTree(a, b managedTreeState) bool {
 }
 
 func managedIdentityOldEnough(identity managedIdentity, minAge int, now time.Time) bool {
-	if minAge < managedCacheMinAgeDays || now.IsZero() {
+	return managedIdentityOldEnoughWithFloor(identity, minAge, false, now)
+}
+
+func managedIdentityOldEnoughWithFloor(identity managedIdentity, minAge int, bypassFloor bool, now time.Time) bool {
+	if (!bypassFloor && minAge < managedCacheMinAgeDays) || minAge < 0 || now.IsZero() {
 		return false
 	}
 	stamp := time.Unix(identity.MtimeSec, identity.MtimeNsec)

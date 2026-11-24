@@ -1,15 +1,12 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/dengqi/beav/internal/i18n"
 	"github.com/dengqi/beav/internal/sysinfo"
-	"github.com/dengqi/beav/internal/ui/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -25,33 +22,44 @@ func NewRootCmdWithLang(version, commit, date string, lang i18n.Lang) *cobra.Com
 	tr := i18n.New(lang)
 	var f CleanFlags
 	var langFlag string
+	var quietFlag bool
+	var noColorFlag bool
+	var versionFlag bool
 
 	root := &cobra.Command{
 		Use:           "beav",
-		Short:         tr.Text("Safe, age-aware Linux cache cleaner", "安全、按留存天数过滤的 Linux 缓存清理工具"),
+		Short:         tr.Text("Fast, configurable Linux disk cache cleaner", "轻量、策略可配置的 Linux 磁盘缓存清理工具"),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Long: tr.Text(
-			"Beav safely cleans developer, browser, container, and system caches without touching personal files.\n"+
-				"Running `beav` with no subcommand in an interactive terminal launches a full-screen read-only scan and selection workbench.\n"+
-				"Or use subcommands directly: `beav scan` to preview, `beav clean` to clean, `beav list` to browse cleaners.",
-			"Beav 用于安全清理开发工具、浏览器、容器与系统缓存，绝不触碰个人文件与凭据。\n"+
-				"在交互终端中直接运行 `beav` 会启动全屏只读扫描与勾选工作台；\n"+
-				"也可以直接使用子命令：`beav scan` 只读预览、`beav clean` 命令行清理、`beav list` 浏览所有清理项。",
+			"Beav cleans developer, browser, AI, container, and system caches with configurable safety policies.\n"+
+				"Running `beav` with no subcommand in an interactive terminal launches the multi-view TUI workbench\n"+
+				"(Clean, Disk Analyze, History, Safety & Config).\n"+
+				"Or use subcommands directly: `beav scan`, `beav clean`, `beav purge`, `beav doctor`, `beav list`.",
+			"Beav 用于清理开发工具、浏览器、AI、容器与系统缓存，所有安全边界均可按需配置或绕过。\n"+
+				"在交互终端中直接运行 `beav` 会启动多视图交互工作台（清理 / 磁盘分析 / 历史 / 安全与配置）；\n"+
+				"也可直接使用子命令：`beav scan`、`beav clean`、`beav purge`、`beav doctor`、`beav list`。",
 		),
 		Example: tr.Text(
-			"  beav                       # interactive scan & clean TUI\n"+
+			"  beav                       # interactive multi-view TUI workbench\n"+
+				"  beav doctor                # check disk space, config, and available tools\n"+
 				"  beav scan                  # read-only preview in CLI\n"+
 				"  beav clean --only langs    # clean language caches (asks before deleting)\n"+
-				"  beav list                  # list all cleaners and IDs\n"+
+				"  beav clean --unsafe        # bypass all safety limits\n"+
+				"  beav purge ~/.cache/custom # clean arbitrary paths directly\n"+
 				"  sudo beav --system         # interactive TUI for system caches",
-			"  beav                       # 启动交互式只读扫描与清理界面\n"+
+			"  beav                       # 启动多视图交互式工作台\n"+
+				"  beav doctor                # 诊断磁盘占用、配置与可用工具状态\n"+
 				"  beav scan                  # 在命令行只读预览可释放空间\n"+
 				"  beav clean --only langs    # 清理语言工具缓存（删除前需确认）\n"+
-				"  beav list                  # 列出所有清理项、影响级别与 ID\n"+
+				"  beav clean --unsafe        # 绕过全部安全限制直接清理\n"+
+				"  beav purge ~/.cache/custom # 直接清理指定路径\n"+
 				"  sudo beav --system         # 启动系统级缓存交互界面",
 		),
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			if noColorFlag {
+				_ = os.Setenv("NO_COLOR", "1")
+			}
 			if langFlag == "" {
 				return nil
 			}
@@ -68,122 +76,45 @@ func NewRootCmdWithLang(version, commit, date string, lang i18n.Lang) *cobra.Com
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if versionFlag {
+				_, err := fmt.Fprintf(cmd.OutOrStdout(), "beav %s (%s, %s)\n", version, commit, date)
+				return err
+			}
 			localTr := translatorForCommand(cmd, tr)
-			f.Lang = langFlag
+			applyGlobalFlags(cmd, &f)
 			if !isInteractiveTerminal(cmd.OutOrStdout()) {
 				return cmd.Help()
 			}
-			lc, err := loadCleanContext(f, localTr)
-			if err != nil {
-				return err
-			}
-			opts := tui.Options{
-				Translator: localTr,
-				Scope: tui.ScopeInfo{
-					Scope:  lc.Scope,
-					Home:   lc.Home,
-					IsRoot: os.Getuid() == 0,
-				},
-				Hooks: tui.Hooks{
-					StartScan: func(ctx context.Context) (<-chan tui.ScanProgress, context.CancelFunc) {
-						return runReadOnlyScan(ctx, lc.Merged, lc.Scope, lc.Home, lc.TargetUID, lc.Cfg)
-					},
-					StartExec: func(ctx context.Context, selectedIDs []string) (<-chan tui.ExecProgress, context.CancelFunc) {
-						return runTUIExec(ctx, lc.Merged, lc.Scope, lc.Home, lc.TargetUID, lc.Cfg, f, selectedIDs)
-					},
-				},
-			}
-			return tui.Run(cmd.Context(), opts)
+			return launchTUI(cmd.Context(), version, f, "clean", localTr)
 		},
 	}
 
 	root.PersistentFlags().StringVar(&langFlag, "lang", "", tr.Text("interface language: auto, en, or zh", "界面语言：auto、en 或 zh"))
+	root.PersistentFlags().BoolVarP(&quietFlag, "quiet", "q", false, tr.Text("suppress non-essential output", "静默模式，仅输出关键汇总与错误"))
+	root.PersistentFlags().BoolVar(&noColorFlag, "no-color", false, tr.Text("disable colored terminal output", "禁用终端彩色输出"))
+
+	root.Flags().BoolVarP(&versionFlag, "version", "V", false, tr.Text("print version and exit", "显示版本信息并退出"))
 	root.Flags().BoolVar(&f.System, "system", false, tr.Text("launch TUI for system-scope caches (requires sudo)", "为系统级清理项启动交互界面（需 sudo）"))
 	root.Flags().BoolVar(&f.All, "all", false, tr.Text("launch TUI for both user and system scopes (requires sudo)", "同时为用户级与系统级清理项启动交互界面（需 sudo）"))
-	root.Flags().StringVar(&f.MinAge, "min-age", "", tr.Text("override min age, for example 14d or tag=3d", "覆盖最小保留天数，如 14d 或 langs=3d"))
-	root.Flags().BoolVar(&f.AllowRootHome, "allow-root-home", false, tr.Text("allow scanning /root when running as root", "以 root 运行时允许扫描 /root 目录"))
-	root.Flags().StringVar(&f.UserOverride, "user", "", tr.Text("target user for --all", "配合 --all 指定目标用户名"))
-	root.Flags().StringVar(&f.ConfigDir, "config-dir", "", tr.Text("override config directory", "覆盖默认配置目录"))
-	root.Flags().BoolVar(&f.BuiltinDisabled, "builtin-disabled", false, "skip embedded cleaners")
-	_ = root.Flags().MarkHidden("builtin-disabled")
+	addScopeAndPolicyFlags(root, &f, tr)
 
 	root.AddCommand(
+		NewTUICmd(version, tr),
 		NewScanCmd(tr),
 		NewCleanCmd(tr),
+		NewPurgeCmd(tr),
+		NewAnalyzeCmd(tr),
 		NewListCmd(tr),
 		NewInfoCmd(tr),
+		NewTagsCmd(tr),
+		NewDoctorCmd(tr),
+		NewHistoryCmd(tr),
 		NewConfigCmd(tr),
-		NewAnalyzeCmd(tr),
 		NewCompletionCmd(root, tr),
 		NewVersionCmd(version, commit, date, tr),
 	)
-	localizeCobraTree(root, tr)
+	configureHelpAndUsage(root, tr)
 	return root
-}
-
-func localizeCobraTree(root *cobra.Command, tr *i18n.Translator) {
-	if root == nil || tr == nil || !tr.IsZH() {
-		return
-	}
-	replacer := strings.NewReplacer(
-		"Global Flags:", "全局选项：",
-		"Additional Commands:", "其他命令：",
-		"Available Commands:", "可用命令：",
-		"Additional help topics:", "其他帮助主题：",
-		"Usage:", "用法：",
-		"Aliases:", "别名：",
-		"Examples:", "示例：",
-		"Flags:", "选项：",
-		`Use "{{.CommandPath}} [command] --help" for more information about a command.`,
-		`使用 "{{.CommandPath}} [command] --help" 查看指定命令的详细说明。`,
-	)
-	root.SetUsageTemplate(replacer.Replace(root.UsageTemplate()))
-
-	helpCmd := &cobra.Command{
-		Use:   "help [command]",
-		Short: "查看任意命令的帮助信息",
-		Long:  "查看 Beav 任意命令的详细用法与选项说明。",
-		ValidArgsFunction: func(c *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-			var completions []string
-			cmd, _, e := c.Root().Find(args)
-			if e != nil {
-				return nil, cobra.ShellCompDirectiveNoFileComp
-			}
-			if cmd == nil {
-				cmd = c.Root()
-			}
-			for _, sub := range cmd.Commands() {
-				if sub.IsAvailableCommand() && strings.HasPrefix(sub.Name(), toComplete) {
-					completions = append(completions, fmt.Sprintf("%s\t%s", sub.Name(), sub.Short))
-				}
-			}
-			return completions, cobra.ShellCompDirectiveNoFileComp
-		},
-		Run: func(c *cobra.Command, args []string) {
-			target, _, e := c.Root().Find(args)
-			if target == nil || e != nil {
-				c.Printf("未知命令或帮助主题 %#q\n", args)
-				_ = c.Root().Usage()
-				return
-			}
-			target.InitDefaultHelpFlag()
-			target.InitDefaultVersionFlag()
-			_ = target.Help()
-		},
-	}
-	helpCmd.Flags().BoolP("help", "h", false, "显示 help 的帮助信息")
-	root.SetHelpCommand(helpCmd)
-
-	var registerHelpFlag func(*cobra.Command)
-	registerHelpFlag = func(c *cobra.Command) {
-		if c.Flags().Lookup("help") == nil {
-			c.Flags().BoolP("help", "h", false, fmt.Sprintf("显示 %s 的帮助信息", c.Name()))
-		}
-		for _, sub := range c.Commands() {
-			registerHelpFlag(sub)
-		}
-	}
-	registerHelpFlag(root)
 }
 
 func isInteractiveTerminal(stdout io.Writer) bool {
