@@ -318,7 +318,7 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 	} else if requested := c.AgeOrDefault(14); requested > minAge {
 		minAge = requested
 	}
-	if !renamed && !(c.NoAgeFilter && e.Policy.EffectiveBypassAgeFloor()) && !managedIdentityOldEnoughWithFloor(identity, minAge, e.Policy.EffectiveBypassAgeFloor(), e.now()) {
+	if !renamed && (!c.NoAgeFilter || !e.Policy.EffectiveBypassAgeFloor()) && !managedIdentityOldEnoughWithFloor(identity, minAge, e.Policy.EffectiveBypassAgeFloor(), e.now()) {
 		emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonAgeTooRecent), TS: e.now()})
 		return managedCandidateSkipped
 	}
@@ -443,7 +443,7 @@ func (e *ManagedCacheExecutor) processManagedCandidate(
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonToctouChanged), TS: e.now()})
 			return managedCandidateSkipped
 		}
-		if !sameManagedState(current, openedIdentity) || (!(c.NoAgeFilter && e.Policy.EffectiveBypassAgeFloor()) && !managedIdentityOldEnoughWithFloor(current, minAge, e.Policy.EffectiveBypassAgeFloor(), e.now())) {
+		if !sameManagedState(current, openedIdentity) || ((!c.NoAgeFilter || !e.Policy.EffectiveBypassAgeFloor()) && !managedIdentityOldEnoughWithFloor(current, minAge, e.Policy.EffectiveBypassAgeFloor(), e.now())) {
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonToctouChanged), TS: e.now()})
 			return managedCandidateSkipped
 		}
@@ -710,7 +710,7 @@ func (e *ManagedCacheExecutor) openManagedRoot(root string) (int, int, managedId
 	if selected.Mode == unix.S_IFLNK && !walkOpts.FollowSymlinks {
 		return -1, -1, managedIdentity{}, safety.ErrSymlink
 	}
-	if selected.Mode != unix.S_IFDIR && !(walkOpts.FollowSymlinks && selected.Mode == unix.S_IFLNK) {
+	if selected.Mode != unix.S_IFDIR && (!walkOpts.FollowSymlinks || selected.Mode != unix.S_IFLNK) {
 		return -1, -1, managedIdentity{}, fmt.Errorf("%w: selected root is not a directory", errManagedRootUnavailable)
 	}
 	if selected.UID != e.TargetUID {

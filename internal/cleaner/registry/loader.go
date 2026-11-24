@@ -191,13 +191,6 @@ func decodeYAML(data []byte, out any) error {
 	return decoder.Decode(out)
 }
 
-// normalizeAndValidate applies compatibility defaults and validates structural
-// fields before a cleaner can enter the registry. Mutable user override files
-// may contain only an ID plus override fields; those are validated after merge.
-func normalizeAndValidate(c *model.Cleaner) error {
-	return normalizeAndValidateWithPolicy(c, safety.DefaultPolicy())
-}
-
 func normalizeAndValidateWithPolicy(c *model.Cleaner, policy safety.Policy) error {
 	if c.Impact == "" {
 		c.Impact = model.ImpactSafe

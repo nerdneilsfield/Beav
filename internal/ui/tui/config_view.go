@@ -300,11 +300,12 @@ func (m workbenchModel) renderConfigTab() string {
 		cfgPath = m.cfg.ConfigPath()
 	}
 	b.WriteString(styleSubtle.Render(m.tr.Text("Config: ", "配置文件：")+fitWidth(cfgPath, maxInt(16, w-16))) + "\n")
-	if m.cfgAdding {
+	switch {
+	case m.cfgAdding:
 		b.WriteString(styleTitle.Render(m.tr.Text("Add path prefix: ", "添加路径前缀：")) + m.cfgAddInput.View() + "\n")
-	} else if m.cfgStatus != "" {
+	case m.cfgStatus != "":
 		b.WriteString(styleWarnText.Render(fitWidth(m.cfgStatus, w-4)) + "\n")
-	} else {
+	default:
 		b.WriteString(styleMuted.Render(m.tr.Text("Toggle switches with Space; press w to save to config.yaml.", "按空格切换开关；按 w 写入 config.yaml；按 R 应用并重扫。")) + "\n")
 	}
 	b.WriteString("\n")

@@ -152,21 +152,22 @@ func (m workbenchModel) renderHistoryTab() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("%s %d   %s %s\n",
+	fmt.Fprintf(&b, "%s %d   %s %s\n",
 		styleSubtle.Render(m.tr.Text("Operations:", "操作记录数：")),
 		len(filtered),
 		styleSubtle.Render(m.tr.Text("Total freed:", "累计释放：")),
 		styleBadgeSafe.Render(humanBytes(totalBytes)),
-	))
+	)
 	if m.histFiltering || m.histFilter.Value() != "" {
 		b.WriteString(styleSubtle.Render(m.tr.Text("Filter:", "筛选：")) + " " + m.histFilter.View() + "\n")
 	}
 
-	if m.histErr != nil {
+	switch {
+	case m.histErr != nil:
 		b.WriteString("\n" + styleDangerText.Render(m.histErr.Error()) + "\n")
-	} else if len(filtered) == 0 {
+	case len(filtered) == 0:
 		b.WriteString("\n" + styleMuted.Render(m.tr.Text("No cleanup operations recorded.", "暂无清理操作记录。")) + "\n")
-	} else {
+	default:
 		b.WriteString(styleSectionHeader.Render(fmt.Sprintf("%-19s  %-22s  %9s  %s",
 			m.tr.Text("TIME", "时间"),
 			m.tr.Text("CLEANER", "清理项"),
@@ -185,7 +186,7 @@ func (m workbenchModel) renderHistoryTab() string {
 			cid := fitWidth(ent.CleanerID, 22)
 			sz := humanBytes(ent.Size)
 			p := fitWidth(shortenHome(ent.Path, m.scope.Home), pathW)
-			b.WriteString(fmt.Sprintf("%-19s  %-22s  %9s  %s\n", ts, cid, sz, styleMuted.Render(p)))
+			fmt.Fprintf(&b, "%-19s  %-22s  %9s  %s\n", ts, cid, sz, styleMuted.Render(p))
 		}
 	}
 

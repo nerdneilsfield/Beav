@@ -143,10 +143,6 @@ func snapshotFromStat(st *unix.Stat_t) pathSnapshot {
 	return pathSnapshot{dev: uint64(st.Dev), ino: uint64(st.Ino), uid: st.Uid, mode: st.Mode}
 }
 
-func snapshotPath(path string) (pathSnapshot, error) {
-	return snapshotPathWithSymlinks(path, false)
-}
-
 func snapshotPathWithSymlinks(path string, followSymlinks bool) (pathSnapshot, error) {
 	var st unix.Stat_t
 	var err error
@@ -171,10 +167,6 @@ func (e *ToolPruneExecutor) snapshotRoot(path string) (pathSnapshot, error) {
 func (e *ToolPruneExecutor) snapshotBinary(path string) (pathSnapshot, error) {
 	// User-scope tools or bypass/symlink mode may point to symlinked binaries (e.g. brew/nix/nvm).
 	return snapshotPathWithSymlinks(path, e.Policy.EffectiveFollowSymlinks() || e.Policy.BypassAll)
-}
-
-func (s pathSnapshot) revalidate(path string) error {
-	return s.revalidateWithSymlinks(path, false)
 }
 
 func (s pathSnapshot) revalidateWithSymlinks(path string, followSymlinks bool) error {
@@ -248,18 +240,6 @@ func cleanSearchPath(paths []string) []string {
 		out = append(out, abs)
 	}
 	return out
-}
-
-func resolveProfileBinary(name string, searchPath []string) (string, error) {
-	return resolveProfileBinaryWithTrust(name, searchPath, false)
-}
-
-func resolveTrustedProfileBinary(name string, searchPath []string) (string, error) {
-	return resolveProfileBinaryWithTrust(name, searchPath, true)
-}
-
-func resolveProfileBinaryWithTrust(name string, searchPath []string, trusted bool) (string, error) {
-	return resolveProfileBinaryOpts(name, searchPath, trusted, false)
 }
 
 func resolveProfileBinaryOpts(name string, searchPath []string, trusted, allowSymlinks bool) (string, error) {

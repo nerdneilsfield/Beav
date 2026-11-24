@@ -92,12 +92,6 @@ func ValidateWithPolicy(c model.Cleaner, policy safety.Policy) error {
 	return nil
 }
 
-// validContainerTarget checks if a container prune runtime/target combination is supported.
-// validContainerTarget 检查容器修剪运行时/目标组合是否受支持。
-func validContainerTarget(runtime, target string) bool {
-	return validContainerTargetWithPolicy(runtime, target, false)
-}
-
 func validContainerTargetWithPolicy(runtime, target string, allowUnsafe bool) bool {
 	switch runtime {
 	case "docker":

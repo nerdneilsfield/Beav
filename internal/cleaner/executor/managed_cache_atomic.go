@@ -75,10 +75,6 @@ func sameManagedTree(a, b managedTreeState) bool {
 	return true
 }
 
-func managedIdentityOldEnough(identity managedIdentity, minAge int, now time.Time) bool {
-	return managedIdentityOldEnoughWithFloor(identity, minAge, false, now)
-}
-
 func managedIdentityOldEnoughWithFloor(identity managedIdentity, minAge int, bypassFloor bool, now time.Time) bool {
 	if (!bypassFloor && minAge < managedCacheMinAgeDays) || minAge < 0 || now.IsZero() {
 		return false

@@ -12,7 +12,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/dengqi/beav/internal/cleaner/safety"
-	"github.com/dustin/go-humanize"
 )
 
 type diskEntry struct {
@@ -80,11 +79,12 @@ func scanDirectorySizes(dir string) ([]diskEntry, int64, error) {
 			continue
 		}
 		var sz int64
-		if info.Mode()&os.ModeSymlink != 0 {
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
 			sz = info.Size()
-		} else if info.IsDir() {
+		case info.IsDir():
 			sz = calcDirSize(full)
-		} else {
+		default:
 			sz = info.Size()
 		}
 		total += sz
@@ -249,25 +249,26 @@ func (m workbenchModel) renderAnalyzeTab() string {
 	}[m.diskSort]
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("%s %s   %s %s   %s\n",
+	fmt.Fprintf(&b, "%s %s   %s %s   %s\n",
 		styleSubtle.Render(m.tr.Text("Path:", "当前路径：")),
 		styleTitle.Render(fitWidth(m.diskPath, maxInt(16, w-40))),
 		styleSubtle.Render(m.tr.Text("Total:", "总大小：")),
 		styleBadgeSafe.Render(humanBytes(m.diskTotal)),
 		stylePill.Render(m.tr.Text("sort: ", "排序：")+sortName),
-	))
+	)
 
 	if m.diskStatus != "" {
 		b.WriteString(styleWarnText.Render(m.diskStatus) + "\n")
 	}
 
-	if m.diskLoading {
-		b.WriteString("\n" + fmt.Sprintf("%s %s\n", m.spin.View(), m.tr.Text("Calculating directory sizes...", "正在扫描并统计目录大小...")))
-	} else if m.diskErr != nil {
+	switch {
+	case m.diskLoading:
+		fmt.Fprintf(&b, "\n%s %s\n", m.spin.View(), m.tr.Text("Calculating directory sizes...", "正在扫描并统计目录大小..."))
+	case m.diskErr != nil:
 		b.WriteString("\n" + styleDangerText.Render(m.diskErr.Error()) + "\n")
-	} else if len(m.diskEntries) == 0 {
+	case len(m.diskEntries) == 0:
 		b.WriteString("\n" + styleMuted.Render(m.tr.Text("Empty directory.", "目录为空。")) + "\n")
-	} else {
+	default:
 		vp := maxInt(4, h-5)
 		end := m.diskOffset + vp
 		if end > len(m.diskEntries) {
@@ -294,7 +295,7 @@ func (m workbenchModel) renderAnalyzeTab() string {
 				pct = float64(ent.Size) * 100 / float64(m.diskTotal)
 			}
 			bar := renderRatioBar(ent.Size, maxSz, 10)
-			right := fmt.Sprintf("%s  %9s  %5.1f%%", bar, humanize.Bytes(uint64(maxInt64(0, ent.Size))), pct)
+			right := fmt.Sprintf("%s  %9s  %5.1f%%", bar, humanBytes(ent.Size), pct)
 			nameW := maxInt(12, w-lipgloss.Width(right)-8)
 			namePart := fitWidth(ent.Name+kind, nameW)
 			gap := maxInt(1, w-4-2-lipgloss.Width(namePart)-lipgloss.Width(right))
@@ -329,13 +330,6 @@ func renderRatioBar(val, maxVal int64, width int) string {
 		filled = width
 	}
 	return styleBar.Render(strings.Repeat("█", filled)) + styleMuted.Render(strings.Repeat("░", width-filled))
-}
-
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // Keep context import referenced cleanly for future cancellation hooks.

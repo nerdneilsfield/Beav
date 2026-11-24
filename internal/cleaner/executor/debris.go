@@ -241,7 +241,7 @@ func (e *DebrisExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 		if field == safety.TimeFieldCtime {
 			stamp = entry.CtimeTime()
 		}
-		if !(c.NoAgeFilter && e.Policy.EffectiveBypassAgeFloor()) && stamp.After(threshold) {
+		if (!c.NoAgeFilter || !e.Policy.EffectiveBypassAgeFloor()) && stamp.After(threshold) {
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: filepath.Join(root, entry.RelPath), Reason: string(model.SkipReasonAgeTooRecent), TS: e.now()})
 			return
 		}
@@ -543,7 +543,7 @@ func (e *DebrisExecutor) openDebrisRoot(root string) (int, error) {
 	if selected.Mode == unix.S_IFLNK && !walkOpts.FollowSymlinks {
 		return -1, safety.ErrSymlink
 	}
-	if selected.Mode != unix.S_IFDIR && !(walkOpts.FollowSymlinks && selected.Mode == unix.S_IFLNK) {
+	if selected.Mode != unix.S_IFDIR && (!walkOpts.FollowSymlinks || selected.Mode != unix.S_IFLNK) {
 		return -1, fmt.Errorf("debris root is not a directory")
 	}
 	if selected.UID != e.TargetUID {

@@ -699,7 +699,7 @@ func OpenAnchoredFileWithOptions(safeRoot, target string, opts WalkerOptions) (*
 		_ = unix.Close(parentFD)
 		return nil, Entry{}, ErrSymlink
 	}
-	if mode != unix.S_IFREG && !(opts.FollowSymlinks && mode == unix.S_IFLNK) {
+	if mode != unix.S_IFREG && (!opts.FollowSymlinks || mode != unix.S_IFLNK) {
 		_ = unix.Close(parentFD)
 		return nil, Entry{}, errors.New("not a regular file")
 	}

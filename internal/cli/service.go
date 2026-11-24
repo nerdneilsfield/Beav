@@ -567,10 +567,6 @@ func insertSample(samples []tui.FileSample, s tui.FileSample, limit int) []tui.F
 	return samples
 }
 
-func runTUIExec(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, f CleanFlags, selectedIDs []string) (<-chan tui.ExecProgress, context.CancelFunc) {
-	return runTUIExecWithPolicy(ctx, merged, scope, home, targetUID, cfg, effectivePolicy(f, cfg), f, selectedIDs)
-}
-
 func runTUIExecWithPolicy(ctx context.Context, merged []model.Cleaner, scope model.Scope, home string, targetUID int, cfg *config.Config, policy safety.Policy, f CleanFlags, selectedIDs []string) (<-chan tui.ExecProgress, context.CancelFunc) {
 	execCtx, cancel := context.WithCancel(ctx)
 	ch := make(chan tui.ExecProgress, 16)

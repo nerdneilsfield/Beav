@@ -208,7 +208,7 @@ func (e *RustupExecutor) Run(ctx context.Context, c model.Cleaner, dryRun bool, 
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonWhitelisted), TS: e.now()})
 			continue
 		}
-		if !(c.NoAgeFilter && e.Policy.EffectiveBypassAgeFloor()) && !managedIdentityOldEnoughWithFloor(unit.identity, minAge, e.Policy.EffectiveBypassAgeFloor(), e.now()) {
+		if (!c.NoAgeFilter || !e.Policy.EffectiveBypassAgeFloor()) && !managedIdentityOldEnoughWithFloor(unit.identity, minAge, e.Policy.EffectiveBypassAgeFloor(), e.now()) {
 			emit(model.Event{Event: model.EvSkipped, CleanerID: c.ID, Path: abs, Reason: string(model.SkipReasonAgeTooRecent), TS: e.now()})
 			continue
 		}

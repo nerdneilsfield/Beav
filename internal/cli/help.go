@@ -162,7 +162,7 @@ func configureHelpAndUsage(root *cobra.Command, tr *i18n.Translator) {
 		var b strings.Builder
 		b.WriteString("\n" + tr.Text("Help Topics:", "帮助主题：") + "\n")
 		for _, topic := range helpTopics {
-			b.WriteString(fmt.Sprintf("  %-14s %s\n", topic.Name, topic.Short(tr)))
+			fmt.Fprintf(&b, "  %-14s %s\n", topic.Name, topic.Short(tr))
 		}
 		b.WriteString("\n" + tr.Text(
 			`Use "beav help <command|topic>" or "beav <command> --help" for more information.`,

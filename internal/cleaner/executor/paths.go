@@ -353,12 +353,6 @@ func matchAny(set globSet, absPath, relPath string) bool {
 	return false
 }
 
-// determineSafeRoot returns the safe root directory for a given path, or empty string if blacklisted.
-// determineSafeRoot 返回给定路径的安全根目录，如果被列入黑名单则返回空字符串。
-func determineSafeRoot(path, home string) string {
-	return determineSafeRootWithPolicy(path, home, safety.DefaultPolicy())
-}
-
 func determineSafeRootWithPolicy(path, home string, policy safety.Policy) string {
 	clean := filepath.Clean(path)
 	if clean == "/" {
